@@ -78,6 +78,8 @@ export interface AnnotationElement {
   createdAt?: string;
   replacesNativeTextId?: string;
   origRect?: { x: number; y: number; width: number; height: number };
+  origBgDataUrl?: string;
+  isBackgroundRestorePatch?: boolean;
 }
 
 export interface StoredDocument {
@@ -114,6 +116,8 @@ export interface Point2D {
 
 export type ScanFilterType =
   | 'original'
+  | 'ocv-black'
+  | 'vivid-light'
   | 'magic'
   | 'grayscale'
   | 'bw'

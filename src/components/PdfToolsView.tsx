@@ -20,6 +20,10 @@ import {
   Check,
   PlusSquare,
   Info,
+  Type,
+  Undo2,
+  Bold,
+  Italic,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -34,6 +38,8 @@ import {
   downloadBytesAsFile,
   getPdfPageCount,
   RenderedPageInfo,
+  PictureTextBoxOverlay,
+  compositeTextBoxesOntoImageDataUrl,
 } from '../services/pdfService';
 import { formatBytes } from '../services/storageService';
 
@@ -345,7 +351,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     }
   };
 
-  // 5. PDF TO IMAGES & EXTRACT TEXT STATE
+  // 5. PDF TO IMAGES & EXTRACT TEXT + WRITE TEXT OVER CONVERTED PICTURES STATE
   const [exportFormat, setExportFormat] = useState<'image/png' | 'image/jpeg'>(
     'image/png'
   );
@@ -353,6 +359,161 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   const [extractedPagesText, setExtractedPagesText] = useState<
     { pageNumber: number; text: string }[]
   >([]);
+
+  // Text boxes placed over converted PDF pictures (indexed by pageNumber)
+  const [pictureTextBoxesByPage, setPictureTextBoxesByPage] = useState<
+    Record<number, PictureTextBoxOverlay[]>
+  >({});
+  const [pictureTextBoxUndoStack, setPictureTextBoxUndoStack] = useState<
+    Record<number, PictureTextBoxOverlay[]>[]
+  >([]);
+  const [selectedPicTextBox, setSelectedPicTextBox] = useState<{
+    pageNumber: number;
+    id: string;
+  } | null>(null);
+  const [defaultPicTextColor, setDefaultPicTextColor] = useState('#14101B');
+  const [defaultPicBoxBgColor, setDefaultPicBoxBgColor] = useState('#FFFFFF');
+  const [defaultPicBoxBorderColor, setDefaultPicBoxBorderColor] =
+    useState('transparent');
+  const [draggingPicBox, setDraggingPicBox] = useState<{
+    pageNumber: number;
+    id: string;
+    mode: 'move' | 'resize';
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    origW: number;
+    origH: number;
+    containerRect: DOMRect;
+  } | null>(null);
+
+  const pushPictureTextBoxesWithUndo = (
+    next: Record<number, PictureTextBoxOverlay[]>
+  ) => {
+    setPictureTextBoxUndoStack((prev) => [...prev, pictureTextBoxesByPage]);
+    setPictureTextBoxesByPage(next);
+  };
+
+  const handleUndoPictureTextBox = () => {
+    if (pictureTextBoxUndoStack.length === 0) return;
+    const prev = pictureTextBoxUndoStack[pictureTextBoxUndoStack.length - 1];
+    setPictureTextBoxUndoStack((s) => s.slice(0, -1));
+    setPictureTextBoxesByPage(prev);
+    setSelectedPicTextBox(null);
+  };
+
+  const handleAddTextBoxToConvertedPicture = (
+    pageNumber: number,
+    clickX = 0.18,
+    clickY = 0.22
+  ) => {
+    const newId = `pic-txt-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`;
+    const newBox: PictureTextBoxOverlay = {
+      id: newId,
+      x: Math.max(0.03, Math.min(0.62, clickX)),
+      y: Math.max(0.03, Math.min(0.84, clickY)),
+      width: 0.36,
+      height: 0.1,
+      text: 'Type text here',
+      textColor: defaultPicTextColor,
+      boxBgColor: defaultPicBoxBgColor,
+      boxBorderColor: defaultPicBoxBorderColor,
+      fontSize: 16,
+      fontWeight: 'bold',
+      fontStyle: 'normal',
+    };
+    const existing = pictureTextBoxesByPage[pageNumber] || [];
+    pushPictureTextBoxesWithUndo({
+      ...pictureTextBoxesByPage,
+      [pageNumber]: [...existing, newBox],
+    });
+    setSelectedPicTextBox({ pageNumber, id: newId });
+  };
+
+  const updateSelectedPicTextBox = (
+    updates: Partial<PictureTextBoxOverlay>
+  ) => {
+    if (!selectedPicTextBox) return;
+    const { pageNumber, id } = selectedPicTextBox;
+    const list = pictureTextBoxesByPage[pageNumber] || [];
+    pushPictureTextBoxesWithUndo({
+      ...pictureTextBoxesByPage,
+      [pageNumber]: list.map((b) => (b.id === id ? { ...b, ...updates } : b)),
+    });
+  };
+
+  const removeSelectedPicTextBox = (pageNumber: number, id: string) => {
+    const list = pictureTextBoxesByPage[pageNumber] || [];
+    pushPictureTextBoxesWithUndo({
+      ...pictureTextBoxesByPage,
+      [pageNumber]: list.filter((b) => b.id !== id),
+    });
+    if (selectedPicTextBox?.id === id) {
+      setSelectedPicTextBox(null);
+    }
+  };
+
+  const handleDownloadConvertedPictureWithText = async (
+    img: RenderedPageInfo
+  ) => {
+    const ext = exportFormat === 'image/png' ? 'png' : 'jpg';
+    const boxes = pictureTextBoxesByPage[img.pageNumber] || [];
+    const finalDataUrl = await compositeTextBoxesOntoImageDataUrl(
+      img.dataUrl,
+      boxes,
+      exportFormat,
+      0.94
+    );
+    const a = document.createElement('a');
+    a.href = finalDataUrl;
+    a.download = `${(selectedDoc?.name || 'Document').replace(/\.pdf$/i, '')}_Page_${img.pageNumber}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  const handleSaveConvertedPicturesWithTextAsPdf = async () => {
+    if (renderedImages.length === 0 || !selectedDoc) return;
+    setIsBusy(true);
+    try {
+      const compositedUrls: string[] = [];
+      for (const img of renderedImages) {
+        const boxes = pictureTextBoxesByPage[img.pageNumber] || [];
+        const dataUrl = await compositeTextBoxesOntoImageDataUrl(
+          img.dataUrl,
+          boxes,
+          'image/png',
+          0.95
+        );
+        compositedUrls.push(dataUrl);
+      }
+      const pdfBytes = await createPdfFromImages(compositedUrls, {
+        pageSize: 'Fit',
+        marginPt: 0,
+      });
+      const outName = `${selectedDoc.name.replace(/\.pdf$/i, '')}_Pictures_Edited.pdf`;
+      const newDoc: StoredDocument = {
+        id: `doc-pic-pdf-${Date.now()}`,
+        name: outName,
+        category: selectedDoc.category,
+        starred: false,
+        sizeBytes: pdfBytes.byteLength,
+        pageCount: renderedImages.length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: pdfBytes,
+      };
+      await onSaveNewDocument(newDoc);
+      downloadBytesAsFile(pdfBytes, outName);
+      setFeedback(
+        `Saved ${renderedImages.length} converted PDF picture(s) with your custom text boxes into "${outName}" and downloaded.`
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
 
   const handleRenderPdfToImagesAndText = async () => {
     if (!selectedDoc) return;
@@ -373,12 +534,20 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       const texts = await extractAllPdfText(selectedDoc.pdfData);
       setExtractedPagesText(texts);
       setFeedback(
-        `Rendered ${imgs.length} page image(s) and extracted native text layers.`
+        `Converted ${imgs.length} PDF page(s) into pictures. Click anywhere on a picture (or click "+ Add Text Box") to write text with custom colors!`
       );
     } finally {
       setIsBusy(false);
     }
   };
+
+  // Auto-convert PDF to pictures when opening the 'pdf-to-img' tab so pictures are immediately ready for writing text
+  useEffect(() => {
+    if (activeTool === 'pdf-to-img' && selectedDoc) {
+      handleRenderPdfToImagesAndText();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool, selectedDoc?.id]);
 
   // 6. ORGANIZE & ROTATE PAGES STATE
   const [orgSpecs, setOrgSpecs] = useState<
@@ -989,20 +1158,31 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
           </div>
         )}
 
-        {/* 5. PDF TO PNG / JPG & EXTRACT TEXT */}
+        {/* 5. PDF TO PNG / JPG & WRITE TEXT OVER CONVERTED PICTURES */}
         {activeTool === 'pdf-to-img' && selectedDoc && (
           <div className="space-y-6">
-            <div className="flex flex-wrap items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
               <div>
                 <h2 className="text-base font-bold">
-                  Convert PDF Pages to PNG / JPG & Extract Native Text
+                  Convert PDF to Pictures (PNG / JPG) & Write Text Over Pictures
                 </h2>
                 <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Render high-resolution raster images of every page or copy native text streams.
+                  Click anywhere on a converted PDF picture (or click <strong>+ Add Text Box</strong>) to write text over it and customize Text Color &amp; Text Box Color.
                 </p>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {pictureTextBoxUndoStack.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleUndoPictureTextBox}
+                    className="px-3 py-2 rounded-lg border border-[#4A1D5E] dark:border-[#9D5CE5] text-[#4A1D5E] dark:text-[#D5B3FF] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Undo2 className="w-3.5 h-3.5" />
+                    <span>Undo ({pictureTextBoxUndoStack.length})</span>
+                  </button>
+                )}
+
                 <select
                   value={exportFormat}
                   onChange={(e) =>
@@ -1019,17 +1199,288 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                 <button
                   onClick={handleRenderPdfToImagesAndText}
                   disabled={isBusy}
-                  className="px-4 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold cursor-pointer"
+                  className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer"
                 >
-                  {isBusy ? 'Rendering Pages...' : 'Render Pages & Extract Text'}
+                  {isBusy ? 'Rendering...' : 'Re-Render Pictures'}
                 </button>
+
+                {renderedImages.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleSaveConvertedPicturesWithTextAsPdf}
+                    disabled={isBusy}
+                    className="px-4 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save Pictures with Text as PDF</span>
+                  </button>
+                )}
               </div>
             </div>
 
+            {/* Text & Text Box Color Formatting Toolbar for Converted Pictures */}
+            <div className="p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-3">
+                {/* Text Color Picker */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Text Color:
+                  </span>
+                  {[
+                    '#14101B',
+                    '#FFFFFF',
+                    '#4A1D5E',
+                    '#DC2626',
+                    '#2563EB',
+                    '#15803D',
+                    '#D97706',
+                    '#FACC15',
+                  ].map((hex) => {
+                    const activeBox = selectedPicTextBox
+                      ? (
+                          pictureTextBoxesByPage[
+                            selectedPicTextBox.pageNumber
+                          ] || []
+                        ).find((b) => b.id === selectedPicTextBox.id)
+                      : null;
+                    const currentColor = activeBox
+                      ? activeBox.textColor
+                      : defaultPicTextColor;
+                    return (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => {
+                          setDefaultPicTextColor(hex);
+                          updateSelectedPicTextBox({ textColor: hex });
+                        }}
+                        style={{ backgroundColor: hex }}
+                        title={`Text color ${hex}`}
+                        className={`w-5 h-5 rounded-full border cursor-pointer ${
+                          currentColor === hex
+                            ? 'ring-2 ring-offset-1 ring-[#4A1D5E] dark:ring-[#9D5CE5]'
+                            : 'border-neutral-300 dark:border-neutral-600'
+                        }`}
+                      />
+                    );
+                  })}
+                  <input
+                    type="color"
+                    value={defaultPicTextColor}
+                    onChange={(e) => {
+                      setDefaultPicTextColor(e.target.value);
+                      updateSelectedPicTextBox({ textColor: e.target.value });
+                    }}
+                    title="Custom Text Color"
+                    className="w-6 h-6 p-0 border-0 bg-transparent cursor-pointer"
+                  />
+                </div>
+
+                <span className="h-5 w-px bg-[#E4DFEC] dark:bg-[#261F33]" />
+
+                {/* Text Box Background Color Picker */}
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Text Box Color:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDefaultPicBoxBgColor('transparent');
+                      updateSelectedPicTextBox({ boxBgColor: 'transparent' });
+                    }}
+                    className={`px-2 py-0.5 rounded text-xs font-semibold border cursor-pointer ${
+                      defaultPicBoxBgColor === 'transparent'
+                        ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                        : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
+                    }`}
+                  >
+                    Transparent
+                  </button>
+                  {[
+                    '#FFFFFF',
+                    '#FEF08A',
+                    '#DBEAFE',
+                    '#DCFCE7',
+                    '#FCE7F3',
+                    '#F3E8FF',
+                    '#14101B',
+                    '#4A1D5E',
+                    '#DC2626',
+                    '#2563EB',
+                  ].map((hex) => {
+                    const activeBox = selectedPicTextBox
+                      ? (
+                          pictureTextBoxesByPage[
+                            selectedPicTextBox.pageNumber
+                          ] || []
+                        ).find((b) => b.id === selectedPicTextBox.id)
+                      : null;
+                    const currentBg = activeBox
+                      ? activeBox.boxBgColor
+                      : defaultPicBoxBgColor;
+                    return (
+                      <button
+                        key={hex}
+                        type="button"
+                        onClick={() => {
+                          setDefaultPicBoxBgColor(hex);
+                          updateSelectedPicTextBox({ boxBgColor: hex });
+                        }}
+                        style={{ backgroundColor: hex }}
+                        title={`Text box background color ${hex}`}
+                        className={`w-5 h-5 rounded border cursor-pointer ${
+                          currentBg === hex
+                            ? 'ring-2 ring-offset-1 ring-[#4A1D5E] dark:ring-[#9D5CE5]'
+                            : 'border-neutral-300 dark:border-neutral-600'
+                        }`}
+                      />
+                    );
+                  })}
+                  <input
+                    type="color"
+                    value={
+                      defaultPicBoxBgColor.startsWith('#')
+                        ? defaultPicBoxBgColor
+                        : '#FFFFFF'
+                    }
+                    onChange={(e) => {
+                      setDefaultPicBoxBgColor(e.target.value);
+                      updateSelectedPicTextBox({ boxBgColor: e.target.value });
+                    }}
+                    title="Custom Text Box Color"
+                    className="w-6 h-6 p-0 border-0 bg-transparent cursor-pointer"
+                  />
+                </div>
+
+                {/* Border color toggle */}
+                <span className="h-5 w-px bg-[#E4DFEC] dark:bg-[#261F33]" />
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Box Border:
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDefaultPicBoxBorderColor('transparent');
+                      updateSelectedPicTextBox({
+                        boxBorderColor: 'transparent',
+                      });
+                    }}
+                    className={`px-2 py-0.5 rounded text-xs font-semibold border cursor-pointer ${
+                      defaultPicBoxBorderColor === 'transparent'
+                        ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                        : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
+                    }`}
+                  >
+                    None
+                  </button>
+                  {['#14101B', '#4A1D5E', '#DC2626', '#2563EB'].map((bHex) => (
+                    <button
+                      key={bHex}
+                      type="button"
+                      onClick={() => {
+                        setDefaultPicBoxBorderColor(bHex);
+                        updateSelectedPicTextBox({ boxBorderColor: bHex });
+                      }}
+                      style={{ backgroundColor: bHex }}
+                      className={`w-4 h-4 rounded border cursor-pointer ${
+                        defaultPicBoxBorderColor === bHex
+                          ? 'ring-2 ring-offset-1 ring-[#4A1D5E]'
+                          : 'border-neutral-300'
+                      }`}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              {selectedPicTextBox && (
+                <div className="flex items-center gap-1.5">
+                  {(() => {
+                    const activeBox = (
+                      pictureTextBoxesByPage[selectedPicTextBox.pageNumber] ||
+                      []
+                    ).find((b) => b.id === selectedPicTextBox.id);
+                    if (!activeBox) return null;
+                    return (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateSelectedPicTextBox({
+                              fontWeight:
+                                activeBox.fontWeight === 'bold'
+                                  ? 'normal'
+                                  : 'bold',
+                            })
+                          }
+                          className={`p-1.5 rounded border cursor-pointer ${
+                            activeBox.fontWeight === 'bold'
+                              ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                              : 'border-[#E4DFEC] dark:border-[#261F33]'
+                          }`}
+                          title="Bold"
+                        >
+                          <Bold className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateSelectedPicTextBox({
+                              fontStyle:
+                                activeBox.fontStyle === 'italic'
+                                  ? 'normal'
+                                  : 'italic',
+                            })
+                          }
+                          className={`p-1.5 rounded border cursor-pointer ${
+                            activeBox.fontStyle === 'italic'
+                              ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                              : 'border-[#E4DFEC] dark:border-[#261F33]'
+                          }`}
+                          title="Italic"
+                        >
+                          <Italic className="w-3.5 h-3.5" />
+                        </button>
+                        <input
+                          type="number"
+                          min={10}
+                          max={64}
+                          value={activeBox.fontSize}
+                          onChange={(e) =>
+                            updateSelectedPicTextBox({
+                              fontSize: Number(e.target.value),
+                            })
+                          }
+                          className="w-14 px-2 py-1 text-xs font-mono border border-[#E4DFEC] dark:border-[#261F33] rounded text-center bg-white dark:bg-[#16111F]"
+                          title="Font size"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeSelectedPicTextBox(
+                              selectedPicTextBox.pageNumber,
+                              selectedPicTextBox.id
+                            )
+                          }
+                          className="px-2.5 py-1 rounded bg-[#DC2626] text-white text-xs font-bold flex items-center gap-1 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          <span>Remove Box</span>
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
+              )}
+            </div>
+
             {renderedImages.length > 0 && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {renderedImages.map((img) => {
                   const ext = exportFormat === 'image/png' ? 'png' : 'jpg';
+                  const pageBoxes =
+                    pictureTextBoxesByPage[img.pageNumber] || [];
                   const pageText =
                     extractedPagesText.find(
                       (t) => t.pageNumber === img.pageNumber
@@ -1037,29 +1488,269 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                   return (
                     <div
                       key={img.pageNumber}
-                      className="p-3 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] space-y-3"
+                      className="p-4 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] space-y-3"
                     >
-                      <img
-                        src={img.dataUrl}
-                        alt={`Page ${img.pageNumber}`}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-48 object-contain bg-white rounded border border-[#E4DFEC] dark:border-[#261F33]"
-                      />
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between gap-2">
                         <span className="text-xs font-bold font-mono">
-                          Page {img.pageNumber} ({ext.toUpperCase()})
+                          Page {img.pageNumber} Picture ({ext.toUpperCase()})
                         </span>
-                        <a
-                          href={img.dataUrl}
-                          download={`${selectedDoc.name.replace(/\.pdf$/i, '')}_Page_${img.pageNumber}.${ext}`}
-                          className="px-2.5 py-1 rounded bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-[11px] font-semibold flex items-center gap-1"
-                        >
-                          <Download className="w-3 h-3" />
-                          <span>Download .{ext}</span>
-                        </a>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleAddTextBoxToConvertedPicture(img.pageNumber)
+                            }
+                            className="px-2.5 py-1 rounded bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Type className="w-3 h-3" />
+                            <span>+ Add Text Box</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleDownloadConvertedPictureWithText(img)
+                            }
+                            className="px-2.5 py-1 rounded border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-[11px] font-semibold flex items-center gap-1 cursor-pointer"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download .{ext}</span>
+                          </button>
+                        </div>
                       </div>
+
+                      {/* Interactive Picture Canvas where user can click or drag text boxes over the converted PDF picture */}
+                      <div
+                        onClick={(e) => {
+                          if (e.target === e.currentTarget) {
+                            const rect =
+                              e.currentTarget.getBoundingClientRect();
+                            const cx = (e.clientX - rect.left) / rect.width;
+                            const cy = (e.clientY - rect.top) / rect.height;
+                            handleAddTextBoxToConvertedPicture(
+                              img.pageNumber,
+                              cx,
+                              cy
+                            );
+                          }
+                        }}
+                        onPointerMove={(e) => {
+                          if (
+                            !draggingPicBox ||
+                            draggingPicBox.pageNumber !== img.pageNumber
+                          )
+                            return;
+                          const dx =
+                            (e.clientX - draggingPicBox.startX) /
+                            draggingPicBox.containerRect.width;
+                          const dy =
+                            (e.clientY - draggingPicBox.startY) /
+                            draggingPicBox.containerRect.height;
+                          setPictureTextBoxesByPage((prev) => ({
+                            ...prev,
+                            [img.pageNumber]: (prev[img.pageNumber] || []).map(
+                              (b) => {
+                                if (b.id !== draggingPicBox.id) return b;
+                                if (draggingPicBox.mode === 'move') {
+                                  return {
+                                    ...b,
+                                    x: Math.max(
+                                      0,
+                                      Math.min(
+                                        1 - b.width,
+                                        draggingPicBox.origX + dx
+                                      )
+                                    ),
+                                    y: Math.max(
+                                      0,
+                                      Math.min(
+                                        1 - b.height,
+                                        draggingPicBox.origY + dy
+                                      )
+                                    ),
+                                  };
+                                } else {
+                                  return {
+                                    ...b,
+                                    width: Math.max(
+                                      0.08,
+                                      Math.min(
+                                        1 - b.x,
+                                        draggingPicBox.origW + dx
+                                      )
+                                    ),
+                                    height: Math.max(
+                                      0.04,
+                                      Math.min(
+                                        1 - b.y,
+                                        draggingPicBox.origH + dy
+                                      )
+                                    ),
+                                  };
+                                }
+                              }
+                            ),
+                          }));
+                        }}
+                        onPointerUp={() => setDraggingPicBox(null)}
+                        title="Click anywhere on this picture to add a text box"
+                        className="relative w-full bg-white rounded-lg border border-[#E4DFEC] dark:border-[#261F33] overflow-hidden cursor-crosshair select-none"
+                      >
+                        <img
+                          src={img.dataUrl}
+                          alt={`Page ${img.pageNumber}`}
+                          referrerPolicy="no-referrer"
+                          draggable={false}
+                          className="w-full h-auto block pointer-events-none"
+                        />
+
+                        {pageBoxes.map((box) => {
+                          const isBoxSelected =
+                            selectedPicTextBox?.pageNumber === img.pageNumber &&
+                            selectedPicTextBox?.id === box.id;
+                          return (
+                            <div
+                              key={box.id}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedPicTextBox({
+                                  pageNumber: img.pageNumber,
+                                  id: box.id,
+                                });
+                              }}
+                              onPointerDown={(e) => {
+                                e.stopPropagation();
+                                setSelectedPicTextBox({
+                                  pageNumber: img.pageNumber,
+                                  id: box.id,
+                                });
+                                const parentRect =
+                                  e.currentTarget.parentElement?.getBoundingClientRect();
+                                if (!parentRect) return;
+                                setPictureTextBoxUndoStack((prev) => [
+                                  ...prev,
+                                  pictureTextBoxesByPage,
+                                ]);
+                                setDraggingPicBox({
+                                  pageNumber: img.pageNumber,
+                                  id: box.id,
+                                  mode: 'move',
+                                  startX: e.clientX,
+                                  startY: e.clientY,
+                                  origX: box.x,
+                                  origY: box.y,
+                                  origW: box.width,
+                                  origH: box.height,
+                                  containerRect: parentRect,
+                                });
+                              }}
+                              style={{
+                                left: `${box.x * 100}%`,
+                                top: `${box.y * 100}%`,
+                                width: `${box.width * 100}%`,
+                                height: `${box.height * 100}%`,
+                                backgroundColor:
+                                  box.boxBgColor &&
+                                  box.boxBgColor !== 'transparent'
+                                    ? box.boxBgColor
+                                    : 'transparent',
+                                borderColor:
+                                  box.boxBorderColor &&
+                                  box.boxBorderColor !== 'transparent'
+                                    ? box.boxBorderColor
+                                    : 'transparent',
+                                borderWidth:
+                                  box.boxBorderColor &&
+                                  box.boxBorderColor !== 'transparent'
+                                    ? '1.5px'
+                                    : '0px',
+                                borderStyle: 'solid',
+                                color: box.textColor,
+                                fontSize: `${box.fontSize}px`,
+                                fontWeight: box.fontWeight || 'normal',
+                                fontStyle: box.fontStyle || 'normal',
+                              }}
+                              className={`absolute p-1 rounded-xs cursor-move ${
+                                isBoxSelected
+                                  ? 'ring-2 ring-[#4A1D5E] dark:ring-[#9D5CE5] z-20'
+                                  : 'hover:ring-1 hover:ring-[#4A1D5E]/60 z-10'
+                              }`}
+                            >
+                              <textarea
+                                value={box.text}
+                                onPointerDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setSelectedPicTextBox({
+                                    pageNumber: img.pageNumber,
+                                    id: box.id,
+                                  });
+                                }}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  setPictureTextBoxesByPage((prev) => ({
+                                    ...prev,
+                                    [img.pageNumber]: (
+                                      prev[img.pageNumber] || []
+                                    ).map((b) =>
+                                      b.id === box.id ? { ...b, text: val } : b
+                                    ),
+                                  }));
+                                }}
+                                style={{
+                                  color: box.textColor,
+                                  backgroundColor: 'transparent',
+                                  fontWeight: box.fontWeight || 'normal',
+                                  fontStyle: box.fontStyle || 'normal',
+                                }}
+                                className="w-full h-full resize-none focus:outline-none leading-snug"
+                              />
+
+                              {isBoxSelected && (
+                                <>
+                                  <button
+                                    type="button"
+                                    onPointerDown={(e) => e.stopPropagation()}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      removeSelectedPicTextBox(
+                                        img.pageNumber,
+                                        box.id
+                                      );
+                                    }}
+                                    className="absolute -top-6 right-0 px-1.5 py-0.5 rounded bg-[#DC2626] text-white text-[10px] font-bold shadow cursor-pointer"
+                                  >
+                                    Remove
+                                  </button>
+                                  <div
+                                    onPointerDown={(e) => {
+                                      e.stopPropagation();
+                                      const parentRect =
+                                        e.currentTarget.parentElement?.parentElement?.getBoundingClientRect();
+                                      if (!parentRect) return;
+                                      setDraggingPicBox({
+                                        pageNumber: img.pageNumber,
+                                        id: box.id,
+                                        mode: 'resize',
+                                        startX: e.clientX,
+                                        startY: e.clientY,
+                                        origX: box.x,
+                                        origY: box.y,
+                                        origW: box.width,
+                                        origH: box.height,
+                                        containerRect: parentRect,
+                                      });
+                                    }}
+                                    className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-[#4A1D5E] border-2 border-white cursor-nwse-resize"
+                                  />
+                                </>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
                       {pageText && (
-                        <div className="p-2 rounded bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-mono text-[#6E667D] max-h-28 overflow-y-auto whitespace-pre-wrap">
+                        <div className="p-2 rounded bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-mono text-[#6E667D] max-h-24 overflow-y-auto whitespace-pre-wrap">
                           {pageText}
                         </div>
                       )}

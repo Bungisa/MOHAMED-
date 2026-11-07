@@ -393,6 +393,8 @@ export default function App() {
           onSelectDocument={(doc) => setActiveDocument(doc)}
           onUploadNewPdf={handleUploadPdfFiles}
           onSaveUpdatedDocument={handleSaveUpdatedDocument}
+          onCloseEditor={() => setActiveView('dashboard')}
+          onNavigate={setActiveView}
         />
       )}
 

@@ -177,123 +177,133 @@ export const Layout: React.FC<LayoutProps> = ({
       </aside>
 
       {/* Main Content Area */}
-      <div className="flex-1 flex flex-col min-w-0 pb-16 lg:pb-0">
-        {/* Strict 3-Zone Top Bar Contract */}
-        <header className="h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
-          {/* Zone 1: Single text element wordmark / breadcrumb */}
-          <button
-            onClick={() => onNavigate('dashboard')}
-            className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
-          >
-            ScanPro Studio
-          </button>
-
-          {/* Zone 2: 4-5 concise single-line navigation links */}
-          <nav
-            className="hidden md:flex items-center gap-6 text-sm font-medium text-[#6E667D] dark:text-[#A39BB5]"
-            aria-label="Primary Workspace Navigation"
-          >
+      <div
+        className={`flex-1 flex flex-col min-w-0 ${
+          activeView === 'editor' ? 'pb-0 h-dvh overflow-hidden' : 'pb-16 lg:pb-0'
+        }`}
+      >
+        {/* Strict 3-Zone Top Bar Contract (hidden in full-screen Document Editor mode) */}
+        {activeView !== 'editor' && (
+          <header className="h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
+            {/* Zone 1: Single text element wordmark / breadcrumb */}
             <button
               onClick={() => onNavigate('dashboard')}
-              className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'dashboard'
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                  : ''
-              }`}
+              className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
             >
-              Dashboard
+              ScanPro Studio
             </button>
-            <button
-              onClick={() => onNavigate('scanner')}
-              className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'scanner'
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                  : ''
-              }`}
-            >
-              Scanner
-            </button>
-            <button
-              onClick={() => onNavigate('editor')}
-              className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'editor'
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                  : ''
-              }`}
-            >
-              PDF Editor
-            </button>
-            <button
-              onClick={() => onNavigate('tools')}
-              className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'tools'
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                  : ''
-              }`}
-            >
-              PDF Tools
-            </button>
-            <button
-              onClick={() => onNavigate('documents')}
-              className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                activeView === 'documents'
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                  : ''
-              }`}
-            >
-              Library
-            </button>
-          </nav>
 
-          {/* Zone 3: Theme cycle & Primary Action */}
-          <div className="flex items-center gap-3 shrink-0">
-            <button
-              onClick={cycleTheme}
-              title={`Theme: ${theme} (click to switch)`}
-              aria-label={`Current theme ${theme}. Click to switch theme`}
-              className="p-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
+            {/* Zone 2: 4-5 concise single-line navigation links */}
+            <nav
+              className="hidden md:flex items-center gap-6 text-sm font-medium text-[#6E667D] dark:text-[#A39BB5]"
+              aria-label="Primary Workspace Navigation"
             >
-              {theme === 'light' && <Sun className="w-4 h-4" />}
-              {theme === 'dark' && <Moon className="w-4 h-4" />}
-              {theme === 'system' && <Monitor className="w-4 h-4" />}
-            </button>
-            <button
-              onClick={onQuickScan}
-              className="px-4 py-2 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-            >
-              Scan Document
-            </button>
-          </div>
-        </header>
+              <button
+                onClick={() => onNavigate('dashboard')}
+                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeView === 'dashboard'
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
+                    : ''
+                }`}
+              >
+                Dashboard
+              </button>
+              <button
+                onClick={() => onNavigate('scanner')}
+                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeView === 'scanner'
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
+                    : ''
+                }`}
+              >
+                Scanner
+              </button>
+              <button
+                onClick={() => onNavigate('editor')}
+                className="hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                PDF Editor
+              </button>
+              <button
+                onClick={() => onNavigate('tools')}
+                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeView === 'tools'
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
+                    : ''
+                }`}
+              >
+                PDF Tools
+              </button>
+              <button
+                onClick={() => onNavigate('documents')}
+                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  activeView === 'documents'
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
+                    : ''
+                }`}
+              >
+                Library
+              </button>
+            </nav>
+
+            {/* Zone 3: Theme cycle & Primary Action */}
+            <div className="flex items-center gap-3 shrink-0">
+              <button
+                onClick={cycleTheme}
+                title={`Theme: ${theme} (click to switch)`}
+                aria-label={`Current theme ${theme}. Click to switch theme`}
+                className="p-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
+              >
+                {theme === 'light' && <Sun className="w-4 h-4" />}
+                {theme === 'dark' && <Moon className="w-4 h-4" />}
+                {theme === 'system' && <Monitor className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={onQuickScan}
+                className="px-4 py-2 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              >
+                Scan Document
+              </button>
+            </div>
+          </header>
+        )}
 
         {/* Main Workspace Viewport */}
-        <main className="flex-1 min-h-0 overflow-y-auto">{children}</main>
+        <main
+          className={`flex-1 min-h-0 ${
+            activeView === 'editor' ? 'overflow-hidden' : 'overflow-y-auto'
+          }`}
+        >
+          {children}
+        </main>
       </div>
 
-      {/* Mobile Bottom Navigation (<= 64px height, respects 15% mobile sticky cap) */}
-      <nav
-        aria-label="Mobile Bottom Navigation"
-        className="lg:hidden fixed bottom-0 inset-x-0 h-16 bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-t border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-around px-2 z-40"
-      >
-        {NAV_ITEMS.slice(0, 6).map((item) => {
-          const Icon = item.icon;
-          const isActive = activeView === item.id;
-          return (
-            <button
-              key={item.id}
-              onClick={() => onNavigate(item.id)}
-              className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                isActive
-                  ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-semibold'
-                  : 'text-[#6E667D] dark:text-[#A39BB5]'
-              }`}
-            >
-              <Icon className="w-5 h-5 mb-0.5 shrink-0" />
-              <span>{item.shortLabel}</span>
-            </button>
-          );
-        })}
-      </nav>
+      {/* Mobile Bottom Navigation (hidden in full-screen Document Editor mode because Editor has its own bottom dock) */}
+      {activeView !== 'editor' && (
+        <nav
+          aria-label="Mobile Bottom Navigation"
+          className="lg:hidden fixed bottom-0 inset-x-0 h-16 bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-t border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-around px-2 z-40"
+        >
+          {NAV_ITEMS.slice(0, 6).map((item) => {
+            const Icon = item.icon;
+            const isActive = activeView === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => onNavigate(item.id)}
+                className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  isActive
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-semibold'
+                    : 'text-[#6E667D] dark:text-[#A39BB5]'
+                }`}
+              >
+                <Icon className="w-5 h-5 mb-0.5 shrink-0" />
+                <span>{item.shortLabel}</span>
+              </button>
+            );
+          })}
+        </nav>
+      )}
     </div>
   );
 };

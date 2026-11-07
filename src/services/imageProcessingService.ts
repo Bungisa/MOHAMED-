@@ -354,17 +354,32 @@ export async function applyImageEnhancements(
 
   // Contrast factor
   const extraContrast =
-    options.filter === 'magic' ? 28 : options.filter === 'shadow-clean' ? 22 : 0;
+    options.filter === 'ocv-black'
+      ? 48
+      : options.filter === 'vivid-light'
+        ? 34
+        : options.filter === 'magic'
+          ? 28
+          : options.filter === 'shadow-clean'
+            ? 22
+            : 0;
   const totalContrast = clamp(options.contrast + extraContrast, -100, 100);
   const contrastFactor =
     (259 * (totalContrast + 255)) / (255 * (259 - totalContrast));
 
   const extraBrightness =
-    options.filter === 'magic' ? 10 : options.filter === 'shadow-clean' ? 16 : 0;
+    options.filter === 'vivid-light'
+      ? 18
+      : options.filter === 'magic'
+        ? 10
+        : options.filter === 'shadow-clean'
+          ? 16
+          : 0;
   const brightnessOffset = (options.brightness + extraBrightness) * 1.8;
 
-  if (options.filter === 'bw') {
-    // Compute integral image for fast adaptive local thresholding
+  if (options.filter === 'bw' || options.filter === 'ocv-black') {
+    // Compute effective luminance (lifting colored watermarks/stamps so they bleach to white in OCV BLACK)
+    // and build a 2D integral image for fast OpenCV-style local thresholding & watermark suppression
     const gray = new Uint8Array(w * h);
     const integral = new Float64Array((w + 1) * (h + 1));
 
@@ -372,34 +387,147 @@ export async function applyImageEnhancements(
       let rowSum = 0;
       for (let x = 0; x < w; x++) {
         const idx = (y * w + x) * 4;
-        const lum = Math.round(
-          0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2]
-        );
-        gray[y * w + x] = lum;
-        rowSum += lum;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+
+        let effLum = lum;
+        if (options.filter === 'ocv-black') {
+          // Chromatic watermark suppression: colored watermarks/stamps (red, blue, cyan, purple, etc.)
+          // have high chroma (max - min), whereas true black document ink is neutral (R ≈ G ≈ B).
+          const maxC = Math.max(r, g, b);
+          const minC = Math.min(r, g, b);
+          const chroma = maxC - minC;
+          if (chroma > 32 && lum > 42) {
+            effLum = Math.min(255, lum + chroma * 1.35);
+          }
+        }
+
+        const clampedLum = Math.max(0, Math.min(255, Math.round(effLum)));
+        gray[y * w + x] = clampedLum;
+        rowSum += clampedLum;
         integral[(y + 1) * (w + 1) + (x + 1)] =
           integral[y * (w + 1) + (x + 1)] + rowSum;
       }
     }
 
-    const radius = Math.max(12, Math.floor(Math.min(w, h) / 32));
-    const bias = 10 - options.brightness * 0.25;
+    const getBoxMean = (
+      cx: number,
+      cy: number,
+      rx: number,
+      ry: number
+    ): number => {
+      const x1 = Math.max(0, cx - rx);
+      const x2 = Math.min(w - 1, cx + rx);
+      const y1 = Math.max(0, cy - ry);
+      const y2 = Math.min(h - 1, cy + ry);
+      const count = (x2 - x1 + 1) * (y2 - y1 + 1);
+      const sum =
+        integral[(y2 + 1) * (w + 1) + (x2 + 1)] -
+        integral[y1 * (w + 1) + (x2 + 1)] -
+        integral[(y2 + 1) * (w + 1) + x1] +
+        integral[y1 * (w + 1) + x1];
+      return sum / count;
+    };
+
+    // In OCV BLACK, detect solid dark-filled watermark banner boxes (e.g. black/red rectangular stamp banners with inverted text)
+    // Normal text strokes are thin (1-4px), so their local mean in a medium window remains > 145.
+    // Solid filled watermark blocks have a very low local mean (< 112) over a sustained horizontal/vertical block.
+    let solidWatermarkMask: Uint8Array | null = null;
+    if (options.filter === 'ocv-black') {
+      const denseR = Math.max(7, Math.round(Math.min(w, h) / 80));
+      const coreMask = new Uint8Array(w * h);
+      let hasCorePixels = false;
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const denseMean = getBoxMean(x, y, denseR, denseR);
+          const wideMean = getBoxMean(x, y, denseR * 2, denseR);
+          if (denseMean < 110 && wideMean < 122) {
+            coreMask[y * w + x] = 1;
+            hasCorePixels = true;
+          }
+        }
+      }
+
+      if (hasCorePixels) {
+        // Build integral image of coreMask to fast-dilate and erase the entire solid watermark banner box & its borders
+        const maskIntegral = new Int32Array((w + 1) * (h + 1));
+        for (let y = 0; y < h; y++) {
+          let rSum = 0;
+          for (let x = 0; x < w; x++) {
+            rSum += coreMask[y * w + x];
+            maskIntegral[(y + 1) * (w + 1) + (x + 1)] =
+              maskIntegral[y * (w + 1) + (x + 1)] + rSum;
+          }
+        }
+        const dilateR = denseR + Math.max(4, Math.round(denseR * 0.6));
+        solidWatermarkMask = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++) {
+          const y1 = Math.max(0, y - dilateR);
+          const y2 = Math.min(h - 1, y + dilateR);
+          for (let x = 0; x < w; x++) {
+            const x1 = Math.max(0, x - dilateR);
+            const x2 = Math.min(w - 1, x + dilateR);
+            const mSum =
+              maskIntegral[(y2 + 1) * (w + 1) + (x2 + 1)] -
+              maskIntegral[y1 * (w + 1) + (x2 + 1)] -
+              maskIntegral[(y2 + 1) * (w + 1) + x1] +
+              maskIntegral[y1 * (w + 1) + x1];
+            if (mSum >= 6) {
+              solidWatermarkMask[y * w + x] = 1;
+            }
+          }
+        }
+      }
+    }
+
+    const radius =
+      options.filter === 'ocv-black'
+        ? Math.max(15, Math.floor(Math.min(w, h) / 26))
+        : Math.max(12, Math.floor(Math.min(w, h) / 32));
+    const bias =
+      (options.filter === 'ocv-black' ? 22 : 12) - options.brightness * 0.25;
+    // Global watermark bleach threshold: any grey/faint watermark lighter than watermarkCutoff disappears into pure white (255)
+    const watermarkCutoff = clamp(120 - options.brightness * 0.85, 50, 190);
 
     for (let y = 0; y < h; y++) {
-      const y1 = Math.max(0, y - radius);
-      const y2 = Math.min(h - 1, y + radius);
       for (let x = 0; x < w; x++) {
-        const x1 = Math.max(0, x - radius);
-        const x2 = Math.min(w - 1, x + radius);
-        const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-        const sum =
-          integral[(y2 + 1) * (w + 1) + (x2 + 1)] -
-          integral[y1 * (w + 1) + (x2 + 1)] -
-          integral[(y2 + 1) * (w + 1) + x1] +
-          integral[y1 * (w + 1) + x1];
-        const localMean = sum / count;
-        const val = gray[y * w + x] < localMean - bias ? 18 : 252;
-        const idx = (y * w + x) * 4;
+        const pIndex = y * w + x;
+        const idx = pIndex * 4;
+
+        if (solidWatermarkMask && solidWatermarkMask[pIndex] === 1) {
+          data[idx] = 255;
+          data[idx + 1] = 255;
+          data[idx + 2] = 255;
+          continue;
+        }
+
+        const localMean = getBoxMean(x, y, radius, radius);
+        const px = gray[pIndex];
+
+        let val: number;
+        if (options.filter === 'ocv-black') {
+          // 1. Bleach all light-grey, mid-grey, and colored watermarks above watermarkCutoff to pure white (#FFFFFF)
+          if (px > watermarkCutoff) {
+            val = 255;
+          } else {
+            // 2. For dark document ink, apply crisp adaptive thresholding
+            const diff = localMean - bias - px;
+            if (diff > 12) {
+              val = 5;
+            } else if (diff > 0) {
+              const t = diff / 12;
+              val = Math.round(255 - t * 250);
+            } else {
+              val = 255;
+            }
+          }
+        } else {
+          val = px < localMean - bias && px < 165 ? 18 : 252;
+        }
+
         data[idx] = val;
         data[idx + 1] = val;
         data[idx + 2] = val;
@@ -411,11 +539,12 @@ export async function applyImageEnhancements(
       let g = data[i + 1];
       let b = data[i + 2];
 
-      if (options.filter === 'shadow-clean') {
-        // Lift mid-to-high luminance paper background toward clean white
+      if (options.filter === 'shadow-clean' || options.filter === 'vivid-light') {
+        // Lift mid-to-high luminance paper background toward clean luminous white
         const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-        if (lum > 135) {
-          const boost = ((lum - 135) / 120) * 42;
+        if (lum > 140) {
+          const boost =
+            ((lum - 140) / 115) * (options.filter === 'vivid-light' ? 48 : 42);
           r = Math.min(255, r + boost);
           g = Math.min(255, g + boost);
           b = Math.min(255, b + boost);
@@ -430,6 +559,19 @@ export async function applyImageEnhancements(
       if (options.filter === 'grayscale') {
         const lum = 0.299 * r + 0.587 * g + 0.114 * b;
         r = g = b = lum;
+      } else if (options.filter === 'vivid-light') {
+        // Vivid Light: Boost color saturation for seals, coats of arms, and colored ink while keeping dark text deep
+        const avg = (r + g + b) / 3;
+        const satFactor = 1.48;
+        r = avg + (r - avg) * satFactor;
+        g = avg + (g - avg) * satFactor;
+        b = avg + (b - avg) * satFactor;
+        const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+        if (lum < 85) {
+          r *= 0.78;
+          g *= 0.78;
+          b *= 0.78;
+        }
       } else if (options.filter === 'magic') {
         // Whiten near-white background for crisp document look
         const lum = 0.299 * r + 0.587 * g + 0.114 * b;

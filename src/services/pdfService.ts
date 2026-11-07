@@ -276,7 +276,7 @@ export async function extractAllPdfText(
 export async function createPdfFromImages(
   imageDataUrls: string[],
   options: {
-    pageSize: 'A4' | 'Letter' | 'Fit';
+    pageSize: 'A4' | 'Letter' | 'Legal' | 'Fit';
     marginPt?: number;
   } = { pageSize: 'A4', marginPt: 24 }
 ): Promise<Uint8Array> {
@@ -301,6 +301,9 @@ export async function createPdfFromImages(
     } else if (options.pageSize === 'Letter') {
       pageW = 612;
       pageH = 792;
+    } else if (options.pageSize === 'Legal') {
+      pageW = 612;
+      pageH = 1008;
     }
 
     const page = pdfDoc.addPage([pageW, pageH]);
@@ -359,6 +362,7 @@ export async function bakeAnnotationsIntoPdf(
     pageNumberPosition?: 'bottom-center' | 'bottom-right';
     watermarkText?: string;
     watermarkOpacity?: number;
+    filteredPageDataUrls?: Record<number, string>;
   }
 ): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
@@ -375,23 +379,72 @@ export async function bakeAnnotationsIntoPdf(
     const page = pages[i];
     const { width, height } = page.getSize();
 
+    // If a Color Filter (e.g., OCV BLACK, Vivid Light) or Brightness switch was applied to this page, embed the processed page base image
+    const filteredDataUrl = options?.filteredPageDataUrls?.[pageNumber];
+    if (filteredDataUrl) {
+      try {
+        const isPng = filteredDataUrl.startsWith('data:image/png');
+        const b64 = filteredDataUrl.split(',')[1];
+        const imgBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        const embeddedFiltered = isPng
+          ? await pdfDoc.embedPng(imgBytes)
+          : await pdfDoc.embedJpg(imgBytes);
+        page.drawImage(embeddedFiltered, {
+          x: 0,
+          y: 0,
+          width,
+          height,
+          opacity: 1,
+        });
+      } catch (err) {
+        console.error('Failed to embed filtered page image:', err);
+      }
+    }
+
     const pageAnns = annotations.filter((a) => a.pageNumber === pageNumber);
 
     for (const ann of pageAnns) {
-      // If this annotation replaced or moved an existing native text block, mask its original footprint first
+      // If this annotation replaced or moved an existing native element, restore the background at its original footprint
       if (ann.origRect) {
-        const ox = ann.origRect.x * width - 2;
-        const ow = ann.origRect.width * width + 4;
-        const oh = ann.origRect.height * height + 3;
-        const oy = height - ann.origRect.y * height - oh + 1.5;
-        page.drawRectangle({
-          x: ox,
-          y: oy,
-          width: ow,
-          height: oh,
-          color: rgb(1, 1, 1),
-          opacity: 1,
-        });
+        const ox = ann.origRect.x * width;
+        const ow = ann.origRect.width * width;
+        const oh = ann.origRect.height * height;
+        const oy = height - ann.origRect.y * height - oh;
+        if (ann.origBgDataUrl) {
+          try {
+            const isPng = ann.origBgDataUrl.startsWith('data:image/png');
+            const b64 = ann.origBgDataUrl.split(',')[1];
+            const bgBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+            const embeddedBg = isPng
+              ? await pdfDoc.embedPng(bgBytes)
+              : await pdfDoc.embedJpg(bgBytes);
+            page.drawImage(embeddedBg, {
+              x: ox,
+              y: oy,
+              width: ow,
+              height: oh,
+              opacity: 1,
+            });
+          } catch {
+            page.drawRectangle({
+              x: ox,
+              y: oy,
+              width: ow,
+              height: oh,
+              color: rgb(1, 1, 1),
+              opacity: 1,
+            });
+          }
+        } else {
+          page.drawRectangle({
+            x: ox - 1,
+            y: oy - 1,
+            width: ow + 2,
+            height: oh + 2,
+            color: rgb(1, 1, 1),
+            opacity: 1,
+          });
+        }
       }
 
       const pdfX = ann.x * width;
@@ -508,54 +561,67 @@ export async function bakeAnnotationsIntoPdf(
             opacity,
           });
         }
-      } else if (ann.type === 'text' && ann.text) {
-        if (ann.backgroundColor && ann.backgroundColor !== 'transparent') {
+      } else if (ann.type === 'text') {
+        const hasBg =
+          ann.backgroundColor && ann.backgroundColor !== 'transparent';
+        const hasBorder = Boolean(
+          ann.fillColor && ann.fillColor !== 'transparent'
+        );
+        if (hasBg || hasBorder) {
           page.drawRectangle({
-            x: pdfX - 2,
-            y: pdfY - 2,
-            width: pdfW + 4,
-            height: pdfH + 4,
-            color: hexToRgbColor(ann.backgroundColor),
-            opacity: 1,
-          });
-        }
-        const fontSize = ann.fontSize || 12;
-        const chosenFont =
-          ann.fontWeight === 'bold' && ann.fontStyle === 'italic'
-            ? fontBoldItalic
-            : ann.fontWeight === 'bold'
-              ? fontBold
-              : ann.fontStyle === 'italic'
-                ? fontItalic
-                : fontRegular;
-        const lines = ann.text.split('\n');
-        lines.forEach((line, idx) => {
-          page.drawText(line, {
             x: pdfX,
-            y: height - ann.y * height - fontSize * (idx + 0.9),
-            size: fontSize,
-            font: chosenFont,
-            color: strokeColor,
+            y: pdfY,
+            width: pdfW,
+            height: pdfH,
+            color: hasBg ? hexToRgbColor(ann.backgroundColor!) : undefined,
+            borderColor: hasBorder ? hexToRgbColor(ann.fillColor!) : undefined,
+            borderWidth: hasBorder ? ann.strokeWidth || 1.5 : 0,
             opacity,
           });
-        });
+        }
+        if (ann.text) {
+          const fontSize = ann.fontSize || 14;
+          const chosenFont =
+            ann.fontWeight === 'bold' && ann.fontStyle === 'italic'
+              ? fontBoldItalic
+              : ann.fontWeight === 'bold'
+                ? fontBold
+                : ann.fontStyle === 'italic'
+                  ? fontItalic
+                  : fontRegular;
+          const lines = ann.text.split('\n');
+          lines.forEach((line, idx) => {
+            page.drawText(line, {
+              x: pdfX + 4,
+              y: height - ann.y * height - fontSize * (idx + 0.95) - 3,
+              size: fontSize,
+              font: chosenFont,
+              color: strokeColor,
+              opacity,
+            });
+          });
+        }
       } else if (ann.type === 'comment' && ann.text) {
+        const boxFill =
+          ann.backgroundColor && ann.backgroundColor !== 'transparent'
+            ? hexToRgbColor(ann.backgroundColor)
+            : rgb(1, 0.97, 0.82);
         page.drawRectangle({
           x: pdfX,
           y: pdfY,
           width: Math.max(pdfW, 140),
           height: Math.max(pdfH, 48),
-          color: rgb(1, 0.97, 0.82),
-          borderColor: rgb(0.85, 0.65, 0.15),
-          borderWidth: 1,
-          opacity: 0.95,
+          color: boxFill,
+          borderColor: strokeColor,
+          borderWidth: 1.2,
+          opacity: 0.96,
         });
         page.drawText(`Note: ${ann.text.slice(0, 85)}`, {
           x: pdfX + 6,
           y: pdfY + Math.max(pdfH, 48) - 16,
           size: 9.5,
           font: fontRegular,
-          color: rgb(0.2, 0.15, 0.05),
+          color: strokeColor,
         });
       } else if (ann.type === 'image' && ann.imageDataUrl) {
         try {
@@ -721,6 +787,161 @@ export async function compressPdfDocument(
   return outDoc;
 }
 
+export type SaveCompressionQuality = 'low' | 'medium' | 'good' | 'high';
+
+/**
+ * Compresses a PDF according to the Save & Compress modal settings:
+ * Document Quality ('low' | 'medium' | 'good' | 'high'), High Compression switch,
+ * and target PDF Page Size ('A4' | 'Letter' | 'Legal' | 'Fit').
+ */
+export async function compressPdfWithOptions(
+  pdfBytes: Uint8Array,
+  options: {
+    quality: SaveCompressionQuality;
+    highCompression: boolean;
+    pageSize?: 'A4' | 'Letter' | 'Legal' | 'Fit';
+  }
+): Promise<Uint8Array> {
+  const { quality, highCompression, pageSize = 'A4' } = options;
+
+  // If High quality without High Compression and standard A4, optimize object streams first
+  if (quality === 'high' && !highCompression && pageSize === 'A4') {
+    const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    return doc.save({ useObjectStreams: true });
+  }
+
+  const qualityMap: Record<
+    SaveCompressionQuality,
+    { scale: number; jpegQuality: number }
+  > = {
+    low: {
+      scale: highCompression ? 0.65 : 0.78,
+      jpegQuality: highCompression ? 0.32 : 0.42,
+    },
+    medium: {
+      scale: highCompression ? 0.85 : 1.0,
+      jpegQuality: highCompression ? 0.48 : 0.58,
+    },
+    good: {
+      scale: highCompression ? 1.05 : 1.22,
+      jpegQuality: highCompression ? 0.62 : 0.74,
+    },
+    high: {
+      scale: highCompression ? 1.15 : 1.45,
+      jpegQuality: highCompression ? 0.72 : 0.88,
+    },
+  };
+
+  const { scale, jpegQuality } = qualityMap[quality];
+  const pageCount = await getPdfPageCount(pdfBytes);
+  const compressedImages: string[] = [];
+
+  for (let i = 1; i <= pageCount; i++) {
+    const rendered = await renderPdfPage(
+      pdfBytes,
+      i,
+      scale,
+      'image/jpeg',
+      jpegQuality
+    );
+    compressedImages.push(rendered.dataUrl);
+  }
+
+  return createPdfFromImages(compressedImages, {
+    pageSize,
+    marginPt: 0,
+  });
+}
+
+/**
+ * Renders all pages of a PDF (or takes rendered page images) and exports either
+ * the first page JPEG or a vertically stitched Long Image JPEG as bytes.
+ */
+export async function exportPdfAsJpegBytes(
+  pdfBytes: Uint8Array,
+  options: {
+    longImage: boolean;
+    quality: SaveCompressionQuality;
+    highCompression: boolean;
+  }
+): Promise<{ bytes: Uint8Array; extension: 'jpg' }> {
+  const jpegQ =
+    options.quality === 'low'
+      ? 0.45
+      : options.quality === 'medium'
+        ? 0.65
+        : options.quality === 'good'
+          ? 0.8
+          : 0.92;
+  const finalQ = options.highCompression ? Math.max(0.35, jpegQ - 0.15) : jpegQ;
+  const scale = options.highCompression ? 1.1 : 1.4;
+  const pageCount = await getPdfPageCount(pdfBytes);
+
+  if (!options.longImage || pageCount <= 1) {
+    const first = await renderPdfPage(
+      pdfBytes,
+      1,
+      scale,
+      'image/jpeg',
+      finalQ
+    );
+    const base64 = first.dataUrl.split(',')[1];
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    return { bytes, extension: 'jpg' };
+  }
+
+  const loadedImgs: HTMLImageElement[] = [];
+  for (let i = 1; i <= pageCount; i++) {
+    const rendered = await renderPdfPage(
+      pdfBytes,
+      i,
+      scale,
+      'image/jpeg',
+      finalQ
+    );
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = reject;
+      el.src = rendered.dataUrl;
+    });
+    loadedImgs.push(img);
+  }
+
+  const maxW = Math.max(...loadedImgs.map((img) => img.width), 600);
+  const gap = 12;
+  const totalH =
+    loadedImgs.reduce(
+      (acc, img) => acc + Math.round(img.height * (maxW / img.width)),
+      0
+    ) +
+    gap * (loadedImgs.length - 1);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = maxW;
+  canvas.height = totalH;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Could not create canvas for Long Image export.');
+  }
+  ctx.fillStyle = '#F2EFF6';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let curY = 0;
+  for (const img of loadedImgs) {
+    const drawH = Math.round(img.height * (maxW / img.width));
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, curY, maxW, drawH);
+    ctx.drawImage(img, 0, curY, maxW, drawH);
+    curY += drawH + gap;
+  }
+
+  const dataUrl = canvas.toDataURL('image/jpeg', finalQ);
+  const base64 = dataUrl.split(',')[1];
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  return { bytes, extension: 'jpg' };
+}
+
 /**
  * Triggers a clean browser file download for a Uint8Array or Blob.
  */
@@ -742,6 +963,7 @@ export function downloadBytesAsFile(
 
 export interface EmbeddedPdfImageInfo {
   key: string;
+  pdfXObjectKey?: string;
   kind?: 'picture' | 'box';
   label?: string;
   isFullPageBackground?: boolean;
@@ -767,9 +989,9 @@ function multiplyTransformMatrices(m1: number[], m2: number[]): number[] {
 /**
  * Inspects a 1-indexed PDF page using PDF.js operator list CTM tracking (and pdf-lib XObject metadata)
  * to return all painted pictures and rectangular boxes on the page with their exact normalized
- * bounding boxes (x, y, normWidth, normHeight).
+ * bounding boxes (x, y, normWidth, normHeight) and underlying PDF XObject resource keys.
  * Sorted from largest area to smallest area so smaller pictures/boxes always render on top
- * of full-page scan backgrounds and can be individually clicked and removed.
+ * of full-page scan backgrounds and can be individually clicked, manipulated, and removed.
  */
 export async function getEmbeddedPdfImagesOnPage(
   pdfBytes: Uint8Array,
@@ -783,8 +1005,13 @@ export async function getEmbeddedPdfImagesOnPage(
     const page = pages[pageNumber - 1];
     const { width: pageW, height: pageH } = page.getSize();
 
-    // Collect XObject pixel dimensions if present in page resources
-    const xObjectDims: { key: string; width: number; height: number }[] = [];
+    // Collect XObject pixel dimensions & keys if present in page resources
+    const xObjectDims: {
+      key: string;
+      width: number;
+      height: number;
+      matched?: boolean;
+    }[] = [];
     const resources = page.node.Resources();
     if (resources) {
       const xObjectRef = resources.get(PDFName.of('XObject'));
@@ -807,6 +1034,7 @@ export async function getEmbeddedPdfImagesOnPage(
               key: keyName.toString().replace(/^\//, ''),
               width: wObj ? wObj.asNumber() : 0,
               height: hObj ? hObj.asNumber() : 0,
+              matched: false,
             });
           }
         }
@@ -869,19 +1097,36 @@ export async function getEmbeddedPdfImagesOnPage(
               Math.min(1 - normY, (maxY - minY) / pageH)
             );
 
-            const dim = xObjectDims[picCount];
+            // Match painted image with its PDF XObject resource by pixel dimensions first, then sequential order
+            const opW =
+              Array.isArray(args) && typeof args[1] === 'number' ? args[1] : 0;
+            const opH =
+              Array.isArray(args) && typeof args[2] === 'number' ? args[2] : 0;
+            let matchedDim = xObjectDims.find(
+              (d) =>
+                !d.matched && opW > 0 && d.width === opW && d.height === opH
+            );
+            if (!matchedDim) {
+              matchedDim =
+                xObjectDims.find((d) => !d.matched) || xObjectDims[picCount];
+            }
+            if (matchedDim) {
+              matchedDim.matched = true;
+            }
+
             const isFullBg = normW >= 0.92 && normH >= 0.92;
             picCount++;
 
             detectedItems.push({
               key: `pic-p${pageNumber}-${picCount}`,
+              pdfXObjectKey: matchedDim?.key,
               kind: 'picture',
               label: isFullBg
                 ? `Page Background Scan #${picCount}`
                 : `Picture #${picCount}`,
               isFullPageBackground: isFullBg,
-              width: dim?.width || Math.round(normW * pageW),
-              height: dim?.height || Math.round(normH * pageH),
+              width: matchedDim?.width || opW || Math.round(normW * pageW),
+              height: matchedDim?.height || opH || Math.round(normH * pageH),
               x: normX,
               y: normY,
               normWidth: normW,
@@ -901,14 +1146,10 @@ export async function getEmbeddedPdfImagesOnPage(
               const rawMaxX = bounds[2];
               const rawMaxY = bounds[3];
 
-              const p0x =
-                ctm[0] * rawMinX + ctm[2] * rawMinY + ctm[4];
-              const p0y =
-                ctm[1] * rawMinX + ctm[3] * rawMinY + ctm[5];
-              const p1x =
-                ctm[0] * rawMaxX + ctm[2] * rawMaxY + ctm[4];
-              const p1y =
-                ctm[1] * rawMaxX + ctm[3] * rawMaxY + ctm[5];
+              const p0x = ctm[0] * rawMinX + ctm[2] * rawMinY + ctm[4];
+              const p0y = ctm[1] * rawMinX + ctm[3] * rawMinY + ctm[5];
+              const p1x = ctm[0] * rawMaxX + ctm[2] * rawMaxY + ctm[4];
+              const p1y = ctm[1] * rawMaxX + ctm[3] * rawMaxY + ctm[5];
 
               const minX = Math.min(p0x, p1x);
               const maxX = Math.max(p0x, p1x);
@@ -920,13 +1161,12 @@ export async function getEmbeddedPdfImagesOnPage(
               const normW = Math.min(1 - normX, (maxX - minX) / pageW);
               const normH = Math.min(1 - normY, (maxY - minY) / pageH);
 
-              // Include meaningful boxes/frames (skip thin lines < 1.5% height/width and full-page white backgrounds)
+              // Include meaningful boxes/frames (skip thin lines < 1.5% height/width and full-page backgrounds)
               if (
                 normW >= 0.035 &&
                 normH >= 0.02 &&
                 !(normW >= 0.92 && normH >= 0.92)
               ) {
-                // Avoid duplicate boxes at the exact same position
                 const duplicate = detectedItems.some(
                   (d) =>
                     Math.abs(d.x - normX) < 0.01 &&
@@ -965,6 +1205,7 @@ export async function getEmbeddedPdfImagesOnPage(
       xObjectDims.forEach((dim, idx) => {
         detectedItems.push({
           key: `pic-p${pageNumber}-${idx + 1}`,
+          pdfXObjectKey: dim.key,
           kind: 'picture',
           label: `Picture #${idx + 1}`,
           isFullPageBackground: false,
@@ -978,8 +1219,7 @@ export async function getEmbeddedPdfImagesOnPage(
       });
     }
 
-    // If there are smaller pictures/boxes on the page, filter out full-page background scans (>= 92% of page)
-    // so clicking on the page selects the attached picture or box rather than the entire page background.
+    // Filter out full-page background scans (>= 92% of page) when smaller pictures/boxes exist on the page
     const nonFullPageItems = detectedItems.filter(
       (item) => !item.isFullPageBackground
     );
@@ -999,14 +1239,15 @@ export async function getEmbeddedPdfImagesOnPage(
 }
 
 /**
- * Removes a specific embedded Image XObject (by key) or all embedded Image XObjects
- * from a 1-indexed PDF page by replacing the Image XObject reference with an empty
- * no-op Form XObject so all PDF viewers cleanly omit the picture.
+ * Removes a specific embedded Image XObject (by pdfXObjectKey) from a 1-indexed PDF page
+ * by replacing its XObject dictionary entry with an empty transparent Form XObject.
+ * When the page is re-rendered, the removed image disappears completely and the true
+ * original PDF background underneath (text, lines, colors, or page scan) is preserved!
  */
 export async function removeEmbeddedPdfImageFromPage(
   pdfBytes: Uint8Array,
   pageNumber: number,
-  targetKey?: string
+  targetXObjectKey?: string
 ): Promise<{ pdfBytes: Uint8Array; removedCount: number }> {
   const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
   const pages = pdfDoc.getPages();
@@ -1026,16 +1267,16 @@ export async function removeEmbeddedPdfImageFromPage(
     return { pdfBytes, removedCount: 0 };
   }
 
-  // Create a valid empty Form XObject replacement so `/<Name> Do` operators in the page stream become clean no-ops
+  // Create a valid empty Form XObject replacement so `/<Name> Do` operators in the page stream become transparent no-ops
   const emptyFormStream = pdfDoc.context.formXObject([], {
-    BBox: [0, 0, 1, 1],
+    BBox: [0, 0, 0, 0],
   });
   const emptyFormRef = pdfDoc.context.register(emptyFormStream);
 
   let removedCount = 0;
   for (const [keyName, valObj] of xObjectDict.entries()) {
     const cleanKey = keyName.toString().replace(/^\//, '');
-    if (targetKey && cleanKey !== targetKey) continue;
+    if (targetXObjectKey && cleanKey !== targetXObjectKey) continue;
 
     const stream = pdfDoc.context.lookupMaybe(valObj, PDFStream);
     if (!stream) continue;
@@ -1045,6 +1286,10 @@ export async function removeEmbeddedPdfImageFromPage(
       xObjectDict.set(keyName, emptyFormRef);
       removedCount++;
     }
+  }
+
+  if (removedCount === 0) {
+    return { pdfBytes, removedCount: 0 };
   }
 
   const saved = await pdfDoc.save();
@@ -1089,4 +1334,263 @@ export async function cropRegionFromDataUrl(
     img.src = sourceDataUrl;
   });
 }
+
+/**
+ * Reconstructs the natural background underneath a removed or moved object (`normRect`)
+ * by sampling the perimeter pixels just outside the 4 edges (top, bottom, left, right),
+ * filtering out dark text/line ink strokes so only the local paper/background tone is used,
+ * and smoothly interpolating the background across the rectangle.
+ */
+export async function reconstructBackgroundPatchFromDataUrl(
+  sourceDataUrl: string,
+  normRect: { x: number; y: number; width: number; height: number }
+): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const fullCanvas = document.createElement('canvas');
+      fullCanvas.width = img.width;
+      fullCanvas.height = img.height;
+      const fullCtx = fullCanvas.getContext('2d');
+      if (!fullCtx) {
+        resolve('');
+        return;
+      }
+      fullCtx.drawImage(img, 0, 0);
+
+      const sx = Math.max(0, Math.round(normRect.x * img.width));
+      const sy = Math.max(0, Math.round(normRect.y * img.height));
+      const sw = Math.max(
+        4,
+        Math.min(img.width - sx, Math.round(normRect.width * img.width))
+      );
+      const sh = Math.max(
+        4,
+        Math.min(img.height - sy, Math.round(normRect.height * img.height))
+      );
+
+      // Sample a small band outside the bounding box
+      const margin = 6;
+      const bx0 = Math.max(0, sx - margin);
+      const by0 = Math.max(0, sy - margin);
+      const bx1 = Math.min(img.width - 1, sx + sw + margin - 1);
+      const by1 = Math.min(img.height - 1, sy + sh + margin - 1);
+      const bw = Math.max(1, bx1 - bx0 + 1);
+      const bh = Math.max(1, by1 - by0 + 1);
+
+      const imgData = fullCtx.getImageData(bx0, by0, bw, bh).data;
+
+      const getPixel = (gx: number, gy: number): [number, number, number] => {
+        const cx = Math.max(bx0, Math.min(bx1, gx)) - bx0;
+        const cy = Math.max(by0, Math.min(by1, gy)) - by0;
+        const idx = (cy * bw + cx) * 4;
+        return [imgData[idx], imgData[idx + 1], imgData[idx + 2]];
+      };
+
+      // Pick the local background color from a small sample set by choosing the 75th-percentile brightest pixel
+      // (this ignores dark ink/border strokes and captures the true paper/background color)
+      const pickBackgroundTone = (
+        samples: [number, number, number][]
+      ): [number, number, number] => {
+        if (samples.length === 0) return [255, 255, 255];
+        const sorted = [...samples].sort(
+          (a, b) => a[0] + a[1] + a[2] - (b[0] + b[1] + b[2])
+        );
+        const pickIdx = Math.min(
+          sorted.length - 1,
+          Math.floor(sorted.length * 0.75)
+        );
+        return sorted[pickIdx];
+      };
+
+      const topEdge: [number, number, number][] = new Array(sw);
+      const bottomEdge: [number, number, number][] = new Array(sw);
+      for (let x = 0; x < sw; x++) {
+        const gx = sx + x;
+        const tSamples: [number, number, number][] = [];
+        const bSamples: [number, number, number][] = [];
+        for (let d = 2; d <= margin; d++) {
+          for (let dx = -2; dx <= 2; dx += 2) {
+            tSamples.push(getPixel(gx + dx, sy - d));
+            bSamples.push(getPixel(gx + dx, sy + sh - 1 + d));
+          }
+        }
+        topEdge[x] = pickBackgroundTone(tSamples);
+        bottomEdge[x] = pickBackgroundTone(bSamples);
+      }
+
+      const leftEdge: [number, number, number][] = new Array(sh);
+      const rightEdge: [number, number, number][] = new Array(sh);
+      for (let y = 0; y < sh; y++) {
+        const gy = sy + y;
+        const lSamples: [number, number, number][] = [];
+        const rSamples: [number, number, number][] = [];
+        for (let d = 2; d <= margin; d++) {
+          for (let dy = -2; dy <= 2; dy += 2) {
+            lSamples.push(getPixel(sx - d, gy + dy));
+            rSamples.push(getPixel(sx + sw - 1 + d, gy + dy));
+          }
+        }
+        leftEdge[y] = pickBackgroundTone(lSamples);
+        rightEdge[y] = pickBackgroundTone(rSamples);
+      }
+
+      const patchCanvas = document.createElement('canvas');
+      patchCanvas.width = sw;
+      patchCanvas.height = sh;
+      const patchCtx = patchCanvas.getContext('2d');
+      if (!patchCtx) {
+        resolve('');
+        return;
+      }
+
+      const outImage = patchCtx.createImageData(sw, sh);
+      const outData = outImage.data;
+
+      for (let y = 0; y < sh; y++) {
+        const v = sh > 1 ? y / (sh - 1) : 0.5;
+        const wyTop = 1 / Math.max(0.02, v);
+        const wyBot = 1 / Math.max(0.02, 1 - v);
+        const lCol = leftEdge[y];
+        const rCol = rightEdge[y];
+
+        for (let x = 0; x < sw; x++) {
+          const u = sw > 1 ? x / (sw - 1) : 0.5;
+          const wxLeft = 1 / Math.max(0.02, u);
+          const wxRight = 1 / Math.max(0.02, 1 - u);
+          const wSum = wyTop + wyBot + wxLeft + wxRight;
+
+          const tCol = topEdge[x];
+          const bCol = bottomEdge[x];
+
+          const r = Math.round(
+            (tCol[0] * wyTop +
+              bCol[0] * wyBot +
+              lCol[0] * wxLeft +
+              rCol[0] * wxRight) /
+              wSum
+          );
+          const g = Math.round(
+            (tCol[1] * wyTop +
+              bCol[1] * wyBot +
+              lCol[1] * wxLeft +
+              rCol[1] * wxRight) /
+              wSum
+          );
+          const b = Math.round(
+            (tCol[2] * wyTop +
+              bCol[2] * wyBot +
+              lCol[2] * wxLeft +
+              rCol[2] * wxRight) /
+              wSum
+          );
+
+          const pIdx = (y * sw + x) * 4;
+          outData[pIdx] = r;
+          outData[pIdx + 1] = g;
+          outData[pIdx + 2] = b;
+          outData[pIdx + 3] = 255;
+        }
+      }
+
+      patchCtx.putImageData(outImage, 0, 0);
+      resolve(patchCanvas.toDataURL('image/png'));
+    };
+    img.onerror = () => resolve('');
+    img.src = sourceDataUrl;
+  });
+}
+
+export interface PictureTextBoxOverlay {
+  id: string;
+  x: number; // normalized 0..1
+  y: number; // normalized 0..1
+  width: number; // normalized 0..1
+  height: number; // normalized 0..1
+  text: string;
+  textColor: string;
+  boxBgColor: string; // 'transparent' or hex color
+  boxBorderColor?: string; // 'transparent' or hex color
+  fontSize: number;
+  fontWeight?: 'normal' | 'bold';
+  fontStyle?: 'normal' | 'italic';
+}
+
+/**
+ * Renders one or more colored text boxes directly onto a converted PDF picture (PNG/JPG Data URL)
+ * so the user can download the annotated picture or rebuild a PDF from the edited pictures.
+ */
+export async function compositeTextBoxesOntoImageDataUrl(
+  baseImageDataUrl: string,
+  textBoxes: PictureTextBoxOverlay[],
+  format: 'image/png' | 'image/jpeg' = 'image/png',
+  quality = 0.94
+): Promise<string> {
+  if (!textBoxes || textBoxes.length === 0) return baseImageDataUrl;
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.width;
+      canvas.height = img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(baseImageDataUrl);
+        return;
+      }
+
+      ctx.drawImage(img, 0, 0);
+
+      // Scale factor relative to a standard 600pt PDF page width
+      const scaleFactor = img.width / 595.28;
+
+      for (const box of textBoxes) {
+        const bx = box.x * img.width;
+        const by = box.y * img.height;
+        const bw = box.width * img.width;
+        const bh = box.height * img.height;
+
+        if (box.boxBgColor && box.boxBgColor !== 'transparent') {
+          ctx.fillStyle = box.boxBgColor;
+          ctx.fillRect(bx, by, bw, bh);
+        }
+
+        if (box.boxBorderColor && box.boxBorderColor !== 'transparent') {
+          ctx.strokeStyle = box.boxBorderColor;
+          ctx.lineWidth = Math.max(1.5, 1.5 * scaleFactor);
+          ctx.strokeRect(bx, by, bw, bh);
+        }
+
+        if (box.text) {
+          const pxFontSize = Math.max(
+            10,
+            Math.round((box.fontSize || 16) * scaleFactor)
+          );
+          const styleStr = box.fontStyle === 'italic' ? 'italic ' : '';
+          const weightStr = box.fontWeight === 'bold' ? 'bold ' : '';
+          ctx.font = `${styleStr}${weightStr}${pxFontSize}px Inter, Helvetica, Arial, sans-serif`;
+          ctx.fillStyle = box.textColor || '#14101B';
+          ctx.textBaseline = 'top';
+
+          const padding = Math.round(5 * scaleFactor);
+          const lines = box.text.split('\n');
+          lines.forEach((line, idx) => {
+            ctx.fillText(
+              line,
+              bx + padding,
+              by + padding + idx * Math.round(pxFontSize * 1.25)
+            );
+          });
+        }
+      }
+
+      resolve(canvas.toDataURL(format, quality));
+    };
+    img.onerror = () => resolve(baseImageDataUrl);
+    img.src = baseImageDataUrl;
+  });
+}
+
 

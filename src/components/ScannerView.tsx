@@ -48,6 +48,8 @@ interface ScannerViewProps {
 type WorkflowStep = 'capture' | 'crop' | 'enhance' | 'export';
 
 const FILTER_OPTIONS: { id: ScanFilterType; label: string; desc: string }[] = [
+  { id: 'ocv-black', label: 'OCV BLACK', desc: 'Deep jet-black ink & pure white' },
+  { id: 'vivid-light', label: 'Vivid Light', desc: 'Vivid color & luminous contrast' },
   { id: 'magic', label: 'Magic Color', desc: 'Crisp text & whitened paper' },
   { id: 'bw', label: 'B&W Document', desc: 'Adaptive high-contrast ink' },
   { id: 'shadow-clean', label: 'Shadow Clean', desc: 'Evens out lighting' },
