@@ -1,0 +1,6 @@
+{
+  "name": "ScanPro Studio",
+  "description": "All-in-one professional document scanner, PDF editor, OCR engine, and local-first document management platform.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
