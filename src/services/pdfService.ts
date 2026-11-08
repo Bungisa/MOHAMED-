@@ -273,7 +273,88 @@ export async function extractAllPdfText(
 }
 
 /**
+ * Normalizes any byte buffer (Uint8Array, ArrayBuffer, or IndexedDB deserialized view)
+ * into a clean, contiguous 0-offset Uint8Array.
+ */
+export function toCleanUint8Array(input: Uint8Array | ArrayBuffer): Uint8Array {
+  if (input instanceof Uint8Array) {
+    if (
+      input.byteOffset === 0 &&
+      input.byteLength === input.buffer.byteLength
+    ) {
+      return new Uint8Array(input);
+    }
+    return new Uint8Array(
+      input.buffer.slice(input.byteOffset, input.byteOffset + input.byteLength)
+    );
+  }
+  if (input instanceof ArrayBuffer) {
+    return new Uint8Array(input.slice(0));
+  }
+  return new Uint8Array(input as ArrayLike<number>);
+}
+
+/**
+ * Encodes a binary Uint8Array into a self-contained `data:<mimeType>;base64,...` URI
+ * in 32KB chunks so browser downloads work inside cross-origin iframes and authenticated
+ * Cloud Run proxies without ever hitting network auth redirects or blob partition errors.
+ */
+export function bytesToDataUrl(
+  bytes: Uint8Array,
+  mimeType = 'application/pdf'
+): string {
+  const safeBytes = toCleanUint8Array(bytes);
+  const chunkSize = 0x8000;
+  const chunks: string[] = [];
+  for (let i = 0; i < safeBytes.length; i += chunkSize) {
+    const sub = safeBytes.subarray(i, i + chunkSize);
+    chunks.push(String.fromCharCode.apply(null, sub as unknown as number[]));
+  }
+  const base64 = btoa(chunks.join(''));
+  return `data:${mimeType};base64,${base64}`;
+}
+
+/**
+ * Ensures a PDF byte array is 100% unencrypted before pdf-lib modifies it.
+ * Note: pdf-lib's `{ ignoreEncryption: true }` does NOT decrypt streams—saving a modified
+ * encrypted PDF in pdf-lib leaves the `/Encrypt` trailer intact while writing unencrypted
+ * streams, which causes every browser and PDF viewer to fail with "Cannot open file".
+ * When `srcDoc.isEncrypted` is true, we use PDF.js (which natively decrypts owner-protected PDFs)
+ * to rebuild a clean, unencrypted PDF first.
+ */
+export async function ensureUnencryptedPdfBytes(
+  pdfBytes: Uint8Array
+): Promise<Uint8Array> {
+  const cleanInput = toCleanUint8Array(pdfBytes);
+  try {
+    const checkDoc = await PDFDocument.load(cleanInput, {
+      ignoreEncryption: true,
+    });
+    if (!checkDoc.isEncrypted) {
+      return cleanInput;
+    }
+  } catch {
+    // Fall through to PDF.js decrypted reconstruction
+  }
+
+  const pageCount = await getPdfPageCount(cleanInput);
+  const pageDataUrls: string[] = [];
+  for (let i = 1; i <= pageCount; i++) {
+    const rendered = await renderPdfPage(
+      cleanInput,
+      i,
+      1.5,
+      'image/jpeg',
+      0.92
+    );
+    pageDataUrls.push(rendered.dataUrl);
+  }
+  return createPdfFromImages(pageDataUrls, { pageSize: 'A4', marginPt: 0 });
+}
+
+/**
  * Creates a multi-page PDF document from an array of image Data URLs.
+ * Saved with `useObjectStreams: false` for 100% compatibility across all mobile & desktop PDF viewers.
  */
 export async function createPdfFromImages(
   imageDataUrls: string[],
@@ -338,7 +419,7 @@ export async function createPdfFromImages(
     }
   }
 
-  return pdfDoc.save();
+  return pdfDoc.save({ useObjectStreams: false });
 }
 
 function hexToRgbColor(hex: string) {
@@ -367,7 +448,10 @@ export async function bakeAnnotationsIntoPdf(
     filteredPageDataUrls?: Record<number, string>;
   }
 ): Promise<Uint8Array> {
-  const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const unencryptedBytes = await ensureUnencryptedPdfBytes(pdfBytes);
+  const pdfDoc = await PDFDocument.load(unencryptedBytes, {
+    ignoreEncryption: true,
+  });
   const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
   const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
@@ -679,7 +763,7 @@ export async function bakeAnnotationsIntoPdf(
     }
   }
 
-  return pdfDoc.save();
+  return pdfDoc.save({ useObjectStreams: false });
 }
 
 /**
@@ -688,8 +772,11 @@ export async function bakeAnnotationsIntoPdf(
 export async function mergePdfs(pdfByteArrays: Uint8Array[]): Promise<Uint8Array> {
   const mergedPdf = await PDFDocument.create();
 
-  for (const bytes of pdfByteArrays) {
-    const srcDoc = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  for (const rawBytes of pdfByteArrays) {
+    const cleanBytes = await ensureUnencryptedPdfBytes(rawBytes);
+    const srcDoc = await PDFDocument.load(cleanBytes, {
+      ignoreEncryption: true,
+    });
     const copiedPages = await mergedPdf.copyPages(
       srcDoc,
       srcDoc.getPageIndices()
@@ -697,18 +784,28 @@ export async function mergePdfs(pdfByteArrays: Uint8Array[]): Promise<Uint8Array
     copiedPages.forEach((p) => mergedPdf.addPage(p));
   }
 
-  return mergedPdf.save();
+  return mergedPdf.save({ useObjectStreams: false });
 }
 
 /**
- * Extracts a 1-indexed array of page numbers from a PDF into a new PDF.
+ * Extracts a 1-indexed array of page numbers from a PDF into a new, universally compatible PDF.
+ * Automatically handles owner-encrypted PDFs and validates the extracted PDF with PDF.js so
+ * downloaded split PDFs open cleanly in every mobile and desktop PDF viewer and browser.
  */
 export async function extractPdfPages(
   pdfBytes: Uint8Array,
   pageNumbers: number[]
 ): Promise<Uint8Array> {
+  const cleanBytes = toCleanUint8Array(pdfBytes);
   try {
-    const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    const srcDoc = await PDFDocument.load(cleanBytes, {
+      ignoreEncryption: true,
+    });
+    if (srcDoc.isEncrypted) {
+      throw new Error(
+        'Source PDF has encrypted streams; using PDF.js decrypted page render for split output.'
+      );
+    }
     const totalPages = srcDoc.getPageCount();
     const newDoc = await PDFDocument.create();
     const validIndices = pageNumbers
@@ -721,23 +818,44 @@ export async function extractPdfPages(
 
     const copied = await newDoc.copyPages(srcDoc, validIndices);
     copied.forEach((p) => newDoc.addPage(p));
-    return await newDoc.save();
+
+    // Save with useObjectStreams: false so standard PDF xref table is written for universal viewer support
+    const savedBytes = await newDoc.save({ useObjectStreams: false });
+    if (!savedBytes || savedBytes.byteLength < 64) {
+      throw new Error('Saved split PDF was unexpectedly empty.');
+    }
+
+    // Verify with PDF.js that the extracted PDF parses and its first page stream is 100% valid
+    const verifyCopy = new Uint8Array(savedBytes);
+    const loadingTask = pdfjsLib.getDocument({ data: verifyCopy });
+    const verifiedPdf = await loadingTask.promise;
+    try {
+      if (verifiedPdf.numPages !== validIndices.length) {
+        throw new Error('Page count mismatch in extracted PDF.');
+      }
+      const firstPage = await verifiedPdf.getPage(1);
+      await firstPage.getOperatorList();
+    } finally {
+      await loadingTask.destroy();
+    }
+
+    return savedBytes;
   } catch (err) {
     console.warn(
-      'Direct copyPages failed on PDF; using high-resolution page render fallback for Split PDF:',
+      'Direct copyPages fallback triggered for Split PDF; rendering clean decrypted pages:',
       err
     );
-    const totalCount = await getPdfPageCount(pdfBytes);
+    const totalCount = await getPdfPageCount(cleanBytes);
     const validPages = pageNumbers.filter((n) => n >= 1 && n <= totalCount);
     const targetPages = validPages.length > 0 ? validPages : [1];
     const pageImages: string[] = [];
     for (const pNum of targetPages) {
       const rendered = await renderPdfPage(
-        pdfBytes,
+        cleanBytes,
         pNum,
-        1.4,
+        1.5,
         'image/jpeg',
-        0.9
+        0.92
       );
       pageImages.push(rendered.dataUrl);
     }
@@ -758,7 +876,10 @@ export async function organizePdfPages(
     addRotationDeg?: number;
   }[]
 ): Promise<Uint8Array> {
-  const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
+  const srcDoc = await PDFDocument.load(cleanBytes, {
+    ignoreEncryption: true,
+  });
   const outDoc = await PDFDocument.create();
 
   for (const spec of pageSpecs) {
@@ -780,11 +901,11 @@ export async function organizePdfPages(
     }
   }
 
-  return outDoc.save();
+  return outDoc.save({ useObjectStreams: false });
 }
 
 /**
- * Compresses a PDF by either optimizing object streams ('low') or
+ * Compresses a PDF by either optimizing streams ('low') or
  * rasterizing pages at controlled resolution & JPEG quality ('medium' | 'extreme').
  */
 export async function compressPdfDocument(
@@ -792,8 +913,9 @@ export async function compressPdfDocument(
   level: 'low' | 'medium' | 'extreme'
 ): Promise<Uint8Array> {
   if (level === 'low') {
-    const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-    return doc.save({ useObjectStreams: true });
+    const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
+    const doc = await PDFDocument.load(cleanBytes, { ignoreEncryption: true });
+    return doc.save({ useObjectStreams: false });
   }
 
   const scale = level === 'medium' ? 1.15 : 0.82;
@@ -837,10 +959,11 @@ export async function compressPdfWithOptions(
 ): Promise<Uint8Array> {
   const { quality, highCompression, pageSize = 'A4' } = options;
 
-  // If High quality without High Compression and standard A4, optimize object streams first
+  // If High quality without High Compression and standard A4, ensure clean unencrypted save
   if (quality === 'high' && !highCompression && pageSize === 'A4') {
-    const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-    return doc.save({ useObjectStreams: true });
+    const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
+    const doc = await PDFDocument.load(cleanBytes, { ignoreEncryption: true });
+    return doc.save({ useObjectStreams: false });
   }
 
   const qualityMap: Record<
@@ -976,22 +1099,124 @@ export async function exportPdfAsJpegBytes(
 }
 
 /**
- * Triggers a clean browser file download for a Uint8Array or Blob.
+ * Sanitizes a filename so Android DownloadManager, iOS Safari, and desktop browsers
+ * never fail with "Download error" due to special characters or excessive length.
+ */
+export function sanitizeDownloadFilename(
+  filename: string,
+  mimeType = 'application/pdf'
+): string {
+  const defaultExt =
+    mimeType.includes('jpeg') || mimeType.includes('jpg')
+      ? 'jpg'
+      : mimeType.includes('png')
+        ? 'png'
+        : mimeType.includes('text')
+          ? 'txt'
+          : 'pdf';
+
+  const trimmed = (filename || `Document.${defaultExt}`).trim();
+  const lastDot = trimmed.lastIndexOf('.');
+  const rawBase = lastDot > 0 ? trimmed.slice(0, lastDot) : trimmed;
+  const rawExt =
+    lastDot > 0
+      ? trimmed.slice(lastDot + 1).replace(/[^a-zA-Z0-9]/g, '') || defaultExt
+      : defaultExt;
+
+  const cleanBase = rawBase
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .slice(0, 56);
+
+  return `${cleanBase || 'Document'}.${rawExt.toLowerCase()}`;
+}
+
+/**
+ * Returns an inline `data:application/pdf;base64,...` URI for `<a href={...} download={...}>`.
+ * Unlike `/api/downloads/...` (which Android's external DownloadManager requests without the
+ * iframe's partitioned auth cookies, causing the Cloud Run proxy to return an HTML login page
+ * saved as `.pdf` that "cannot open"), and unlike `blob:` URLs (which fail across partitioned
+ * iframes with "Download error"), an inline `data:` URI embeds the exact `%PDF-1.7` bytes
+ * directly in the link so every browser decodes and saves a 100% valid, openable PDF file.
+ */
+export async function prepareServerDownloadUrl(
+  bytes: Uint8Array,
+  _filename: string,
+  mimeType = 'application/pdf'
+): Promise<string> {
+  return bytesToDataUrl(bytes, mimeType);
+}
+
+/**
+ * Triggers a synchronous, inline `data:<mimeType>;base64,...` download so the user gesture is
+ * preserved and the exact binary file bytes are written directly to disk by any browser
+ * without hitting Cloud Run auth proxies or iframe-partitioned `blob:` stores.
  */
 export function downloadBytesAsFile(
   bytes: Uint8Array,
   filename: string,
   mimeType = 'application/pdf'
 ): void {
-  const blob = new Blob([new Uint8Array(bytes)], { type: mimeType });
+  const cleanName = sanitizeDownloadFilename(filename, mimeType);
+  const safeBytes = toCleanUint8Array(bytes);
+
+  try {
+    // For files up to 25 MB, use a synchronous inline base64 Data URI so the browser writes the exact bytes directly
+    if (safeBytes.byteLength <= 25 * 1024 * 1024) {
+      const dataUrl = bytesToDataUrl(safeBytes, mimeType);
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = cleanName;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+  } catch (err) {
+    console.warn('Data URL download fallback to Blob URL:', err);
+  }
+
+  const blob = new Blob([safeBytes as BlobPart], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = cleanName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 3000);
+  setTimeout(() => URL.revokeObjectURL(url), 600000);
+}
+
+/**
+ * Opens the native mobile Share / Save sheet (Android / iOS) for a PDF or image file,
+ * or falls back to `downloadBytesAsFile` if Web Share API for files is not supported.
+ */
+export async function shareOrDownloadBytesAsFile(
+  bytes: Uint8Array,
+  filename: string,
+  mimeType = 'application/pdf'
+): Promise<void> {
+  const cleanName = sanitizeDownloadFilename(filename, mimeType);
+  const safeBytes = toCleanUint8Array(bytes);
+  try {
+    const file = new File([safeBytes as BlobPart], cleanName, {
+      type: mimeType,
+    });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        title: cleanName,
+        files: [file],
+      });
+      return;
+    }
+  } catch (err) {
+    if ((err as Error)?.name === 'AbortError') {
+      return;
+    }
+  }
+  downloadBytesAsFile(safeBytes, cleanName, mimeType);
 }
 
 export interface EmbeddedPdfImageInfo {
@@ -1282,22 +1507,26 @@ export async function removeEmbeddedPdfImageFromPage(
   pageNumber: number,
   targetXObjectKey?: string
 ): Promise<{ pdfBytes: Uint8Array; removedCount: number }> {
-  const pdfDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const cleanInput = toCleanUint8Array(pdfBytes);
+  const pdfDoc = await PDFDocument.load(cleanInput, { ignoreEncryption: true });
+  if (pdfDoc.isEncrypted) {
+    return { pdfBytes: cleanInput, removedCount: 0 };
+  }
   const pages = pdfDoc.getPages();
   if (pageNumber < 1 || pageNumber > pages.length) {
-    return { pdfBytes, removedCount: 0 };
+    return { pdfBytes: cleanInput, removedCount: 0 };
   }
 
   const page = pages[pageNumber - 1];
   const resources = page.node.Resources();
   if (!resources) {
-    return { pdfBytes, removedCount: 0 };
+    return { pdfBytes: cleanInput, removedCount: 0 };
   }
 
   const xObjectRef = resources.get(PDFName.of('XObject'));
   const xObjectDict = pdfDoc.context.lookupMaybe(xObjectRef, PDFDict);
   if (!xObjectDict) {
-    return { pdfBytes, removedCount: 0 };
+    return { pdfBytes: cleanInput, removedCount: 0 };
   }
 
   // Create a valid empty Form XObject replacement so `/<Name> Do` operators in the page stream become transparent no-ops
@@ -1322,10 +1551,10 @@ export async function removeEmbeddedPdfImageFromPage(
   }
 
   if (removedCount === 0) {
-    return { pdfBytes, removedCount: 0 };
+    return { pdfBytes: cleanInput, removedCount: 0 };
   }
 
-  const saved = await pdfDoc.save();
+  const saved = await pdfDoc.save({ useObjectStreams: false });
   return { pdfBytes: saved, removedCount };
 }
 

@@ -25,6 +25,7 @@ import {
   Bold,
   Italic,
   Move,
+  Share2,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -37,6 +38,9 @@ import {
   organizePdfPages,
   bakeAnnotationsIntoPdf,
   downloadBytesAsFile,
+  prepareServerDownloadUrl,
+  sanitizeDownloadFilename,
+  shareOrDownloadBytesAsFile,
   getPdfPageCount,
   RenderedPageInfo,
   PictureTextBoxOverlay,
@@ -202,6 +206,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       id: string;
       name: string;
       bytes: Uint8Array;
+      downloadUrl: string;
       pageCount: number;
       pagesLabel: string;
     }[]
@@ -324,26 +329,42 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
           id: string;
           name: string;
           bytes: Uint8Array;
+          downloadUrl: string;
           pageCount: number;
           pagesLabel: string;
         }[] = [];
 
         for (let p = 1; p <= maxPages; p++) {
           const splitBytes = await extractPdfPages(selectedDoc.pdfData, [p]);
-          const outName = `${baseTitle}_Page_${p}.pdf`;
+          const outName = sanitizeDownloadFilename(
+            `${baseTitle}_Page_${p}.pdf`,
+            'application/pdf'
+          );
+          const downloadUrl = await prepareServerDownloadUrl(
+            splitBytes,
+            outName,
+            'application/pdf'
+          );
           generated.push({
             id: `split-p${p}-${Date.now()}`,
             name: outName,
             bytes: splitBytes,
+            downloadUrl,
             pageCount: 1,
             pagesLabel: `Page ${p}`,
           });
         }
 
         setSplitResults(generated);
-        // Trigger download of the first split file immediately and save all to vault
+        // Trigger direct HTTP attachment download of the first split file immediately
         if (generated.length > 0) {
-          downloadBytesAsFile(generated[0].bytes, generated[0].name);
+          const a = document.createElement('a');
+          a.href = generated[0].downloadUrl;
+          a.download = generated[0].name;
+          a.rel = 'noopener';
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
         }
         for (const item of generated) {
           await onSaveNewDocument({
@@ -360,7 +381,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
           });
         }
         setFeedback(
-          `Split "${selectedDoc.name}" into ${generated.length} separate PDF page file(s)! Click any "Download PDF" button below to download.`
+          `Split "${selectedDoc.name}" into ${generated.length} separate PDF page file(s)! Tap any green "Download Split PDF" button below to download.`
         );
       } catch (err) {
         console.error('Error splitting PDF:', err);
@@ -385,18 +406,33 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         selectedDoc.pdfData,
         pagesToExtract
       );
-      const outName = `${selectedDoc.name.replace(/\.pdf$/i, '')}_Pages_${pagesToExtract.join('-')}.pdf`;
+      const outName = sanitizeDownloadFilename(
+        `${selectedDoc.name.replace(/\.pdf$/i, '')}_Pages_${pagesToExtract.join('-')}.pdf`,
+        'application/pdf'
+      );
+      const downloadUrl = await prepareServerDownloadUrl(
+        splitBytes,
+        outName,
+        'application/pdf'
+      );
       const resultItem = {
         id: `split-range-${Date.now()}`,
         name: outName,
         bytes: splitBytes,
+        downloadUrl,
         pageCount: pagesToExtract.length,
         pagesLabel: `Pages ${pagesToExtract.join(', ')}`,
       };
       setSplitResults([resultItem]);
 
-      // Trigger browser download immediately before async IndexedDB save so mobile browsers never block the download gesture
-      downloadBytesAsFile(splitBytes, outName);
+      // Trigger direct HTTP attachment download immediately
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = outName;
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
 
       const newDoc: StoredDocument = {
         id: `doc-split-${Date.now()}`,
@@ -412,7 +448,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       };
       await onSaveNewDocument(newDoc);
       setFeedback(
-        `Split ${pagesToExtract.length} page(s) into "${outName}" (${formatBytes(splitBytes.byteLength)}). Click the green "Download Split PDF" button below if your browser blocked automatic download.`
+        `Split ${pagesToExtract.length} page(s) into "${outName}" (${formatBytes(splitBytes.byteLength)}). Tap the green "Download Split PDF" button below to save directly to your device.`
       );
     } catch (err) {
       console.error('Error extracting split PDF:', err);
@@ -1380,8 +1416,14 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                       onClick={() => {
                         splitResults.forEach((item, idx) => {
                           setTimeout(() => {
-                            downloadBytesAsFile(item.bytes, item.name);
-                          }, idx * 250);
+                            const a = document.createElement('a');
+                            a.href = item.downloadUrl;
+                            a.download = item.name;
+                            a.rel = 'noopener';
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                          }, idx * 350);
                         });
                       }}
                       className="px-3 py-1.5 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
@@ -1408,16 +1450,31 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                           {formatBytes(item.bytes.byteLength)}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          downloadBytesAsFile(item.bytes, item.name)
-                        }
-                        className="px-4 py-2 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto shadow-xs"
-                      >
-                        <Download className="w-4 h-4" />
-                        <span>Download Split PDF</span>
-                      </button>
+                      <div className="flex flex-wrap items-center gap-2 shrink-0 self-start sm:self-auto">
+                        <a
+                          href={item.downloadUrl}
+                          download={item.name}
+                          rel="noopener"
+                          className="px-4 py-2 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs no-underline"
+                        >
+                          <Download className="w-4 h-4" />
+                          <span>Download Split PDF</span>
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            shareOrDownloadBytesAsFile(
+                              item.bytes,
+                              item.name,
+                              'application/pdf'
+                            )
+                          }
+                          className="px-3 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+                        >
+                          <Share2 className="w-3.5 h-3.5" />
+                          <span>Save / Share to Phone</span>
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>

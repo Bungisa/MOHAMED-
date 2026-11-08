@@ -370,7 +370,7 @@ async function createSamplePdfDocument(config: {
     );
   });
 
-  return pdfDoc.save();
+  return pdfDoc.save({ useObjectStreams: false });
 }
 
 export function formatBytes(bytes: number): string {

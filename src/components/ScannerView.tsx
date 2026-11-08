@@ -83,6 +83,12 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [draggingCornerIdx, setDraggingCornerIdx] = useState<number | null>(
     null
   );
+  const [draggingEdgeState, setDraggingEdgeState] = useState<{
+    edgeIdx: number; // 0: Top (0-1), 1: Right (1-2), 2: Bottom (2-3), 3: Left (3-0)
+    startX: number;
+    startY: number;
+    origCorners: [Point2D, Point2D, Point2D, Point2D];
+  } | null>(null);
   const cropContainerRef = useRef<HTMLDivElement>(null);
 
   // Export settings
@@ -286,33 +292,93 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     }
   };
 
-  // Corner dragging on the Crop canvas
-  const handlePointerMoveCorner = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (
-      draggingCornerIdx === null ||
-      !cropContainerRef.current ||
-      !activePage
-    ) {
-      return;
-    }
-    const rect = cropContainerRef.current.getBoundingClientRect();
-    const nx = Math.max(0.01, Math.min(0.99, (e.clientX - rect.left) / rect.width));
-    const ny = Math.max(0.01, Math.min(0.99, (e.clientY - rect.top) / rect.height));
+  // Window-level pointer listeners for silky-smooth corner & edge dragging on mobile and desktop
+  useEffect(() => {
+    if (draggingCornerIdx === null && !draggingEdgeState) return;
 
-    setPages((prev) =>
-      prev.map((p, idx) => {
-        if (idx !== activePageIndex) return p;
-        const nextCorners = [...p.corners] as [
-          Point2D,
-          Point2D,
-          Point2D,
-          Point2D,
-        ];
-        nextCorners[draggingCornerIdx] = { x: nx, y: ny };
-        return { ...p, corners: nextCorners };
-      })
-    );
-  };
+    const onWinPointerMove = (e: PointerEvent) => {
+      if (!cropContainerRef.current) return;
+      const rect = cropContainerRef.current.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      if (draggingCornerIdx !== null) {
+        const nx = Math.max(
+          0.002,
+          Math.min(0.998, (e.clientX - rect.left) / rect.width)
+        );
+        const ny = Math.max(
+          0.002,
+          Math.min(0.998, (e.clientY - rect.top) / rect.height)
+        );
+
+        setPages((prev) =>
+          prev.map((p, idx) => {
+            if (idx !== activePageIndex) return p;
+            const nextCorners = [...p.corners] as [
+              Point2D,
+              Point2D,
+              Point2D,
+              Point2D,
+            ];
+            nextCorners[draggingCornerIdx] = { x: nx, y: ny };
+            return { ...p, corners: nextCorners };
+          })
+        );
+      } else if (draggingEdgeState) {
+        const dx = (e.clientX - draggingEdgeState.startX) / rect.width;
+        const dy = (e.clientY - draggingEdgeState.startY) / rect.height;
+        const i1 = draggingEdgeState.edgeIdx;
+        const i2 = (draggingEdgeState.edgeIdx + 1) % 4;
+
+        setPages((prev) =>
+          prev.map((p, idx) => {
+            if (idx !== activePageIndex) return p;
+            const nextCorners = [...draggingEdgeState.origCorners] as [
+              Point2D,
+              Point2D,
+              Point2D,
+              Point2D,
+            ];
+            nextCorners[i1] = {
+              x: Math.max(
+                0.002,
+                Math.min(0.998, draggingEdgeState.origCorners[i1].x + dx)
+              ),
+              y: Math.max(
+                0.002,
+                Math.min(0.998, draggingEdgeState.origCorners[i1].y + dy)
+              ),
+            };
+            nextCorners[i2] = {
+              x: Math.max(
+                0.002,
+                Math.min(0.998, draggingEdgeState.origCorners[i2].x + dx)
+              ),
+              y: Math.max(
+                0.002,
+                Math.min(0.998, draggingEdgeState.origCorners[i2].y + dy)
+              ),
+            };
+            return { ...p, corners: nextCorners };
+          })
+        );
+      }
+    };
+
+    const onWinPointerUp = () => {
+      setDraggingCornerIdx(null);
+      setDraggingEdgeState(null);
+    };
+
+    window.addEventListener('pointermove', onWinPointerMove, { passive: true });
+    window.addEventListener('pointerup', onWinPointerUp);
+    window.addEventListener('pointercancel', onWinPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onWinPointerMove);
+      window.removeEventListener('pointerup', onWinPointerUp);
+      window.removeEventListener('pointercancel', onWinPointerUp);
+    };
+  }, [draggingCornerIdx, draggingEdgeState, activePageIndex]);
 
   const handleAutoDetectCurrentPage = async () => {
     if (!activePage) return;
@@ -656,14 +722,14 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={handleAutoDetectCurrentPage}
                     disabled={isProcessing}
-                    className="px-3 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-1.5 cursor-pointer"
+                    className="px-3 py-1.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
                   >
-                    <Maximize2 className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                    <span>Auto-Detect Edges</span>
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>Auto-Detect Precise Corners</span>
                   </button>
                   <button
                     onClick={() =>
@@ -673,10 +739,10 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                             ? {
                                 ...p,
                                 corners: [
-                                  { x: 0.02, y: 0.02 },
-                                  { x: 0.98, y: 0.02 },
-                                  { x: 0.98, y: 0.98 },
-                                  { x: 0.02, y: 0.98 },
+                                  { x: 0.005, y: 0.005 },
+                                  { x: 0.995, y: 0.005 },
+                                  { x: 0.995, y: 0.995 },
+                                  { x: 0.005, y: 0.995 },
                                 ],
                               }
                             : p
@@ -690,24 +756,21 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 </div>
               </div>
 
-              {/* Interactive Corner Handle Stage */}
-              <div className="bg-[#181322] rounded-xl p-4 flex items-center justify-center overflow-hidden select-none">
+              {/* Interactive Corner & Edge Handle Stage with 3x Precision Magnifier Loupe */}
+              <div className="relative bg-[#181322] rounded-xl p-4 flex items-center justify-center overflow-hidden select-none">
                 <div
                   ref={cropContainerRef}
-                  onPointerMove={handlePointerMoveCorner}
-                  onPointerUp={() => setDraggingCornerIdx(null)}
-                  onPointerLeave={() => setDraggingCornerIdx(null)}
-                  className="relative inline-block max-w-full max-h-[500px] touch-none"
+                  className="relative inline-block max-w-full max-h-[520px] touch-none"
                 >
                   <img
                     src={activePage.originalDataUrl}
                     alt="Original captured document"
                     referrerPolicy="no-referrer"
                     draggable={false}
-                    className="max-h-[500px] w-auto block rounded"
+                    className="max-h-[520px] w-auto block rounded"
                   />
 
-                  {/* SVG Polygon Overlay */}
+                  {/* SVG Polygon & Grid Overlay */}
                   <svg
                     className="absolute inset-0 w-full h-full pointer-events-none"
                     viewBox="0 0 100 100"
@@ -717,32 +780,119 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                       points={activePage.corners
                         .map((c) => `${c.x * 100},${c.y * 100}`)
                         .join(' ')}
-                      fill="rgba(157, 92, 229, 0.22)"
-                      stroke="#9D5CE5"
-                      strokeWidth="0.8"
+                      fill="rgba(37, 99, 235, 0.16)"
+                      stroke="#3B82F6"
+                      strokeWidth="0.75"
                     />
                   </svg>
 
-                  {/* 4 Draggable Corner Handles */}
-                  {activePage.corners.map((corner, cIdx) => (
-                    <button
-                      key={cIdx}
-                      type="button"
-                      aria-label={`Corner handle ${cIdx + 1}`}
-                      onPointerDown={(e) => {
-                        e.stopPropagation();
-                        setDraggingCornerIdx(cIdx);
-                      }}
-                      style={{
-                        left: `${corner.x * 100}%`,
-                        top: `${corner.y * 100}%`,
-                      }}
-                      className="absolute -translate-x-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-[#4A1D5E] dark:bg-[#9D5CE5] border-2 border-white shadow-md cursor-grab active:cursor-grabbing flex items-center justify-center focus:outline-none"
-                    >
-                      <span className="w-2 h-2 rounded-full bg-white" />
-                    </button>
-                  ))}
+                  {/* 4 Edge Midpoint Handles (Top, Right, Bottom, Left) */}
+                  {[0, 1, 2, 3].map((edgeIdx) => {
+                    const c1 = activePage.corners[edgeIdx];
+                    const c2 = activePage.corners[(edgeIdx + 1) % 4];
+                    const midX = (c1.x + c2.x) * 50;
+                    const midY = (c1.y + c2.y) * 50;
+                    const isHorizontal = edgeIdx === 0 || edgeIdx === 2;
+                    return (
+                      <button
+                        key={`edge-${edgeIdx}`}
+                        type="button"
+                        aria-label={`Edge handle ${edgeIdx + 1}`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setDraggingEdgeState({
+                            edgeIdx,
+                            startX: e.clientX,
+                            startY: e.clientY,
+                            origCorners: [...activePage.corners] as [
+                              Point2D,
+                              Point2D,
+                              Point2D,
+                              Point2D,
+                            ],
+                          });
+                        }}
+                        style={{
+                          left: `${midX}%`,
+                          top: `${midY}%`,
+                        }}
+                        className={`absolute -translate-x-1/2 -translate-y-1/2 ${
+                          isHorizontal ? 'w-7 h-3' : 'w-3 h-7'
+                        } rounded-full bg-[#2563EB] border-2 border-white shadow-md cursor-move touch-none z-10`}
+                      />
+                    );
+                  })}
+
+                  {/* 4 Draggable Precision Corner Handles */}
+                  {activePage.corners.map((corner, cIdx) => {
+                    const isDraggingThis = draggingCornerIdx === cIdx;
+                    return (
+                      <button
+                        key={cIdx}
+                        type="button"
+                        aria-label={`Corner handle ${cIdx + 1}`}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setDraggingCornerIdx(cIdx);
+                        }}
+                        style={{
+                          left: `${corner.x * 100}%`,
+                          top: `${corner.y * 100}%`,
+                        }}
+                        className={`absolute -translate-x-1/2 -translate-y-1/2 w-8 h-8 rounded-full border-2 border-white shadow-lg cursor-grab active:cursor-grabbing flex items-center justify-center focus:outline-none touch-none z-20 transition-transform ${
+                          isDraggingThis
+                            ? 'bg-[#2563EB]/40 scale-125 ring-2 ring-[#60A5FA]'
+                            : 'bg-[#2563EB]'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-white shadow-xs" />
+                      </button>
+                    );
+                  })}
                 </div>
+
+                {/* 3x Precision Magnifier Loupe while dragging any corner handle */}
+                {draggingCornerIdx !== null &&
+                  activePage.corners[draggingCornerIdx] && (
+                    <div
+                      className={`absolute top-3 ${
+                        activePage.corners[draggingCornerIdx].x < 0.45 &&
+                        activePage.corners[draggingCornerIdx].y < 0.45
+                          ? 'right-3'
+                          : 'left-3'
+                      } w-28 h-28 rounded-full border-3 border-white shadow-2xl overflow-hidden bg-black pointer-events-none z-30`}
+                    >
+                      <div
+                        className="w-full h-full bg-no-repeat"
+                        style={{
+                          backgroundImage: `url(${activePage.originalDataUrl})`,
+                          backgroundSize: '340% 340%',
+                          backgroundPosition: `${activePage.corners[draggingCornerIdx].x * 100}% ${activePage.corners[draggingCornerIdx].y * 100}%`,
+                        }}
+                      />
+                      {/* Precision Crosshair inside Loupe */}
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="w-full h-[1.5px] bg-[#3B82F6]/85" />
+                      </div>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <div className="h-full w-[1.5px] bg-[#3B82F6]/85" />
+                      </div>
+                      <div className="absolute bottom-1 inset-x-0 text-center">
+                        <span className="px-1.5 py-0.5 rounded bg-black/75 text-[9px] font-mono font-bold text-white">
+                          {Math.round(
+                            activePage.corners[draggingCornerIdx].x * 100
+                          )}
+                          %,
+                          {Math.round(
+                            activePage.corners[draggingCornerIdx].y * 100
+                          )}
+                          %
+                        </span>
+                      </div>
+                    </div>
+                  )}
               </div>
 
               <div className="flex items-center justify-between pt-2">
