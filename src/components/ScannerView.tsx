@@ -17,6 +17,8 @@ import {
   SwitchCamera,
   FileText,
   AlertCircle,
+  Share2,
+  Layers,
 } from 'lucide-react';
 import {
   Point2D,
@@ -502,8 +504,41 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     setStep('capture');
   };
 
+  const handleApplyFilterToAllPages = async () => {
+    if (!activePage || pages.length <= 1) return;
+    setIsProcessing(true);
+    try {
+      const targetFilter = activePage.filter;
+      const targetBrightness = activePage.brightness;
+      const targetContrast = activePage.contrast;
+      const updatedPages = await Promise.all(
+        pages.map(async (p) => {
+          const processed = await applyImageEnhancements(p.croppedDataUrl, {
+            filter: targetFilter,
+            brightness: targetBrightness,
+            contrast: targetContrast,
+            rotation: p.rotation,
+          });
+          return {
+            ...p,
+            filter: targetFilter,
+            brightness: targetBrightness,
+            contrast: targetContrast,
+            processedDataUrl: processed,
+          };
+        })
+      );
+      setPages(updatedPages);
+      setStatusBanner(
+        `Applied ${targetFilter.toUpperCase()} filter to all ${pages.length} pages.`
+      );
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const handleSaveOrDownloadPdf = async (
-    mode: 'save-library' | 'open-editor' | 'download'
+    mode: 'save-library' | 'open-editor' | 'download' | 'share'
   ) => {
     if (pages.length === 0) return;
     setIsProcessing(true);
@@ -518,24 +553,61 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         ? docName.trim()
         : `${docName.trim() || 'Scanned_Document'}.pdf`;
 
+      const newDoc: StoredDocument = {
+        id: `doc-scan-${Date.now()}`,
+        name: cleanName,
+        category: 'Scans',
+        starred: false,
+        sizeBytes: pdfBytes.byteLength,
+        pageCount: pages.length,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: pdfBytes,
+        thumbnailDataUrl: pages[0].processedDataUrl,
+        appliedFilter: pages[0].filter,
+        appliedBrightness: pages[0].brightness,
+        appliedContrast: pages[0].contrast,
+      };
+
+      // Always save to Local Document Vault so the document remains available even if the user presses Back
+      await onSaveScannedDocument(newDoc, mode === 'open-editor');
+
       if (mode === 'download') {
         downloadBytesAsFile(pdfBytes, cleanName);
-        setStatusBanner(`Downloaded "${cleanName}" (${pages.length} pages).`);
-      } else {
-        const newDoc: StoredDocument = {
-          id: `doc-scan-${Date.now()}`,
-          name: cleanName,
-          category: 'Scans',
-          starred: false,
-          sizeBytes: pdfBytes.byteLength,
-          pageCount: pages.length,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastOpenedAt: new Date().toISOString(),
-          pdfData: pdfBytes,
-          thumbnailDataUrl: pages[0].processedDataUrl,
+        setStatusBanner(
+          `Saved to My Files & downloaded "${cleanName}" (${pages.length} pages).`
+        );
+      } else if (mode === 'share') {
+        const fileObj = new File([new Uint8Array(pdfBytes)], cleanName, {
+          type: 'application/pdf',
+        });
+        const nav = navigator as Navigator & {
+          canShare?: (data?: ShareData) => boolean;
         };
-        await onSaveScannedDocument(newDoc, mode === 'open-editor');
+        if (
+          typeof nav.share === 'function' &&
+          (!nav.canShare || nav.canShare({ files: [fileObj] }))
+        ) {
+          try {
+            await nav.share({
+              title: cleanName,
+              text: `Scanned PDF from ScanPro Studio: ${cleanName}`,
+              files: [fileObj],
+            });
+            setStatusBanner(
+              `Shared "${cleanName}" and saved in Local Document Vault.`
+            );
+            return;
+          } catch {
+            // Fall back to direct download
+          }
+        }
+        downloadBytesAsFile(pdfBytes, cleanName);
+        setStatusBanner(
+          `Saved "${cleanName}" to My Files & downloaded for sharing.`
+        );
+      } else {
         setStatusBanner(`Saved "${cleanName}" to Local Document Vault.`);
       }
     } finally {
@@ -561,33 +633,44 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             Document Scanner Studio
           </h1>
           <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-            Camera Capture → Edge & Corner Detection → Perspective Rectification → Adaptive Filter → Multi-Page PDF
+            3-Step Guided Flow: Capture or Upload Photo → Precision Corner Crop → Filter & Save PDF
           </p>
         </div>
 
-        {/* Interactive 4-Step Pipeline Selector */}
+        {/* Streamlined 3-Step Pipeline Selector */}
         <div className="flex items-center gap-1 p-1 bg-[#F2EFF6] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg overflow-x-auto">
           {(
             [
-              { id: 'capture', label: '1. Capture' },
-              { id: 'crop', label: '2. Detect & Crop', disabled: pages.length === 0 },
-              { id: 'enhance', label: '3. Enhance', disabled: pages.length === 0 },
-              { id: 'export', label: '4. Preview & Export', disabled: pages.length === 0 },
+              { id: 'capture', label: '1. Capture / Photo' },
+              {
+                id: 'crop',
+                label: '2. Precision Crop',
+                disabled: pages.length === 0,
+              },
+              {
+                id: 'enhance',
+                label: '3. Enhance & Save PDF',
+                disabled: pages.length === 0,
+              },
             ] as const
-          ).map((s) => (
-            <button
-              key={s.id}
-              disabled={'disabled' in s ? s.disabled : false}
-              onClick={() => setStep(s.id)}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
-                step === s.id
-                  ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-semibold'
-                  : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
-              }`}
-            >
-              {s.label}
-            </button>
-          ))}
+          ).map((s) => {
+            const isActive =
+              step === s.id || (s.id === 'enhance' && step === 'export');
+            return (
+              <button
+                key={s.id}
+                disabled={'disabled' in s ? s.disabled : false}
+                onClick={() => setStep(s.id)}
+                className={`px-3.5 py-1.5 text-xs font-medium rounded-md transition-colors cursor-pointer whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  isActive
+                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-semibold'
+                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
+                }`}
+              >
+                {s.label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
@@ -667,7 +750,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                       Capture or Import a Document Page
                     </h2>
                     <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-                      Use your phone or laptop camera to photograph contracts, receipts, or notes. ScanPro automatically locates the 4 page corners and flattens perspective distortion.
+                      Use your phone or laptop camera to photograph contracts, exam sheets, or notes. ScanPro automatically locates all 4 outer page corners and flattens perspective distortion.
                     </p>
                   </div>
 
@@ -718,7 +801,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                     {pages.length})
                   </h2>
                   <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                    Drag any of the 4 corner handles to align with the paper edges, then click Apply Perspective Crop.
+                    Drag any of the 4 corner handles or 4 edge bars to align with the paper edges, then click Apply Perspective Crop.
                   </p>
                 </div>
 
@@ -853,13 +936,33 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   })}
                 </div>
 
-                {/* 3x Precision Magnifier Loupe while dragging any corner handle */}
-                {draggingCornerIdx !== null &&
-                  activePage.corners[draggingCornerIdx] && (
+                {/* 3x Precision Magnifier Loupe while dragging any corner handle OR edge bar */}
+                {(() => {
+                  const focusPoint: Point2D | null =
+                    draggingCornerIdx !== null &&
+                    activePage.corners[draggingCornerIdx]
+                      ? activePage.corners[draggingCornerIdx]
+                      : draggingEdgeState !== null
+                        ? {
+                            x:
+                              (activePage.corners[draggingEdgeState.edgeIdx].x +
+                                activePage.corners[
+                                  (draggingEdgeState.edgeIdx + 1) % 4
+                                ].x) /
+                              2,
+                            y:
+                              (activePage.corners[draggingEdgeState.edgeIdx].y +
+                                activePage.corners[
+                                  (draggingEdgeState.edgeIdx + 1) % 4
+                                ].y) /
+                              2,
+                          }
+                        : null;
+                  if (!focusPoint) return null;
+                  return (
                     <div
                       className={`absolute top-3 ${
-                        activePage.corners[draggingCornerIdx].x < 0.45 &&
-                        activePage.corners[draggingCornerIdx].y < 0.45
+                        focusPoint.x < 0.45 && focusPoint.y < 0.45
                           ? 'right-3'
                           : 'left-3'
                       } w-28 h-28 rounded-full border-3 border-white shadow-2xl overflow-hidden bg-black pointer-events-none z-30`}
@@ -869,7 +972,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                         style={{
                           backgroundImage: `url(${activePage.originalDataUrl})`,
                           backgroundSize: '340% 340%',
-                          backgroundPosition: `${activePage.corners[draggingCornerIdx].x * 100}% ${activePage.corners[draggingCornerIdx].y * 100}%`,
+                          backgroundPosition: `${focusPoint.x * 100}% ${focusPoint.y * 100}%`,
                         }}
                       />
                       {/* Precision Crosshair inside Loupe */}
@@ -881,18 +984,13 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                       </div>
                       <div className="absolute bottom-1 inset-x-0 text-center">
                         <span className="px-1.5 py-0.5 rounded bg-black/75 text-[9px] font-mono font-bold text-white">
-                          {Math.round(
-                            activePage.corners[draggingCornerIdx].x * 100
-                          )}
-                          %,
-                          {Math.round(
-                            activePage.corners[draggingCornerIdx].y * 100
-                          )}
-                          %
+                          {Math.round(focusPoint.x * 100)}%,
+                          {Math.round(focusPoint.y * 100)}%
                         </span>
                       </div>
                     </div>
-                  )}
+                  );
+                })()}
               </div>
 
               <div className="flex items-center justify-between pt-2">
@@ -920,20 +1018,28 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             </div>
           )}
 
-          {/* STEP 3: ENHANCE & FILTER */}
-          {step === 'enhance' && activePage && (
-            <div className="p-6 space-y-5">
+          {/* STEP 3: UNIFIED ENHANCE, FILTER & SAVE PDF STUDIO */}
+          {(step === 'enhance' || step === 'export') && activePage && (
+            <div className="p-6 space-y-6">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <h2 className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Enhance & Filter Document (Page {activePageIndex + 1})
+                    Enhance & Save Document (Page {activePageIndex + 1} of{' '}
+                    {pages.length})
                   </h2>
                   <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                    Choose a document filter, adjust contrast or brightness, and rotate orientation.
+                    Choose a color filter (such as OCV BLACK to remove watermarks/shadows), adjust brightness, and save or download your PDF immediately.
                   </p>
                 </div>
 
                 <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setStep('crop')}
+                    className="px-3 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                  >
+                    <Maximize2 className="w-3.5 h-3.5" />
+                    <span>Adjust Crop</span>
+                  </button>
                   <button
                     onClick={() =>
                       updateEnhancementParams({
@@ -944,13 +1050,6 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   >
                     <RotateCw className="w-3.5 h-3.5" />
                     <span>Rotate 90°</span>
-                  </button>
-                  <button
-                    onClick={() => setStep('export')}
-                    className="px-4 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <span>Continue to Export</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>
               </div>
@@ -965,33 +1064,58 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                 />
               </div>
 
-              {/* Filter Presets */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
-                {FILTER_OPTIONS.map((f) => {
-                  const selected = activePage.filter === f.id;
-                  return (
+              {/* Filter Presets + Apply to All Pages Button */}
+              <div className="space-y-2.5">
+                {pages.length > 1 && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-semibold text-[#6E667D] dark:text-[#A39BB5]">
+                      Page {activePageIndex + 1} Filter:{' '}
+                      <strong className="text-[#14101B] dark:text-[#F4F1F8]">
+                        {activePage.filter.toUpperCase()}
+                      </strong>
+                    </span>
                     <button
-                      key={f.id}
-                      onClick={() => updateEnhancementParams({ filter: f.id })}
-                      className={`p-3 rounded-lg border text-left transition-colors cursor-pointer ${
-                        selected
-                          ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/5 dark:bg-[#9D5CE5]/15'
-                          : 'border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
-                      }`}
+                      type="button"
+                      onClick={handleApplyFilterToAllPages}
+                      disabled={isProcessing}
+                      className="px-3 py-1 rounded-lg bg-[#2563EB]/10 text-[#2563EB] dark:text-[#60A5FA] hover:bg-[#2563EB] hover:text-white text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
                     >
-                      <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                        {f.label}
-                      </p>
-                      <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                        {f.desc}
-                      </p>
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>
+                        Apply {activePage.filter.toUpperCase()} to All{' '}
+                        {pages.length} Pages
+                      </span>
                     </button>
-                  );
-                })}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                  {FILTER_OPTIONS.map((f) => {
+                    const selected = activePage.filter === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => updateEnhancementParams({ filter: f.id })}
+                        className={`p-2.5 rounded-lg border text-left transition-colors cursor-pointer ${
+                          selected
+                            ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/8 dark:bg-[#9D5CE5]/20'
+                            : 'border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                        }`}
+                      >
+                        <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                          {f.label}
+                        </p>
+                        <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5 line-clamp-1">
+                          {f.desc}
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
 
               {/* Brightness & Contrast Sliders */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2 border-t border-[#E4DFEC] dark:border-[#261F33]">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-3 border-t border-[#E4DFEC] dark:border-[#261F33]">
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-medium text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1.5">
@@ -1046,93 +1170,81 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   />
                 </div>
               </div>
-            </div>
-          )}
 
-          {/* STEP 4: PREVIEW & EXPORT PDF */}
-          {step === 'export' && (
-            <div className="p-6 space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
-                <div>
-                  <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Review Multi-Page Packet & Export PDF
-                  </h2>
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                    Rearrange page order, add more pages, or export as a unified PDF document.
-                  </p>
-                </div>
-                <button
-                  onClick={() => setStep('capture')}
-                  className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer self-start"
-                >
-                  <Plus className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                  <span>Add Another Page</span>
-                </button>
-              </div>
+              {/* Integrated Save, Open in Editor & Download Dock */}
+              <div className="rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] p-4 space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] mb-1">
+                      Document Filename
+                    </label>
+                    <input
+                      type="text"
+                      value={docName}
+                      onChange={(e) => setDocName(e.target.value)}
+                      className="w-full px-3 py-2 text-xs rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
+                    />
+                  </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] mb-1.5">
-                    Output Document Filename
-                  </label>
-                  <input
-                    type="text"
-                    value={docName}
-                    onChange={(e) => setDocName(e.target.value)}
-                    className="w-full px-3 py-2 text-sm rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] mb-1.5">
-                    PDF Page Geometry
-                  </label>
-                  <div className="flex items-center gap-2">
-                    {(['A4', 'Letter', 'Fit'] as const).map((sz) => (
-                      <button
-                        key={sz}
-                        onClick={() => setPageSize(sz)}
-                        className={`flex-1 py-2 px-3 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
-                          pageSize === sz
-                            ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] border-[#4A1D5E] dark:border-[#9D5CE5]'
-                            : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5]'
-                        }`}
-                      >
-                        {sz === 'Fit' ? 'Fit Image' : sz}
-                      </button>
-                    ))}
+                  <div>
+                    <label className="block text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] mb-1">
+                      PDF Page Size
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      {(['A4', 'Letter', 'Fit'] as const).map((sz) => (
+                        <button
+                          key={sz}
+                          onClick={() => setPageSize(sz)}
+                          className={`flex-1 py-2 px-2.5 rounded-lg text-xs font-semibold border transition-colors cursor-pointer ${
+                            pageSize === sz
+                              ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] border-[#4A1D5E] dark:border-[#9D5CE5]'
+                              : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5]'
+                          }`}
+                        >
+                          {sz === 'Fit' ? 'Fit Image' : sz}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
-              </div>
 
-              {/* Export Actions */}
-              <div className="flex flex-wrap items-center gap-3 pt-2">
-                <button
-                  onClick={() => handleSaveOrDownloadPdf('save-library')}
-                  disabled={isProcessing || pages.length === 0}
-                  className="px-5 py-3 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>Save PDF to Local Library</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <button
+                    onClick={() => handleSaveOrDownloadPdf('open-editor')}
+                    disabled={isProcessing || pages.length === 0}
+                    className="flex-1 sm:flex-initial px-4 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <FileText className="w-4 h-4 shrink-0" />
+                    <span>Save & Open in PDF Editor</span>
+                  </button>
 
-                <button
-                  onClick={() => handleSaveOrDownloadPdf('open-editor')}
-                  disabled={isProcessing || pages.length === 0}
-                  className="px-5 py-3 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] dark:hover:bg-[#342B47] text-[#14101B] dark:text-[#F4F1F8] text-xs font-bold flex items-center gap-2 cursor-pointer"
-                >
-                  <FileText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                  <span>Save & Open in PDF Editor</span>
-                </button>
+                  <button
+                    onClick={() => handleSaveOrDownloadPdf('save-library')}
+                    disabled={isProcessing || pages.length === 0}
+                    className="flex-1 sm:flex-initial px-4 py-2.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] dark:hover:bg-[#342B47] text-[#14101B] dark:text-[#F4F1F8] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <Save className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                    <span>Save to My Files</span>
+                  </button>
 
-                <button
-                  onClick={() => handleSaveOrDownloadPdf('download')}
-                  disabled={isProcessing || pages.length === 0}
-                  className="px-5 py-3 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                >
-                  <Download className="w-4 h-4" />
-                  <span>Download PDF File</span>
-                </button>
+                  <button
+                    onClick={() => handleSaveOrDownloadPdf('download')}
+                    disabled={isProcessing || pages.length === 0}
+                    className="flex-1 sm:flex-initial px-4 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <Download className="w-4 h-4 shrink-0" />
+                    <span>Download PDF</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleSaveOrDownloadPdf('share')}
+                    disabled={isProcessing || pages.length === 0}
+                    className="flex-1 sm:flex-initial px-4 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center justify-center gap-2 cursor-pointer whitespace-nowrap"
+                  >
+                    <Share2 className="w-4 h-4 text-[#2563EB] shrink-0" />
+                    <span>Share PDF</span>
+                  </button>
+                </div>
               </div>
             </div>
           )}

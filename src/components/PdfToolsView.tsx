@@ -50,42 +50,69 @@ import { formatBytes } from '../services/storageService';
 
 interface PdfToolsViewProps {
   initialTool?: ToolId;
+  activeDocumentId?: string;
   documents: StoredDocument[];
   onSaveNewDocument: (doc: StoredDocument) => Promise<void>;
   onUpdateDocument: (doc: StoredDocument) => Promise<void>;
+  onOpenInEditor?: (doc: StoredDocument) => void;
+  onUploadNewPdf?: (
+    files: FileList | File[],
+    openInEditorAfter?: boolean
+  ) => Promise<void>;
 }
 
-const TOOL_TABS: {
-  id: ToolId;
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
+const TOOL_CATEGORIES: {
+  category: string;
+  items: {
+    id: ToolId;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+  }[];
 }[] = [
-  { id: 'merge-pdf', label: 'Merge PDF', icon: Merge },
-  { id: 'split-pdf', label: 'Split PDF', icon: Scissors },
-  { id: 'compress-pdf', label: 'Compress PDF', icon: Minimize2 },
-  { id: 'img-to-pdf', label: 'Images to PDF', icon: FileImage },
-  { id: 'pdf-to-img', label: 'PDF to PNG/JPG & Text', icon: Images },
-  { id: 'organize-pdf', label: 'Organize & Rotate', icon: LayoutGrid },
-  { id: 'ocr-pdf', label: 'OCR (English & Swahili)', icon: ScanText },
-  { id: 'security-pdf', label: 'PDF Security', icon: Shield },
+  {
+    category: 'Page Structure',
+    items: [
+      { id: 'split-pdf', label: 'Split PDF', icon: Scissors },
+      { id: 'merge-pdf', label: 'Merge PDF', icon: Merge },
+      { id: 'organize-pdf', label: 'Organize & Rotate', icon: LayoutGrid },
+    ],
+  },
+  {
+    category: 'Size & Format',
+    items: [
+      { id: 'compress-pdf', label: 'Compress PDF', icon: Minimize2 },
+      { id: 'pdf-to-img', label: 'PDF to Pictures', icon: Images },
+      { id: 'img-to-pdf', label: 'Photos to PDF', icon: FileImage },
+    ],
+  },
+  {
+    category: 'OCR & Security',
+    items: [
+      { id: 'ocr-pdf', label: 'OCR Text (EN/SW)', icon: ScanText },
+      { id: 'security-pdf', label: 'PDF Security', icon: Shield },
+    ],
+  },
 ];
 
 export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   initialTool = 'merge-pdf',
+  activeDocumentId,
   documents,
   onSaveNewDocument,
   onUpdateDocument,
+  onOpenInEditor,
+  onUploadNewPdf,
 }) => {
   const normalizedInitial =
     initialTool === 'rotate-pdf'
       ? 'organize-pdf'
       : initialTool === 'scan-to-pdf' || initialTool === 'edit-pdf'
-        ? 'merge-pdf'
+        ? 'split-pdf'
         : initialTool;
 
   const [activeTool, setActiveTool] = useState<ToolId>(normalizedInitial);
   const [selectedDocId, setSelectedDocId] = useState<string>(
-    documents[0]?.id || ''
+    activeDocumentId || documents[0]?.id || ''
   );
   const [isBusy, setIsBusy] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -101,6 +128,12 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       );
     }
   }, [initialTool]);
+
+  useEffect(() => {
+    if (activeDocumentId) {
+      setSelectedDocId(activeDocumentId);
+    }
+  }, [activeDocumentId]);
 
   useEffect(() => {
     if (!selectedDocId && documents.length > 0) {
@@ -485,8 +518,23 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         data: compressed,
         name: outName,
       });
+
+      const newDoc: StoredDocument = {
+        id: `doc-compress-${Date.now()}`,
+        name: outName,
+        category: selectedDoc.category,
+        starred: false,
+        sizeBytes: compressed.byteLength,
+        pageCount: selectedDoc.pageCount,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: compressed,
+      };
+      await onSaveNewDocument(newDoc);
+
       setFeedback(
-        `Compression complete: ${formatBytes(selectedDoc.sizeBytes)} → ${formatBytes(compressed.byteLength)}.`
+        `Compression complete: ${formatBytes(selectedDoc.sizeBytes)} → ${formatBytes(compressed.byteLength)} (Saved to My Files).`
       );
     } finally {
       setIsBusy(false);
@@ -1013,28 +1061,28 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Header & Tool Selector */}
-      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-5 space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+      {/* Header, Active Document Bar & Grouped Tool Switcher */}
+      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-5 space-y-5">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
           <div>
             <h1 className="text-xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-              PDF Processing & OCR Workbench
+              PDF Tools & OCR Workbench
             </h1>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              All operations execute locally in your browser using pdf-lib, PDF.js, and Tesseract.js
+              Select a tool below. Every action runs locally on your device with instant download.
             </p>
           </div>
 
-          {/* Target Document Selector (for single-doc tools) */}
+          {/* Sticky Active File Context Bar (for single-doc tools) */}
           {activeTool !== 'merge-pdf' && activeTool !== 'img-to-pdf' && (
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-medium text-[#6E667D] dark:text-[#A39BB5] whitespace-nowrap">
-                Target PDF:
+            <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-2">
+              <span className="text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] pl-1.5 whitespace-nowrap">
+                Active PDF:
               </span>
               <select
                 value={selectedDocId}
                 onChange={(e) => setSelectedDocId(e.target.value)}
-                className="text-xs font-bold bg-[#FAF9FB] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-3 py-2 text-[#14101B] dark:text-[#F4F1F8] max-w-xs truncate"
+                className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2.5 py-1.5 text-[#14101B] dark:text-[#F4F1F8] max-w-[220px] sm:max-w-xs truncate cursor-pointer"
               >
                 {documents.map((doc) => (
                   <option key={doc.id} value={doc.id}>
@@ -1042,33 +1090,74 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                   </option>
                 ))}
               </select>
+
+              {onUploadNewPdf && (
+                <label className="px-2.5 py-1.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+                  <Upload className="w-3.5 h-3.5 shrink-0" />
+                  <span>Upload PDF</span>
+                  <input
+                    type="file"
+                    accept="application/pdf"
+                    className="hidden"
+                    onChange={async (e) => {
+                      if (e.target.files && e.target.files.length > 0) {
+                        const files = Array.from(e.target.files);
+                        e.target.value = '';
+                        await onUploadNewPdf(files, false);
+                      }
+                    }}
+                  />
+                </label>
+              )}
+
+              {selectedDoc && onOpenInEditor && (
+                <button
+                  type="button"
+                  onClick={() => onOpenInEditor(selectedDoc)}
+                  className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer whitespace-nowrap"
+                >
+                  Open in Editor
+                </button>
+              )}
             </div>
           )}
         </div>
 
-        {/* Tool Tabs */}
-        <div className="flex items-center gap-1.5 p-1 bg-[#F2EFF6] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg overflow-x-auto">
-          {TOOL_TABS.map((t) => {
-            const Icon = t.icon;
-            const active = activeTool === t.id;
-            return (
-              <button
-                key={t.id}
-                onClick={() => {
-                  setActiveTool(t.id);
-                  setFeedback(null);
-                }}
-                className={`px-3 py-2 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  active
-                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-semibold'
-                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
-                }`}
-              >
-                <Icon className="w-3.5 h-3.5 shrink-0" />
-                <span>{t.label}</span>
-              </button>
-            );
-          })}
+        {/* Grouped 3-Category Tool Switcher */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          {TOOL_CATEGORIES.map((group) => (
+            <div
+              key={group.category}
+              className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2"
+            >
+              <p className="px-1.5 text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5]">
+                {group.category}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {group.items.map((t) => {
+                  const Icon = t.icon;
+                  const active = activeTool === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      onClick={() => {
+                        setActiveTool(t.id);
+                        setFeedback(null);
+                      }}
+                      className={`flex-1 min-w-[96px] px-2.5 py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                        active
+                          ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-bold shadow-xs'
+                          : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{t.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 

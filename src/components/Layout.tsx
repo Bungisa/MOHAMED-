@@ -27,7 +27,7 @@ interface LayoutProps {
   children: React.ReactNode;
 }
 
-const NAV_ITEMS: {
+const PRIMARY_NAV_ITEMS: {
   id: ActiveView;
   label: string;
   shortLabel: string;
@@ -35,19 +35,19 @@ const NAV_ITEMS: {
 }[] = [
   {
     id: 'dashboard',
-    label: 'Dashboard',
+    label: 'Home Workspace',
     shortLabel: 'Home',
     icon: LayoutDashboard,
   },
   {
     id: 'scanner',
-    label: 'Scanner Studio',
+    label: 'Scan Document',
     shortLabel: 'Scan',
     icon: Camera,
   },
   {
     id: 'editor',
-    label: 'PDF Editor & Viewer',
+    label: 'PDF Editor',
     shortLabel: 'Editor',
     icon: FileEdit,
   },
@@ -59,10 +59,18 @@ const NAV_ITEMS: {
   },
   {
     id: 'documents',
-    label: 'My Documents',
-    shortLabel: 'Library',
+    label: 'My Files',
+    shortLabel: 'Files',
     icon: FolderKanban,
   },
+];
+
+const SECONDARY_NAV_ITEMS: {
+  id: ActiveView;
+  label: string;
+  shortLabel: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
   {
     id: 'settings',
     label: 'Settings',
@@ -71,7 +79,7 @@ const NAV_ITEMS: {
   },
   {
     id: 'help',
-    label: 'Help & Support',
+    label: 'Help & Guide',
     shortLabel: 'Help',
     icon: HelpCircle,
   },
@@ -107,7 +115,7 @@ export const Layout: React.FC<LayoutProps> = ({
         <div className="h-16 px-6 flex items-center justify-between border-b border-[#E4DFEC] dark:border-[#261F33]">
           <button
             onClick={() => onNavigate('dashboard')}
-            className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4A1D5E] dark:focus-visible:ring-[#9D5CE5] rounded"
+            className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4A1D5E] dark:focus-visible:ring-[#9D5CE5] rounded cursor-pointer"
           >
             <span className="text-lg font-bold tracking-tight text-[#4A1D5E] dark:text-[#F4F1F8] whitespace-nowrap">
               ScanPro Studio
@@ -126,26 +134,58 @@ export const Layout: React.FC<LayoutProps> = ({
           </button>
         </div>
 
-        {/* Navigation Links */}
-        <nav className="flex-1 px-3 py-2 space-y-1 overflow-y-auto" aria-label="Sidebar Navigation">
-          {NAV_ITEMS.map((item) => {
-            const Icon = item.icon;
-            const isActive = activeView === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => onNavigate(item.id)}
-                className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  isActive
-                    ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5]/20 dark:text-[#D5B3FF]'
-                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33]/60 hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
-                }`}
-              >
-                <Icon className="w-4 h-4 shrink-0" />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+        {/* Core Workspaces Navigation */}
+        <nav
+          className="flex-1 px-3 py-2 space-y-5 overflow-y-auto"
+          aria-label="Sidebar Navigation"
+        >
+          <div className="space-y-1">
+            <p className="px-3 pb-1 text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5]">
+              Workspaces
+            </p>
+            {PRIMARY_NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => onNavigate(item.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    isActive
+                      ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5]/20 dark:text-[#D5B3FF] font-semibold'
+                      : 'text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33]/60 hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="space-y-1 pt-3 border-t border-[#E4DFEC] dark:border-[#261F33]">
+            <p className="px-3 pb-1 text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5]">
+              Preferences & Support
+            </p>
+            {SECONDARY_NAV_ITEMS.map((item) => {
+              const Icon = item.icon;
+              const isActive = activeView === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => onNavigate(item.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                    isActive
+                      ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5]/20 dark:text-[#D5B3FF] font-semibold'
+                      : 'text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33]/60 hover:text-[#14101B] dark:hover:text-[#F4F1F8]'
+                  }`}
+                >
+                  <Icon className="w-4 h-4 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
         </nav>
 
         {/* Local Storage & Privacy Meter */}
@@ -184,8 +224,8 @@ export const Layout: React.FC<LayoutProps> = ({
       >
         {/* Strict 3-Zone Top Bar Contract (hidden in full-screen Document Editor mode) */}
         {activeView !== 'editor' && (
-          <header className="h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
-            {/* Zone 1: Single text element wordmark / breadcrumb */}
+          <header className="h-14 sm:h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
+            {/* Zone 1: Single text element wordmark */}
             <button
               onClick={() => onNavigate('dashboard')}
               className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
@@ -193,76 +233,58 @@ export const Layout: React.FC<LayoutProps> = ({
               ScanPro Studio
             </button>
 
-            {/* Zone 2: 4-5 concise single-line navigation links */}
+            {/* Zone 2: 5 concise single-line navigation links */}
             <nav
               className="hidden md:flex items-center gap-6 text-sm font-medium text-[#6E667D] dark:text-[#A39BB5]"
               aria-label="Primary Workspace Navigation"
             >
-              <button
-                onClick={() => onNavigate('dashboard')}
-                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  activeView === 'dashboard'
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                    : ''
-                }`}
-              >
-                Dashboard
-              </button>
-              <button
-                onClick={() => onNavigate('scanner')}
-                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  activeView === 'scanner'
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                    : ''
-                }`}
-              >
-                Scanner
-              </button>
-              <button
-                onClick={() => onNavigate('editor')}
-                className="hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                PDF Editor
-              </button>
-              <button
-                onClick={() => onNavigate('tools')}
-                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  activeView === 'tools'
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                    : ''
-                }`}
-              >
-                PDF Tools
-              </button>
-              <button
-                onClick={() => onNavigate('documents')}
-                className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  activeView === 'documents'
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2'
-                    : ''
-                }`}
-              >
-                Library
-              </button>
+              {PRIMARY_NAV_ITEMS.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => onNavigate(item.id)}
+                  className={`hover:text-[#14101B] dark:hover:text-[#F4F1F8] transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                    activeView === item.id
+                      ? 'text-[#4A1D5E] dark:text-[#D5B3FF] underline underline-offset-8 decoration-2 font-semibold'
+                      : ''
+                  }`}
+                >
+                  {item.shortLabel}
+                </button>
+              ))}
             </nav>
 
-            {/* Zone 3: Theme cycle & Primary Action */}
-            <div className="flex items-center gap-3 shrink-0">
+            {/* Zone 3: Theme, Settings & Primary Action */}
+            <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
               <button
                 onClick={cycleTheme}
                 title={`Theme: ${theme} (click to switch)`}
                 aria-label={`Current theme ${theme}. Click to switch theme`}
-                className="p-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
+                className="w-10 h-10 flex items-center justify-center rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
               >
                 {theme === 'light' && <Sun className="w-4 h-4" />}
                 {theme === 'dark' && <Moon className="w-4 h-4" />}
                 {theme === 'system' && <Monitor className="w-4 h-4" />}
               </button>
               <button
-                onClick={onQuickScan}
-                className="px-4 py-2 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                onClick={() =>
+                  onNavigate(activeView === 'settings' ? 'dashboard' : 'settings')
+                }
+                title="Preferences & Storage Settings"
+                aria-label="Preferences and Storage Settings"
+                className={`w-10 h-10 flex items-center justify-center rounded-lg border transition-colors cursor-pointer ${
+                  activeView === 'settings'
+                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]'
+                    : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                }`}
               >
-                Scan Document
+                <Settings className="w-4 h-4" />
+              </button>
+              <button
+                onClick={onQuickScan}
+                className="px-3.5 sm:px-4 h-10 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
+              >
+                <Camera className="w-3.5 h-3.5 shrink-0" />
+                <span>Scan</span>
               </button>
             </div>
           </header>
@@ -278,22 +300,22 @@ export const Layout: React.FC<LayoutProps> = ({
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation (hidden in full-screen Document Editor mode because Editor has its own bottom dock) */}
+      {/* Mobile Bottom Navigation: 5 Spacious Thumb-Zone Pillars (Home, Scan, Editor, Tools, Files) */}
       {activeView !== 'editor' && (
         <nav
           aria-label="Mobile Bottom Navigation"
-          className="lg:hidden fixed bottom-0 inset-x-0 h-16 bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-t border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-around px-2 z-40"
+          className="lg:hidden fixed bottom-0 inset-x-0 h-16 bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-t border-[#E4DFEC] dark:border-[#261F33] grid grid-cols-5 items-center px-1 z-40"
         >
-          {NAV_ITEMS.slice(0, 6).map((item) => {
+          {PRIMARY_NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeView === item.id;
             return (
               <button
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
-                className={`flex flex-col items-center justify-center py-1 px-2.5 rounded-lg text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                className={`min-h-[48px] flex flex-col items-center justify-center py-1 px-1 rounded-xl text-[11px] font-medium transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                   isActive
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-semibold'
+                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-bold bg-[#4A1D5E]/8 dark:bg-[#9D5CE5]/15'
                     : 'text-[#6E667D] dark:text-[#A39BB5]'
                 }`}
               >

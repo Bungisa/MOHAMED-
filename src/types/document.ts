@@ -97,6 +97,11 @@ export interface StoredDocument {
   basePdfData?: Uint8Array; // Clean base PDF before overlay baking so saved annotations/pictures can be removed later
   thumbnailDataUrl?: string;
   annotations?: AnnotationElement[];
+  appliedFilter?: ScanFilterType;
+  appliedBrightness?: number;
+  appliedContrast?: number;
+  watermarkText?: string;
+  addPageNumbers?: boolean;
   ocrText?: string;
   isProtected?: boolean;
   protectionHint?: string;

@@ -97,7 +97,11 @@ export default function App() {
     const flds = await storageService.getFolders();
     setDocuments(docs);
     setFolders(flds);
-    setActiveDocument((prev) => prev || docs[0] || null);
+    setActiveDocument((prev) => {
+      if (!prev) return docs[0] || null;
+      const freshMatch = docs.find((d) => d.id === prev.id);
+      return freshMatch || prev;
+    });
   }, []);
 
   useEffect(() => {
@@ -106,6 +110,35 @@ export default function App() {
       await refreshVault();
     };
     init();
+  }, [refreshVault]);
+
+  // Synchronize activeView with browser history so mobile hardware '<' Back button returns to Home/Dashboard with saved documents intact
+  const navigateToView = useCallback((nextView: ActiveView) => {
+    setActiveView((prev) => {
+      if (prev !== nextView) {
+        try {
+          window.history.pushState({ view: nextView }, '', `#${nextView}`);
+        } catch {
+          // Ignore in restricted iframe contexts
+        }
+      }
+      return nextView;
+    });
+  }, []);
+
+  useEffect(() => {
+    try {
+      window.history.replaceState({ view: 'dashboard' }, '', '#dashboard');
+    } catch {
+      // Ignore in restricted iframe contexts
+    }
+    const onPopState = (e: PopStateEvent) => {
+      const targetView = (e.state?.view as ActiveView) || 'dashboard';
+      setActiveView(targetView);
+      refreshVault();
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
   }, [refreshVault]);
 
   const handleUpdatePreferences = (next: AppPreferences) => {
@@ -172,7 +205,7 @@ export default function App() {
       setActiveDocument(lastAdded);
       if (openInEditorAfter) {
         setEditorReaderMode(false);
-        setActiveView('editor');
+        navigateToView('editor');
       }
       showToast(
         `Opened "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
@@ -182,14 +215,19 @@ export default function App() {
 
   const handleOpenTool = (toolId: ToolId) => {
     if (toolId === 'scan-to-pdf') {
-      setActiveView('scanner');
+      navigateToView('scanner');
     } else if (toolId === 'edit-pdf') {
       setEditorReaderMode(false);
-      setActiveView('editor');
+      navigateToView('editor');
     } else {
       setActiveTool(toolId);
-      setActiveView('tools');
+      navigateToView('tools');
     }
+  };
+
+  const handleOpenToolForDocument = (doc: StoredDocument, toolId: ToolId) => {
+    setActiveDocument(doc);
+    handleOpenTool(toolId);
   };
 
   const handleOpenDocumentInEditor = async (
@@ -204,7 +242,7 @@ export default function App() {
     await refreshVault();
     setActiveDocument(updated);
     setEditorReaderMode(readerMode);
-    setActiveView('editor');
+    navigateToView('editor');
   };
 
   const handleSaveScannedDocument = async (
@@ -216,16 +254,21 @@ export default function App() {
     setActiveDocument(doc);
     if (openInEditorAfter) {
       setEditorReaderMode(false);
-      setActiveView('editor');
+      navigateToView('editor');
     }
     showToast(`Saved scanned PDF "${doc.name}" (${doc.pageCount} pages).`);
   };
 
-  const handleSaveUpdatedDocument = async (doc: StoredDocument) => {
+  const handleSaveUpdatedDocument = async (
+    doc: StoredDocument,
+    silent = false
+  ) => {
     await storageService.saveDocument(doc);
     await refreshVault();
     setActiveDocument(doc);
-    showToast(`Saved changes to "${doc.name}".`);
+    if (!silent) {
+      showToast(`Saved changes to "${doc.name}".`);
+    }
   };
 
   const handleToggleStar = async (doc: StoredDocument) => {
@@ -285,14 +328,14 @@ export default function App() {
   return (
     <Layout
       activeView={activeView}
-      onNavigate={setActiveView}
+      onNavigate={navigateToView}
       theme={preferences.theme}
       onThemeChange={(theme) =>
         handleUpdatePreferences({ ...preferences, theme })
       }
       totalStorageBytes={totalStorageBytes}
       documentCount={documents.length}
-      onQuickScan={() => setActiveView('scanner')}
+      onQuickScan={() => navigateToView('scanner')}
     >
       {/* Toast Notification Banner */}
       {toast && (
@@ -359,13 +402,14 @@ export default function App() {
       {activeView === 'dashboard' && (
         <DashboardView
           documents={documents}
-          onNavigate={setActiveView}
+          onNavigate={navigateToView}
           onOpenTool={handleOpenTool}
+          onOpenToolForDocument={handleOpenToolForDocument}
           onOpenDocumentInEditor={handleOpenDocumentInEditor}
           onUploadPdfFiles={handleUploadPdfFiles}
           onImportImagesToScanner={(files) => {
             setScannerImportedFiles(files);
-            setActiveView('scanner');
+            navigateToView('scanner');
           }}
           onToggleStar={handleToggleStar}
           onDownloadDocument={(doc) =>
@@ -393,14 +437,15 @@ export default function App() {
           onSelectDocument={(doc) => setActiveDocument(doc)}
           onUploadNewPdf={handleUploadPdfFiles}
           onSaveUpdatedDocument={handleSaveUpdatedDocument}
-          onCloseEditor={() => setActiveView('dashboard')}
-          onNavigate={setActiveView}
+          onCloseEditor={() => navigateToView('dashboard')}
+          onNavigate={navigateToView}
         />
       )}
 
       {activeView === 'tools' && (
         <PdfToolsView
           initialTool={activeTool}
+          activeDocumentId={activeDocument?.id}
           documents={documents}
           onSaveNewDocument={async (doc) => {
             await storageService.saveDocument(doc);
@@ -408,6 +453,8 @@ export default function App() {
             setActiveDocument(doc);
           }}
           onUpdateDocument={handleSaveUpdatedDocument}
+          onOpenInEditor={(doc) => handleOpenDocumentInEditor(doc, false)}
+          onUploadNewPdf={handleUploadPdfFiles}
         />
       )}
 

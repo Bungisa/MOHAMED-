@@ -92,7 +92,7 @@ interface PdfEditorViewProps {
   initialReaderMode?: boolean;
   onSelectDocument: (doc: StoredDocument) => void;
   onUploadNewPdf: (files: FileList | File[]) => Promise<void>;
-  onSaveUpdatedDocument: (doc: StoredDocument) => Promise<void>;
+  onSaveUpdatedDocument: (doc: StoredDocument, silent?: boolean) => Promise<void>;
   onCloseEditor?: () => void;
   onNavigate?: (view: ActiveView) => void;
 }
@@ -434,33 +434,53 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     }
   }, []);
 
+  const loadedDocIdRef = useRef<string | null>(null);
+  const hasInitializedDocRef = useRef(false);
+
   useEffect(() => {
-    if (activeDocument) {
-      const sourceBytes = activeDocument.basePdfData || activeDocument.pdfData;
-      const cloned = new Uint8Array(sourceBytes);
-      setWorkingPdfBytes(cloned);
-      setAnnotations(activeDocument.annotations || []);
-      setUndoStack([]);
-      setRedoStack([]);
-      setSelectedAnnId(null);
-      setEditingTextAnnId(null);
-      setSelectedEmbedded(null);
-      setSelectedPictureRegion(null);
-      setCurrentPage(1);
-      setFitMode('fit-page');
-      setZoom(1.0);
-      setPageColorFilter('original');
-      setBrightnessSwitchOn(false);
-      setPageBrightness(0);
-      setPageContrast(0);
-      setSaveDocName(activeDocument.name.replace(/\.pdf$/i, ''));
-      setCompressionQuality('high');
-      setHighCompression(false);
-      setPreparedBaseBytes(null);
-      setCompressedPreviewBytes(null);
-      setTotalExpectedPages(activeDocument.pageCount || 1);
-      renderAllPages(cloned);
+    if (!activeDocument) {
+      loadedDocIdRef.current = null;
+      hasInitializedDocRef.current = false;
+      return;
     }
+    // Only reset/re-render when switching to a different document ID so saving the active document in-place never wipes out your edits or view
+    if (loadedDocIdRef.current === activeDocument.id) {
+      return;
+    }
+    loadedDocIdRef.current = activeDocument.id;
+    hasInitializedDocRef.current = false;
+
+    const sourceBytes = activeDocument.basePdfData || activeDocument.pdfData;
+    const cloned = new Uint8Array(sourceBytes);
+    setWorkingPdfBytes(cloned);
+    setAnnotations(activeDocument.annotations || []);
+    setUndoStack([]);
+    setRedoStack([]);
+    setSelectedAnnId(null);
+    setEditingTextAnnId(null);
+    setSelectedEmbedded(null);
+    setSelectedPictureRegion(null);
+    setCurrentPage(1);
+    setFitMode('fit-page');
+    setZoom(1.0);
+    const savedFilter = activeDocument.appliedFilter || 'original';
+    const savedBrightness = activeDocument.appliedBrightness || 0;
+    const savedContrast = activeDocument.appliedContrast || 0;
+    setPageColorFilter(savedFilter);
+    setBrightnessSwitchOn(savedBrightness > 0);
+    setPageBrightness(savedBrightness);
+    setPageContrast(savedContrast);
+    setWatermarkText(activeDocument.watermarkText || '');
+    setAddPageNumbers(Boolean(activeDocument.addPageNumbers));
+    setSaveDocName(activeDocument.name.replace(/\.pdf$/i, ''));
+    setCompressionQuality('high');
+    setHighCompression(false);
+    setPreparedBaseBytes(null);
+    setCompressedPreviewBytes(null);
+    setTotalExpectedPages(activeDocument.pageCount || 1);
+    renderAllPages(cloned).then(() => {
+      hasInitializedDocRef.current = true;
+    });
   }, [activeDocument, renderAllPages]);
 
   const jumpToPage = (pageNum: number) => {
@@ -1055,7 +1075,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       return;
     }
 
-    if (activeTool === 'select-picture' && e.target === overlayEl) {
+    if (
+      (activeTool === 'select-picture' || activeTool === 'whiteout') &&
+      e.target === overlayEl
+    ) {
       setSelectedAnnId(null);
       setSelectedEmbedded(null);
       setRegionDragStart({ pageNumber, x: sx, y: sy });
@@ -1195,8 +1218,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     if (regionDragStart && regionDragStart.pageNumber === pageNumber) {
       const x = Math.min(regionDragStart.x, cx);
       const y = Math.min(regionDragStart.y, cy);
-      const width = Math.max(0.02, Math.abs(cx - regionDragStart.x));
-      const height = Math.max(0.02, Math.abs(cy - regionDragStart.y));
+      const width = Math.max(0.015, Math.abs(cx - regionDragStart.x));
+      const height = Math.max(0.015, Math.abs(cy - regionDragStart.y));
       setSelectedPictureRegion({ pageNumber, x, y, width, height });
       return;
     }
@@ -1234,6 +1257,42 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       pushAnnotationsWithUndo([...annotations, newDrawAnn]);
       setSelectedAnnId(newId);
     }
+
+    // One-Swipe Watermark / Banner Eraser: when activeTool === 'whiteout' and user dragged a region, immediately place a clean cover box over it
+    if (activeTool === 'whiteout' && regionDragStart && selectedPictureRegion) {
+      if (
+        selectedPictureRegion.width > 0.025 ||
+        selectedPictureRegion.height > 0.02
+      ) {
+        const newId = `ann-erase-${Date.now()}`;
+        const eraseAnn: AnnotationElement = {
+          id: newId,
+          pageNumber: selectedPictureRegion.pageNumber,
+          type: 'whiteout',
+          x: selectedPictureRegion.x,
+          y: selectedPictureRegion.y,
+          width: selectedPictureRegion.width,
+          height: selectedPictureRegion.height,
+          endX: selectedPictureRegion.x + selectedPictureRegion.width,
+          endY: selectedPictureRegion.y + selectedPictureRegion.height,
+          color: '#FFFFFF',
+          opacity: 1,
+          createdAt: new Date().toISOString(),
+        };
+        pushAnnotationsWithUndo([...annotations, eraseAnn]);
+        setSelectedAnnId(newId);
+        setSelectedPictureRegion(null);
+        setRegionDragStart(null);
+        setActiveTool('select');
+        setStatusMessage(
+          'Covered watermark/banner area! Tap "Write Text" to add text over it, or drag handles to adjust.'
+        );
+        return;
+      } else {
+        setSelectedPictureRegion(null);
+      }
+    }
+
     setActiveDrawStroke(null);
     setDragState(null);
     setRegionDragStart(null);
@@ -1596,22 +1655,134 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     return `${mb.toFixed(2)} MB`;
   };
 
-  // Opens the Save Document Bottom Sheet (with Compress Now option) and computes the current baked PDF bytes
+  // Helper to bake and persist all current edits (annotations, OCV BLACK / filters, brightness, watermark, compression) into IndexedDB
+  const persistCurrentEditsToVault = useCallback(
+    async (options?: {
+      customDocName?: string;
+      silent?: boolean;
+      preBakedBytes?: Uint8Array | null;
+      preCompressedBytes?: Uint8Array | null;
+    }): Promise<{ bakedBytes: Uint8Array; finalPdfBytes: Uint8Array; finalPdfName: string } | null> => {
+      if (!workingPdfBytes || !activeDocument) return null;
+      const cleanTitle =
+        (options?.customDocName ?? saveDocName).trim() ||
+        activeDocument.name.replace(/\.pdf$/i, '');
+      const finalPdfName = cleanTitle.toLowerCase().endsWith('.pdf')
+        ? cleanTitle
+        : `${cleanTitle}.pdf`;
+
+      const hasFilteredPages = Object.keys(filteredPageUrls).length > 0;
+      const bakedBytes =
+        options?.preBakedBytes ||
+        (await bakeAnnotationsIntoPdf(workingPdfBytes, annotations, {
+          addPageNumbers,
+          pageNumberPosition,
+          watermarkText,
+          watermarkOpacity,
+          filteredPageDataUrls: hasFilteredPages ? filteredPageUrls : undefined,
+        }));
+
+      let finalPdfBytes = options?.preCompressedBytes || bakedBytes;
+      if (
+        !options?.preCompressedBytes &&
+        (compressionQuality !== 'high' ||
+          highCompression ||
+          pdfPageSize !== 'A4')
+      ) {
+        finalPdfBytes = await compressPdfWithOptions(bakedBytes, {
+          quality: compressionQuality,
+          highCompression,
+          pageSize: pdfPageSize,
+        });
+      }
+
+      const updatedDoc: StoredDocument = {
+        ...activeDocument,
+        name: finalPdfName,
+        sizeBytes: finalPdfBytes.byteLength,
+        pageCount: pages.length || activeDocument.pageCount,
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: finalPdfBytes,
+        basePdfData: new Uint8Array(workingPdfBytes),
+        annotations,
+        appliedFilter: pageColorFilter,
+        appliedBrightness: pageBrightness,
+        appliedContrast: pageContrast,
+        watermarkText,
+        addPageNumbers,
+        thumbnailDataUrl:
+          filteredPageUrls[1] ||
+          pages[0]?.dataUrl ||
+          activeDocument.thumbnailDataUrl,
+      };
+
+      await onSaveUpdatedDocument(updatedDoc, options?.silent ?? false);
+      return { bakedBytes, finalPdfBytes, finalPdfName };
+    },
+    [
+      workingPdfBytes,
+      activeDocument,
+      saveDocName,
+      filteredPageUrls,
+      annotations,
+      addPageNumbers,
+      pageNumberPosition,
+      watermarkText,
+      watermarkOpacity,
+      compressionQuality,
+      highCompression,
+      pdfPageSize,
+      pages,
+      pageColorFilter,
+      pageBrightness,
+      pageContrast,
+      onSaveUpdatedDocument,
+    ]
+  );
+
+  // Automatic background save (debounced 900ms) so any edits made are immediately saved in the Local Vault even if you press Back or switch tabs
+  useEffect(() => {
+    if (!hasInitializedDocRef.current || !workingPdfBytes || !activeDocument) {
+      return;
+    }
+    if (isApplyingFilter || isLoadingPages) return;
+    const timer = setTimeout(() => {
+      persistCurrentEditsToVault({ silent: true }).catch(() => {});
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [
+    annotations,
+    workingPdfBytes,
+    pageColorFilter,
+    pageBrightness,
+    pageContrast,
+    watermarkText,
+    addPageNumbers,
+    filteredPageUrls,
+    isApplyingFilter,
+    isLoadingPages,
+    activeDocument,
+    persistCurrentEditsToVault,
+  ]);
+
+  // Opens the Save Document Bottom Sheet (with Compress Now option) AND immediately persists the edited document to My Documents / Local Vault
   const handleOpenSaveSheet = async () => {
     if (!workingPdfBytes || !activeDocument) return;
-    setSaveDocName(activeDocument.name.replace(/\.pdf$/i, ''));
+    const currentCleanName =
+      saveDocName.trim() || activeDocument.name.replace(/\.pdf$/i, '');
+    setSaveDocName(currentCleanName);
     setIsRenamingInSaveModal(false);
     setShowSaveModal(true);
     try {
-      const hasFilteredPages = Object.keys(filteredPageUrls).length > 0;
-      const baked = await bakeAnnotationsIntoPdf(workingPdfBytes, annotations, {
-        addPageNumbers,
-        pageNumberPosition,
-        watermarkText,
-        watermarkOpacity,
-        filteredPageDataUrls: hasFilteredPages ? filteredPageUrls : undefined,
+      const saved = await persistCurrentEditsToVault({
+        customDocName: currentCleanName,
+        silent: false,
       });
-      setPreparedBaseBytes(baked);
+      if (saved) {
+        setPreparedBaseBytes(saved.bakedBytes);
+        setCompressedPreviewBytes(saved.finalPdfBytes);
+      }
     } catch (err) {
       console.error('Failed to prepare baked PDF preview:', err);
       setPreparedBaseBytes(workingPdfBytes);
@@ -1676,51 +1847,15 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     if (!workingPdfBytes || !activeDocument) return;
     setIsLoadingPages(true);
     try {
-      const cleanTitle =
-        saveDocName.trim() || activeDocument.name.replace(/\.pdf$/i, '');
-      const finalPdfName = cleanTitle.toLowerCase().endsWith('.pdf')
-        ? cleanTitle
-        : `${cleanTitle}.pdf`;
-
-      let baseBytes = preparedBaseBytes;
-      if (!baseBytes) {
-        const hasFilteredPages = Object.keys(filteredPageUrls).length > 0;
-        baseBytes = await bakeAnnotationsIntoPdf(workingPdfBytes, annotations, {
-          addPageNumbers,
-          pageNumberPosition,
-          watermarkText,
-          watermarkOpacity,
-          filteredPageDataUrls: hasFilteredPages ? filteredPageUrls : undefined,
-        });
-      }
-
-      let finalPdfBytes = compressedPreviewBytes || baseBytes;
-      if (
-        !compressedPreviewBytes &&
-        (compressionQuality !== 'high' ||
-          highCompression ||
-          pdfPageSize !== 'A4')
-      ) {
-        finalPdfBytes = await compressPdfWithOptions(baseBytes, {
-          quality: compressionQuality,
-          highCompression,
-          pageSize: pdfPageSize,
-        });
-      }
-
-      // Persist updated PDF into ScanPro Local Vault
-      const updatedDoc: StoredDocument = {
-        ...activeDocument,
-        name: finalPdfName,
-        sizeBytes: finalPdfBytes.byteLength,
-        pageCount: pages.length,
-        updatedAt: new Date().toISOString(),
-        lastOpenedAt: new Date().toISOString(),
-        pdfData: finalPdfBytes,
-        basePdfData: new Uint8Array(workingPdfBytes),
-        annotations,
-      };
-      await onSaveUpdatedDocument(updatedDoc);
+      const saved = await persistCurrentEditsToVault({
+        customDocName: saveDocName,
+        silent: false,
+        preBakedBytes: preparedBaseBytes,
+        preCompressedBytes: compressedPreviewBytes,
+      });
+      if (!saved) return;
+      const { finalPdfBytes, finalPdfName } = saved;
+      const cleanTitle = finalPdfName.replace(/\.pdf$/i, '');
 
       // Handle JPG or Long Image export if chosen
       if (saveFormat === 'jpg' || createLongImage) {
@@ -1729,7 +1864,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           quality: compressionQuality,
           highCompression,
         });
-        const imgFileName = `${cleanTitle.replace(/\.pdf$/i, '')}${createLongImage ? '_LongImage' : ''}.jpg`;
+        const imgFileName = `${cleanTitle}${createLongImage ? '_LongImage' : ''}.jpg`;
         if (destination !== 'documents') {
           downloadBytesAsFile(imgExport.bytes, imgFileName, 'image/jpeg');
         }
@@ -1744,7 +1879,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       if (destination === 'phone') {
         downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
         setStatusMessage(
-          `Saved "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) to Phone / Device Storage.`
+          `Saved "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) to Phone Storage & My Documents.`
         );
       } else if (destination === 'documents') {
         setStatusMessage(
@@ -1817,17 +1952,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
   const handleSharePdf = async () => {
     if (!workingPdfBytes || !activeDocument) return;
-    const file = new File(
-      [new Uint8Array(workingPdfBytes)],
-      activeDocument.name,
-      {
-        type: 'application/pdf',
-      }
-    );
+    const saved = await persistCurrentEditsToVault({ silent: true });
+    const bytesToShare = saved ? saved.finalPdfBytes : workingPdfBytes;
+    const nameToShare = saved ? saved.finalPdfName : activeDocument.name;
+    const file = new File([new Uint8Array(bytesToShare)], nameToShare, {
+      type: 'application/pdf',
+    });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({
-          title: activeDocument.name,
+          title: nameToShare,
           text: 'Shared from ScanPro Studio',
           files: [file],
         });
@@ -1836,7 +1970,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         // Fallback if user cancels
       }
     }
-    downloadBytesAsFile(workingPdfBytes, activeDocument.name);
+    downloadBytesAsFile(bytesToShare, nameToShare);
     setStatusMessage(
       'Native device share sheet unavailable on this browser; downloaded PDF instead.'
     );
@@ -3088,6 +3222,63 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                                       />
                                     </div>
                                   )}
+                                  {ann.type === 'whiteout' && (
+                                    <div className="flex items-center gap-1 pr-1 border-r border-[#E4DFEC] dark:border-[#261F33]">
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleWriteTextOverPictureOrBox(
+                                            pageNum,
+                                            {
+                                              x: ann.x,
+                                              y: ann.y,
+                                              width: ann.width,
+                                              height: ann.height,
+                                            },
+                                            'Covered Area'
+                                          );
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-[#2563EB] text-white text-[10px] font-bold shadow-xs flex items-center gap-1 hover:bg-[#1D4ED8] cursor-pointer whitespace-nowrap"
+                                      >
+                                        <Type className="w-3 h-3" />
+                                        <span>Write Text</span>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={async (e) => {
+                                          e.stopPropagation();
+                                          const targetPage = pages[pageNum - 1];
+                                          if (!targetPage) return;
+                                          const rect = {
+                                            x: ann.x,
+                                            y: ann.y,
+                                            width: ann.width,
+                                            height: ann.height,
+                                          };
+                                          const bgPatch =
+                                            await reconstructBackgroundPatchFromDataUrl(
+                                              targetPage.dataUrl,
+                                              rect
+                                            );
+                                          if (bgPatch) {
+                                            updateSelectedAnnotation({
+                                              type: 'image',
+                                              imageDataUrl: bgPatch,
+                                            });
+                                            setStatusMessage(
+                                              'Blended cover with surrounding paper background!'
+                                            );
+                                          }
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-[#15803D] text-white text-[10px] font-bold shadow-xs flex items-center gap-1 hover:bg-[#166534] cursor-pointer whitespace-nowrap"
+                                        title="Match surrounding paper tone"
+                                      >
+                                        <Sparkles className="w-3 h-3" />
+                                        <span>Match Paper</span>
+                                      </button>
+                                    </div>
+                                  )}
                                   {ann.type === 'image' && (
                                     <>
                                       <button
@@ -3123,6 +3314,69 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                                       </button>
                                     </>
                                   )}
+
+                                  {/* 4-Way Touch Micro-Nudge Pad (← ↑ ↓ →) for Pixel-Precise Positioning on Mobile */}
+                                  <div className="flex items-center gap-0.5 px-1 border-r border-[#E4DFEC] dark:border-[#261F33] shrink-0">
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateSelectedAnnotation({
+                                          x: Math.max(0, ann.x - 0.005),
+                                        });
+                                      }}
+                                      title="Nudge Left"
+                                      className="p-1 rounded bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#2563EB] hover:text-white cursor-pointer"
+                                    >
+                                      <ChevronLeft className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateSelectedAnnotation({
+                                          y: Math.max(0, ann.y - 0.005),
+                                        });
+                                      }}
+                                      title="Nudge Up"
+                                      className="p-1 rounded bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#2563EB] hover:text-white cursor-pointer"
+                                    >
+                                      <ChevronUp className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateSelectedAnnotation({
+                                          y: Math.min(
+                                            1 - ann.height,
+                                            ann.y + 0.005
+                                          ),
+                                        });
+                                      }}
+                                      title="Nudge Down"
+                                      className="p-1 rounded bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#2563EB] hover:text-white cursor-pointer"
+                                    >
+                                      <ChevronDown className="w-3 h-3" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        updateSelectedAnnotation({
+                                          x: Math.min(
+                                            1 - ann.width,
+                                            ann.x + 0.005
+                                          ),
+                                        });
+                                      }}
+                                      title="Nudge Right"
+                                      className="p-1 rounded bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#2563EB] hover:text-white cursor-pointer"
+                                    >
+                                      <ChevronRight className="w-3 h-3" />
+                                    </button>
+                                  </div>
+
                                   <button
                                     type="button"
                                     onClick={(e) => {
@@ -4090,10 +4344,17 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     </button>
                   </div>
 
-                  {isApplyingFilter && (
+                  {isApplyingFilter ? (
                     <span className="text-[11px] font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] animate-pulse whitespace-nowrap">
-                      Removing watermark...
+                      Applying to all {pages.length} pages (
+                      {Object.keys(filteredPageUrls).length}/{pages.length})...
                     </span>
+                  ) : (
+                    pageColorFilter !== 'original' && (
+                      <span className="px-2 py-0.5 rounded-full bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[10px] font-bold whitespace-nowrap">
+                        ✓ Applied to All {pages.length} Pages
+                      </span>
+                    )
                   )}
                 </div>
 
@@ -4111,6 +4372,58 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             {bottomPanelTab === 'watermark' && (
               <div className="flex items-center justify-between gap-2 overflow-x-auto">
                 <div className="flex items-center gap-2 shrink-0">
+                  {/* 1-Tap OCV BLACK Watermark Remover */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next =
+                        pageColorFilter === 'ocv-black'
+                          ? 'original'
+                          : 'ocv-black';
+                      setPageColorFilter(next);
+                      if (next === 'ocv-black') {
+                        if (watermarkText) setWatermarkText('');
+                        setStatusMessage(
+                          `OCV BLACK enabled across all ${pages.length} pages: Background watermarks bleached away.`
+                        );
+                      } else {
+                        setStatusMessage('Restored original PDF page colors.');
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap border ${
+                      pageColorFilter === 'ocv-black'
+                        ? 'bg-[#15803D] text-white border-[#15803D]'
+                        : 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8] border-[#E4DFEC] dark:border-[#261F33]'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      {pageColorFilter === 'ocv-black'
+                        ? 'OCV BLACK: ON'
+                        : 'Remove Watermark (OCV BLACK)'}
+                    </span>
+                  </button>
+
+                  {/* 1-Swipe Banner / Stamp Eraser Box Tool */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setWorkspaceMode('annotate');
+                      setActiveTool('whiteout');
+                      setStatusMessage(
+                        'Swipe/drag a rectangle over any watermark banner (e.g. wazaelimu.com) or stamp on the page to erase it!'
+                      );
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap border ${
+                      activeTool === 'whiteout'
+                        ? 'bg-[#2563EB] text-white border-[#2563EB]'
+                        : 'bg-white dark:bg-[#16111F] text-[#2563EB] dark:text-[#60A5FA] border-[#2563EB]/40'
+                    }`}
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    <span>Swipe to Erase Banner / Stamp</span>
+                  </button>
+
                   <div className="flex items-center gap-1.5 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-2 py-1">
                     <Stamp className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
                     <input
@@ -4651,17 +4964,20 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           <div className="flex items-center gap-1.5">
             <button
               type="button"
-              onClick={() => {
+              onClick={async () => {
                 if (bottomPanelTab !== 'none') {
                   setBottomPanelTab('none');
-                } else if (onCloseEditor) {
-                  onCloseEditor();
+                } else {
+                  await persistCurrentEditsToVault({ silent: true });
+                  if (onCloseEditor) {
+                    onCloseEditor();
+                  }
                 }
               }}
               title={
                 bottomPanelTab !== 'none'
                   ? 'Close active tool drawer'
-                  : 'Exit Document Editor to Dashboard'
+                  : 'Save changes & exit Document Editor'
               }
               className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
             >
@@ -4739,8 +5055,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             )}
           </div>
 
-          {/* Right: Quick Compress + Download + Checkmark (✓) Save Button */}
+          {/* Right: Share + Quick Compress + Download + Checkmark (✓) Save Button */}
           <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={handleSharePdf}
+              title="Share PDF via WhatsApp, Google Drive, or Email"
+              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
+            >
+              <Share2 className="w-4 h-4" />
+            </button>
             <button
               type="button"
               onClick={async () => {
@@ -4808,20 +5132,27 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       {saveDocName || activeDocument.name}
                     </h3>
                   )}
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 font-medium">
-                    {pages.length} {pages.length === 1 ? 'File' : 'Files'}
-                    <span className="mx-2 text-neutral-300 dark:text-neutral-600">
+                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 font-medium flex flex-wrap items-center gap-1.5">
+                    <span>
+                      {pages.length} {pages.length === 1 ? 'File' : 'Files'}
+                    </span>
+                    <span className="text-neutral-300 dark:text-neutral-600">
                       |
                     </span>
-                    {isCompressingPreview
-                      ? 'Calculating size...'
-                      : formatFileSize(
-                          (
-                            compressedPreviewBytes ||
-                            preparedBaseBytes ||
-                            workingPdfBytes
-                          )?.byteLength || activeDocument.sizeBytes
-                        )}
+                    <span>
+                      {isCompressingPreview
+                        ? 'Calculating size...'
+                        : formatFileSize(
+                            (
+                              compressedPreviewBytes ||
+                              preparedBaseBytes ||
+                              workingPdfBytes
+                            )?.byteLength || activeDocument.sizeBytes
+                          )}
+                    </span>
+                    <span className="ml-1 px-1.5 py-0.5 rounded bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[10px] font-bold">
+                      ✓ Saved in My Documents
+                    </span>
                   </p>
                 </div>
               </div>
@@ -5052,8 +5383,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 </button>
                 {(compressionQuality !== 'high' || highCompression) && (
                   <span className="ml-1 px-2 py-0.5 rounded-full bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[11px] font-bold">
-                    Quality: {compressionQuality.toUpperCase()}
-                    {highCompression ? ' + High Compression' : ''}
+                    {preparedBaseBytes && compressedPreviewBytes
+                      ? `${formatFileSize(preparedBaseBytes.byteLength)} → ${formatFileSize(compressedPreviewBytes.byteLength)} (${compressionQuality.toUpperCase()})`
+                      : `Quality: ${compressionQuality.toUpperCase()}${highCompression ? ' + High Compression' : ''}`}
                   </span>
                 )}
               </div>
@@ -5177,13 +5509,17 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   <strong className="font-semibold text-[#3A3545] dark:text-[#F4F1F8]">
                     {isCompressingPreview
                       ? 'Compressing...'
-                      : formatFileSize(
-                          (
-                            compressedPreviewBytes ||
-                            preparedBaseBytes ||
-                            workingPdfBytes
-                          )?.byteLength || activeDocument.sizeBytes
-                        )}
+                      : preparedBaseBytes &&
+                          compressedPreviewBytes &&
+                          (compressionQuality !== 'high' || highCompression)
+                        ? `${formatFileSize(preparedBaseBytes.byteLength)} → ${formatFileSize(compressedPreviewBytes.byteLength)}`
+                        : formatFileSize(
+                            (
+                              compressedPreviewBytes ||
+                              preparedBaseBytes ||
+                              workingPdfBytes
+                            )?.byteLength || activeDocument.sizeBytes
+                          )}
                   </strong>
                 </span>
               </div>

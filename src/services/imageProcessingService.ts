@@ -11,26 +11,26 @@ export function loadImageElement(src: string): Promise<HTMLImageElement> {
 }
 
 /**
- * Automatically detects the precise 4 corners [TL, TR, BR, BL] of an uploaded or captured
+ * Automatically detects the precise 4 outer corners [TL, TR, BR, BL] of an uploaded or captured
  * document image using a 4-stage computer-vision pipeline:
- * 1. Aspect-preserving high-resolution grayscale & chroma extraction + morphological closing
- *    (7x7 dilation/erosion to erase internal text ink and isolate the continuous paper sheet).
- * 2. Adaptive center-vs-border segmentation + Flood-Fill Connected Component analysis to
- *    extract the true document page silhouette (works on angled desk photos, screenshots with
- *    top/bottom UI bars, receipts, and dark/light backgrounds).
- * 3. Convex Hull + Maximum-Area Quadrilateral vertex detection to find the 4 structural corners
- *    even under perspective skew or rotation.
- * 4. Local Sobel Edge-Line Fitting & Line-Line Intersection refinement so each corner snaps
- *    with sub-pixel accuracy to the physical paper edge.
+ * 1. Aspect-preserving separable border-safe morphological closing (9x9 window) on RGB & luminance
+ *    to erase internal text strokes and printed table borders while preserving narrow outer background strips.
+ * 2. Illumination-invariant chromaticity + vignetting-tolerant luminance classification so shadowed
+ *    paper corners under uneven indoor lighting remain part of the paper surface while wooden/colored
+ *    desks and UI toolbars are cleanly rejected.
+ * 3. Center-seeded Flood-Fill Connected Component extraction (without internal gradient barriers that
+ *    could snag on printed tables) to isolate the continuous document sheet.
+ * 4. 4-Side Outer Boundary Profile extraction + Robust RANSAC Line Fitting & Line-Line Intersection
+ *    so all 4 corners snap accurately to the true physical outer corners of the document.
  */
 export async function detectDocumentCorners(
   imageDataUrl: string
 ): Promise<[Point2D, Point2D, Point2D, Point2D]> {
   const fallback: [Point2D, Point2D, Point2D, Point2D] = [
-    { x: 0.04, y: 0.04 },
-    { x: 0.96, y: 0.04 },
-    { x: 0.96, y: 0.96 },
-    { x: 0.04, y: 0.96 },
+    { x: 0.02, y: 0.02 },
+    { x: 0.98, y: 0.02 },
+    { x: 0.98, y: 0.98 },
+    { x: 0.02, y: 0.98 },
   ];
 
   try {
@@ -52,7 +52,7 @@ export async function detectDocumentCorners(
     ctx.drawImage(img, 0, 0, W, H);
     const { data } = ctx.getImageData(0, 0, W, H);
 
-    // 1. Compute luminance and color channels
+    // 1. Extract raw RGB and perceptual luminance channels
     const lum = new Float32Array(W * H);
     const rCh = new Float32Array(W * H);
     const gCh = new Float32Array(W * H);
@@ -69,335 +69,277 @@ export async function detectDocumentCorners(
       lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
     }
 
-    // Morphological closing (dilation followed by erosion) with radius 3 (7x7 window)
-    // This completely erases thin dark text characters inside the document so the paper
-    // surface becomes a uniform, continuous bright/homogeneous region.
-    const dilateRadius = 3;
-    const dilatedLum = new Float32Array(W * H);
-    const closedLum = new Float32Array(W * H);
+    // Separable border-safe morphological closing (radius R = 4 -> 9x9 window).
+    // Erases internal printed table lines and handwriting strokes inside the page while
+    // anchoring out-of-bounds erosion samples to raw border pixels so even a 2-4px strip
+    // of wooden desk or background at the frame edge is preserved.
+    const R = 4;
+    const morphCloseBorderSafe = (src: Float32Array): Float32Array => {
+      const tmp = new Float32Array(W * H);
+      const dil = new Float32Array(W * H);
+      const ero = new Float32Array(W * H);
 
-    for (let y = 0; y < H; y++) {
-      const y0 = Math.max(0, y - dilateRadius);
-      const y1 = Math.min(H - 1, y + dilateRadius);
-      for (let x = 0; x < W; x++) {
-        const x0 = Math.max(0, x - dilateRadius);
-        const x1 = Math.min(W - 1, x + dilateRadius);
-        let maxV = 0;
-        for (let yy = y0; yy <= y1; yy++) {
-          const rowOff = yy * W;
-          for (let xx = x0; xx <= x1; xx++) {
-            const v = lum[rowOff + xx];
-            if (v > maxV) maxV = v;
+      // Horizontal dilation
+      for (let y = 0; y < H; y++) {
+        const rowOff = y * W;
+        for (let x = 0; x < W; x++) {
+          let m = 0;
+          for (let dx = -R; dx <= R; dx++) {
+            const xx = Math.max(0, Math.min(W - 1, x + dx));
+            const v = src[rowOff + xx];
+            if (v > m) m = v;
           }
+          tmp[rowOff + x] = m;
         }
-        dilatedLum[y * W + x] = maxV;
       }
-    }
-
-    for (let y = 0; y < H; y++) {
-      const y0 = Math.max(0, y - dilateRadius);
-      const y1 = Math.min(H - 1, y + dilateRadius);
-      for (let x = 0; x < W; x++) {
-        const x0 = Math.max(0, x - dilateRadius);
-        const x1 = Math.min(W - 1, x + dilateRadius);
-        let minV = 255;
-        for (let yy = y0; yy <= y1; yy++) {
-          const rowOff = yy * W;
-          for (let xx = x0; xx <= x1; xx++) {
-            const v = dilatedLum[rowOff + xx];
-            if (v < minV) minV = v;
+      // Vertical dilation
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          let m = 0;
+          for (let dy = -R; dy <= R; dy++) {
+            const yy = Math.max(0, Math.min(H - 1, y + dy));
+            const v = tmp[yy * W + x];
+            if (v > m) m = v;
           }
+          dil[y * W + x] = m;
         }
-        closedLum[y * W + x] = minV;
       }
-    }
-
-    // 2. Compute Sobel edge gradients on closedLum (captures true page boundaries without internal text clutter)
-    // and also on raw lum (for fine edge-line refinement)
-    const gradMag = new Float32Array(W * H);
-    let maxGrad = 0;
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1; x < W - 1; x++) {
-        const gxClosed =
-          -closedLum[(y - 1) * W + (x - 1)] +
-          closedLum[(y - 1) * W + (x + 1)] -
-          2 * closedLum[y * W + (x - 1)] +
-          2 * closedLum[y * W + (x + 1)] -
-          closedLum[(y + 1) * W + (x - 1)] +
-          closedLum[(y + 1) * W + (x + 1)];
-        const gyClosed =
-          -closedLum[(y - 1) * W + (x - 1)] -
-          2 * closedLum[(y - 1) * W + x] -
-          closedLum[(y - 1) * W + (x + 1)] +
-          closedLum[(y + 1) * W + (x - 1)] +
-          2 * closedLum[(y + 1) * W + x] +
-          closedLum[(y + 1) * W + (x + 1)];
-
-        const gxRaw =
-          -lum[(y - 1) * W + (x - 1)] +
-          lum[(y - 1) * W + (x + 1)] -
-          2 * lum[y * W + (x - 1)] +
-          2 * lum[y * W + (x + 1)] -
-          lum[(y + 1) * W + (x - 1)] +
-          lum[(y + 1) * W + (x + 1)];
-        const gyRaw =
-          -lum[(y - 1) * W + (x - 1)] -
-          2 * lum[(y - 1) * W + x] -
-          lum[(y - 1) * W + (x + 1)] +
-          lum[(y + 1) * W + (x - 1)] +
-          2 * lum[(y + 1) * W + x] +
-          lum[(y + 1) * W + (x + 1)];
-
-        const m = Math.hypot(gxClosed, gyClosed) * 0.7 + Math.hypot(gxRaw, gyRaw) * 0.3;
-        gradMag[y * W + x] = m;
-        if (m > maxGrad) maxGrad = m;
+      // Horizontal erosion (anchored to raw left/right border pixels outside [0..W-1])
+      for (let y = 0; y < H; y++) {
+        const rowOff = y * W;
+        for (let x = 0; x < W; x++) {
+          let m = 255;
+          for (let dx = -R; dx <= R; dx++) {
+            const xx = x + dx;
+            const v =
+              xx < 0
+                ? src[rowOff]
+                : xx >= W
+                  ? src[rowOff + (W - 1)]
+                  : dil[rowOff + xx];
+            if (v < m) m = v;
+          }
+          tmp[rowOff + x] = m;
+        }
       }
-    }
+      // Vertical erosion (anchored to raw top/bottom border pixels outside [0..H-1])
+      for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+          let m = 255;
+          for (let dy = -R; dy <= R; dy++) {
+            const yy = y + dy;
+            const v =
+              yy < 0
+                ? src[x]
+                : yy >= H
+                  ? src[(H - 1) * W + x]
+                  : tmp[yy * W + x];
+            if (v < m) m = v;
+          }
+          ero[y * W + x] = m;
+        }
+      }
+      return ero;
+    };
 
-    // 3. Model the document paper surface from the central region vs. outer border
-    const centerLums: number[] = [];
-    const centerR: number[] = [];
-    const centerG: number[] = [];
-    const centerB: number[] = [];
+    const cLum = morphCloseBorderSafe(lum);
+    const cR = morphCloseBorderSafe(rCh);
+    const cG = morphCloseBorderSafe(gCh);
+    const cB = morphCloseBorderSafe(bCh);
 
-    const cx0 = Math.floor(W * 0.28);
-    const cx1 = Math.ceil(W * 0.72);
-    const cy0 = Math.floor(H * 0.28);
-    const cy1 = Math.ceil(H * 0.72);
+    // 2. Model the paper surface from the central 50% region
+    const sL: number[] = [];
+    const sR: number[] = [];
+    const sG: number[] = [];
+    const sB: number[] = [];
+
+    const cx0 = Math.floor(W * 0.25);
+    const cx1 = Math.ceil(W * 0.75);
+    const cy0 = Math.floor(H * 0.25);
+    const cy1 = Math.ceil(H * 0.75);
 
     for (let y = cy0; y <= cy1; y += 2) {
       for (let x = cx0; x <= cx1; x += 2) {
         const i = y * W + x;
-        centerLums.push(closedLum[i]);
-        centerR.push(rCh[i]);
-        centerG.push(gCh[i]);
-        centerB.push(bCh[i]);
+        sL.push(cLum[i]);
+        sR.push(cR[i]);
+        sG.push(cG[i]);
+        sB.push(cB[i]);
       }
     }
-    centerLums.sort((a, b) => a - b);
-    centerR.sort((a, b) => a - b);
-    centerG.sort((a, b) => a - b);
-    centerB.push(255);
-    centerB.sort((a, b) => a - b);
+    sL.sort((a, b) => a - b);
+    sR.sort((a, b) => a - b);
+    sG.sort((a, b) => a - b);
+    sB.sort((a, b) => a - b);
 
-    const paperLum = centerLums[Math.floor(centerLums.length * 0.65)] || 220;
-    const paperR = centerR[Math.floor(centerR.length * 0.65)] || 220;
-    const paperG = centerG[Math.floor(centerG.length * 0.65)] || 220;
-    const paperB = centerB[Math.floor(centerB.length * 0.65)] || 220;
+    const idx60 = Math.floor(sL.length * 0.6);
+    const pLum = sL[idx60] || 200;
+    const pR = sR[idx60] || 200;
+    const pG = sG[idx60] || 200;
+    const pB = sB[idx60] || 200;
 
-    // Sample outer perimeter border (top, bottom, left, right strips)
-    const borderLums: number[] = [];
-    const borderMarginX = Math.max(2, Math.floor(W * 0.03));
-    const borderMarginY = Math.max(2, Math.floor(H * 0.03));
-    for (let y = 0; y < H; y++) {
-      for (let x = 0; x < W; x++) {
-        if (
-          x < borderMarginX ||
-          x >= W - borderMarginX ||
-          y < borderMarginY ||
-          y >= H - borderMarginY
-        ) {
-          borderLums.push(closedLum[y * W + x]);
-        }
-      }
-    }
-    borderLums.sort((a, b) => a - b);
-    const borderMedianLum =
-      borderLums[Math.floor(borderLums.length * 0.45)] || 100;
+    // Illumination-invariant normalized chromaticity (R/sum, G/sum, B/sum)
+    const pSum = Math.max(1, pR + pG + pB);
+    const pNR = pR / pSum;
+    const pNG = pG / pSum;
+    const pNB = pB / pSum;
+    const pWarm = pR - pB;
 
-    // Compute Otsu global threshold on closedLum
-    const hist = new Int32Array(256);
-    for (let i = 0; i < W * H; i++) {
-      hist[Math.min(255, Math.max(0, Math.round(closedLum[i])))]++;
-    }
-    let totalSum = 0;
-    for (let t = 0; t < 256; t++) totalSum += t * hist[t];
-    let sumB = 0;
-    let wB = 0;
-    let maxVar = 0;
-    let otsuThresh = 160;
-    const totalPixels = W * H;
-    for (let t = 0; t < 256; t++) {
-      wB += hist[t];
-      if (wB === 0) continue;
-      const wF = totalPixels - wB;
-      if (wF === 0) break;
-      sumB += t * hist[t];
-      const mB = sumB / wB;
-      const mF = (totalSum - sumB) / wF;
-      const betweenVar = wB * wF * (mB - mF) * (mB - mF);
-      if (betweenVar > maxVar) {
-        maxVar = betweenVar;
-        otsuThresh = t;
-      }
-    }
-
-    // Build binary candidate mask of the document page
-    const mask = new Uint8Array(W * H);
-    const lumContrast = Math.abs(paperLum - borderMedianLum);
-    const adaptiveLumThresh =
-      lumContrast > 22
-        ? (paperLum * 0.55 + borderMedianLum * 0.45)
-        : Math.min(otsuThresh, paperLum - 28);
+    // Classify pixels into paper vs. background:
+    // - For pure digital white screenshots (pLum > 242), use a tight luminance threshold (pLum - 12)
+    //   so light-grey mobile app toolbars (lum ~228-238) are cleanly separated from the white page.
+    // - For camera photos of physical paper (pLum <= 242), allow natural camera vignetting and corner
+    //   shadow falloff down to min(pLum * 0.56, 130) as long as the normalized chromaticity matches the paper!
+    const isPaper = new Uint8Array(W * H);
+    const minPaperLum =
+      pLum > 242
+        ? pLum - 12
+        : pLum >= 135
+          ? Math.min(pLum * 0.56, 130)
+          : pLum * 0.65;
 
     for (let i = 0; i < W * H; i++) {
-      const cLum = closedLum[i];
-      const colorDist = Math.hypot(
-        rCh[i] - paperR,
-        gCh[i] - paperG,
-        bCh[i] - paperB
-      );
-      if (paperLum >= borderMedianLum - 10) {
-        // Standard bright paper on darker/colored desk or screenshot UI frame
-        if (cLum >= adaptiveLumThresh && colorDist < 125) {
-          mask[i] = 1;
-        }
-      } else {
-        // Darker document/card on a bright background
-        if (cLum <= (paperLum + borderMedianLum) * 0.5) {
-          mask[i] = 1;
-        }
+      const L = cLum[i];
+      const r = cR[i];
+      const g = cG[i];
+      const b = cB[i];
+      const sum = Math.max(1, r + g + b);
+      const chromaDist =
+        Math.hypot(r / sum - pNR, g / sum - pNG, b / sum - pNB) * 255;
+      const warmDiff = Math.abs(r - b - pWarm);
+
+      if (L >= minPaperLum && chromaDist < 21 && warmDiff < 25) {
+        isPaper[i] = 1;
       }
     }
 
-    // 4. Flood-Fill Connected Component from center seeds so background islands are discarded
+    // 3. Center-seeded Flood-Fill Connected Component on `isPaper` (without internal gradient barriers
+    //    so printed table borders inside the page never block the fill from reaching the outer margins)
     const visited = new Uint8Array(W * H);
     const queue = new Int32Array(W * H);
     let qHead = 0;
     let qTail = 0;
 
-    // Seed from center 20% box where mask[i] === 1
-    const sx0 = Math.floor(W * 0.4);
-    const sx1 = Math.ceil(W * 0.6);
-    const sy0 = Math.floor(H * 0.4);
-    const sy1 = Math.ceil(H * 0.6);
+    const sx0 = Math.floor(W * 0.35);
+    const sx1 = Math.ceil(W * 0.65);
+    const sy0 = Math.floor(H * 0.35);
+    const sy1 = Math.ceil(H * 0.65);
+
     for (let y = sy0; y <= sy1; y++) {
       for (let x = sx0; x <= sx1; x++) {
         const idx = y * W + x;
-        if (mask[idx] === 1 && !visited[idx]) {
+        if (isPaper[idx] === 1 && !visited[idx]) {
           visited[idx] = 1;
           queue[qTail++] = idx;
         }
       }
     }
 
-    const edgeBarrier = maxGrad * 0.42;
     while (qHead < qTail) {
       const curr = queue[qHead++];
       const cx = curr % W;
       const cy = (curr - cx) / W;
 
-      const neighbors = [
-        cy > 0 ? curr - W : -1,
-        cy < H - 1 ? curr + W : -1,
-        cx > 0 ? curr - 1 : -1,
-        cx < W - 1 ? curr + 1 : -1,
-      ];
-      for (const nIdx of neighbors) {
-        if (
-          nIdx >= 0 &&
-          !visited[nIdx] &&
-          mask[nIdx] === 1 &&
-          gradMag[nIdx] < edgeBarrier
-        ) {
-          visited[nIdx] = 1;
-          queue[qTail++] = nIdx;
-        }
+      if (cy > 0 && isPaper[curr - W] === 1 && !visited[curr - W]) {
+        visited[curr - W] = 1;
+        queue[qTail++] = curr - W;
+      }
+      if (cy < H - 1 && isPaper[curr + W] === 1 && !visited[curr + W]) {
+        visited[curr + W] = 1;
+        queue[qTail++] = curr + W;
+      }
+      if (cx > 0 && isPaper[curr - 1] === 1 && !visited[curr - 1]) {
+        visited[curr - 1] = 1;
+        queue[qTail++] = curr - 1;
+      }
+      if (cx < W - 1 && isPaper[curr + 1] === 1 && !visited[curr + 1]) {
+        visited[curr + 1] = 1;
+        queue[qTail++] = curr + 1;
       }
     }
 
-    // Extract boundary contour points of the connected component
-    const boundaryPts: { x: number; y: number }[] = [];
-    if (qTail > W * H * 0.04 && qTail < W * H * 0.96) {
-      for (let y = 1; y < H - 1; y++) {
-        for (let x = 1; x < W - 1; x++) {
-          const idx = y * W + x;
-          if (!visited[idx]) continue;
-          if (
-            x === 1 ||
-            x === W - 2 ||
-            y === 1 ||
-            y === H - 2 ||
-            !visited[idx - 1] ||
-            !visited[idx + 1] ||
-            !visited[idx - W] ||
-            !visited[idx + W]
-          ) {
-            boundaryPts.push({ x, y });
-          }
-        }
-      }
-    }
-
-    // If the image is nearly uniform or segmentation covered >96% (e.g. screenshot with subtle frame or edge-only photo),
-    // collect strong outer Sobel edge points via directional ray-casting from the 4 sides inward
-    if (boundaryPts.length < 24) {
-      const edgeThresh = Math.max(25, maxGrad * 0.24);
-      // Cast rays from top, bottom, left, right edges inward to find the first strong document boundary
-      for (let x = Math.floor(W * 0.05); x < Math.ceil(W * 0.95); x += 2) {
-        for (let y = 2; y < Math.floor(H * 0.45); y++) {
-          if (gradMag[y * W + x] >= edgeThresh) {
-            boundaryPts.push({ x, y });
-            break;
-          }
-        }
-        for (let y = H - 3; y > Math.ceil(H * 0.55); y--) {
-          if (gradMag[y * W + x] >= edgeThresh) {
-            boundaryPts.push({ x, y });
-            break;
-          }
-        }
-      }
-      for (let y = Math.floor(H * 0.05); y < Math.ceil(H * 0.95); y += 2) {
-        for (let x = 2; x < Math.floor(W * 0.45); x++) {
-          if (gradMag[y * W + x] >= edgeThresh) {
-            boundaryPts.push({ x, y });
-            break;
-          }
-        }
-        for (let x = W - 3; x > Math.ceil(W * 0.55); x--) {
-          if (gradMag[y * W + x] >= edgeThresh) {
-            boundaryPts.push({ x, y });
-            break;
-          }
-        }
-      }
-    }
-
-    if (boundaryPts.length < 8) {
+    if (qTail < W * H * 0.05) {
       return fallback;
     }
 
-    // 5. Compute Convex Hull (Monotone Chain) of boundaryPts
-    const hull = computeConvexHull(boundaryPts);
-    if (hull.length < 4) {
+    // 4. Extract outer boundary profiles for the 4 sides (Top, Bottom, Left, Right)
+    const rawTopPts: { x: number; y: number }[] = [];
+    const rawBottomPts: { x: number; y: number }[] = [];
+    const rawLeftPts: { x: number; y: number }[] = [];
+    const rawRightPts: { x: number; y: number }[] = [];
+
+    for (let x = Math.floor(W * 0.06); x <= Math.ceil(W * 0.94); x += 2) {
+      for (let y = 0; y < H; y++) {
+        if (visited[y * W + x]) {
+          rawTopPts.push({ x, y: Math.max(1, y) });
+          break;
+        }
+      }
+      for (let y = H - 1; y >= 0; y--) {
+        if (visited[y * W + x]) {
+          rawBottomPts.push({ x, y: Math.min(H - 2, y) });
+          break;
+        }
+      }
+    }
+
+    for (let y = Math.floor(H * 0.06); y <= Math.ceil(H * 0.94); y += 2) {
+      for (let x = 0; x < W; x++) {
+        if (visited[y * W + x]) {
+          rawLeftPts.push({ x: Math.max(1, x), y });
+          break;
+        }
+      }
+      for (let x = W - 1; x >= 0; x--) {
+        if (visited[y * W + x]) {
+          rawRightPts.push({ x: Math.min(W - 2, x), y });
+          break;
+        }
+      }
+    }
+
+    if (
+      rawTopPts.length < 6 ||
+      rawBottomPts.length < 6 ||
+      rawLeftPts.length < 6 ||
+      rawRightPts.length < 6
+    ) {
       return fallback;
     }
 
-    // 6. Find the 4 corners [TL, TR, BR, BL] on the hull using combined
-    //    Maximum-Area Quadrilateral + Directional Extreme Scoring
-    let cornersPx = findBestQuadrilateralCorners(hull, W, H);
+    // Trim extreme 8% ends of each side profile so adjacent side transitions don't skew the line fit
+    const trimProfile = (pts: { x: number; y: number }[]) => {
+      if (pts.length <= 10) return pts;
+      const cut = Math.floor(pts.length * 0.08);
+      return pts.slice(cut, pts.length - cut);
+    };
 
-    // 7. Refine each of the 4 sides using local Sobel edge-line fitting and compute exact
-    //    line-line intersections for sub-pixel corner accuracy
-    cornersPx = refineCornersWithEdgeLines(cornersPx, gradMag, W, H);
+    const topLine = fitRobustEdgeLine(trimProfile(rawTopPts));
+    const rightLine = fitRobustEdgeLine(trimProfile(rawRightPts));
+    const bottomLine = fitRobustEdgeLine(trimProfile(rawBottomPts));
+    const leftLine = fitRobustEdgeLine(trimProfile(rawLeftPts));
+
+    const tl = intersectEdgeLines(topLine, leftLine, { x: W * 0.02, y: H * 0.02 });
+    const tr = intersectEdgeLines(topLine, rightLine, { x: W * 0.98, y: H * 0.02 });
+    const br = intersectEdgeLines(bottomLine, rightLine, { x: W * 0.98, y: H * 0.98 });
+    const bl = intersectEdgeLines(bottomLine, leftLine, { x: W * 0.02, y: H * 0.98 });
 
     return [
       {
-        x: clamp(cornersPx[0].x / W, 0.005, 0.995),
-        y: clamp(cornersPx[0].y / H, 0.005, 0.995),
+        x: clamp(tl.x / W, 0.006, 0.994),
+        y: clamp(tl.y / H, 0.006, 0.994),
       },
       {
-        x: clamp(cornersPx[1].x / W, 0.005, 0.995),
-        y: clamp(cornersPx[1].y / H, 0.005, 0.995),
+        x: clamp(tr.x / W, 0.006, 0.994),
+        y: clamp(tr.y / H, 0.006, 0.994),
       },
       {
-        x: clamp(cornersPx[2].x / W, 0.005, 0.995),
-        y: clamp(cornersPx[2].y / H, 0.005, 0.995),
+        x: clamp(br.x / W, 0.006, 0.994),
+        y: clamp(br.y / H, 0.006, 0.994),
       },
       {
-        x: clamp(cornersPx[3].x / W, 0.005, 0.995),
-        y: clamp(cornersPx[3].y / H, 0.005, 0.995),
+        x: clamp(bl.x / W, 0.006, 0.994),
+        y: clamp(bl.y / H, 0.006, 0.994),
       },
     ];
   } catch {
@@ -405,315 +347,81 @@ export async function detectDocumentCorners(
   }
 }
 
-function computeConvexHull(
-  points: { x: number; y: number }[]
-): { x: number; y: number }[] {
-  const sorted = [...points].sort((a, b) =>
-    a.x !== b.x ? a.x - b.x : a.y - b.y
-  );
-  const cross = (
-    o: { x: number; y: number },
-    a: { x: number; y: number },
-    b: { x: number; y: number }
-  ) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-
-  const lower: { x: number; y: number }[] = [];
-  for (const p of sorted) {
-    while (
-      lower.length >= 2 &&
-      cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
-    ) {
-      lower.pop();
-    }
-    lower.push(p);
-  }
-
-  const upper: { x: number; y: number }[] = [];
-  for (let i = sorted.length - 1; i >= 0; i--) {
-    const p = sorted[i];
-    while (
-      upper.length >= 2 &&
-      cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
-    ) {
-      upper.pop();
-    }
-    upper.push(p);
-  }
-
-  upper.pop();
-  lower.pop();
-  return lower.concat(upper);
-}
-
-function quadArea(
-  p0: { x: number; y: number },
-  p1: { x: number; y: number },
-  p2: { x: number; y: number },
-  p3: { x: number; y: number }
-): number {
-  return (
-    0.5 *
-    Math.abs(
-      p0.x * p1.y -
-        p1.x * p0.y +
-        (p1.x * p2.y - p2.x * p1.y) +
-        (p2.x * p3.y - p3.x * p2.y) +
-        (p3.x * p0.y - p0.x * p3.y)
-    )
-  );
-}
-
-function orderCornersClockwise(
-  pts: { x: number; y: number }[]
-): [
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-] {
-  const cx = pts.reduce((s, p) => s + p.x, 0) / 4;
-  const cy = pts.reduce((s, p) => s + p.y, 0) / 4;
-
-  // Sort by angle around centroid
-  const byAngle = [...pts].sort(
-    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
-  );
-
-  // Rotate array so index 0 is Top-Left (minimum x + y)
-  let tlIdx = 0;
-  let minSum = Infinity;
-  for (let i = 0; i < 4; i++) {
-    const sum = byAngle[i].x + byAngle[i].y;
-    if (sum < minSum) {
-      minSum = sum;
-      tlIdx = i;
-    }
-  }
-
-  const ordered = [
-    byAngle[tlIdx],
-    byAngle[(tlIdx + 1) % 4],
-    byAngle[(tlIdx + 2) % 4],
-    byAngle[(tlIdx + 3) % 4],
-  ];
-  return [ordered[0], ordered[1], ordered[2], ordered[3]];
-}
-
-function findBestQuadrilateralCorners(
-  hull: { x: number; y: number }[],
-  W: number,
-  H: number
-): [
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-] {
-  // Subsample hull to at most 40 vertices for fast exact 4-tuple search
-  const maxVerts = 36;
-  const step = Math.max(1, Math.floor(hull.length / maxVerts));
-  const sampled: { x: number; y: number }[] = [];
-  for (let i = 0; i < hull.length; i += step) {
-    sampled.push(hull[i]);
-  }
-
-  // Also ensure the 4 diagonal extreme hull points are always in `sampled`
-  let tl = hull[0];
-  let tr = hull[0];
-  let br = hull[0];
-  let bl = hull[0];
-  for (const p of hull) {
-    if (p.x / W + p.y / H < tl.x / W + tl.y / H) tl = p;
-    if (p.x / W - p.y / H > tr.x / W - tr.y / H) tr = p;
-    if (p.x / W + p.y / H > br.x / W + br.y / H) br = p;
-    if (p.y / H - p.x / W > bl.y / H - bl.x / W) bl = p;
-  }
-  for (const ext of [tl, tr, br, bl]) {
-    if (!sampled.some((s) => s.x === ext.x && s.y === ext.y)) {
-      sampled.push(ext);
-    }
-  }
-
-  // Sort sampled vertices clockwise around their centroid
-  const cx = sampled.reduce((s, p) => s + p.x, 0) / sampled.length;
-  const cy = sampled.reduce((s, p) => s + p.y, 0) / sampled.length;
-  sampled.sort(
-    (a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx)
-  );
-
-  const n = sampled.length;
-  if (n < 4) {
-    return orderCornersClockwise([tl, tr, br, bl]);
-  }
-
-  let bestQuad: [
-    { x: number; y: number },
-    { x: number; y: number },
-    { x: number; y: number },
-    { x: number; y: number },
-  ] = orderCornersClockwise([tl, tr, br, bl]);
-  let maxScore = quadArea(bestQuad[0], bestQuad[1], bestQuad[2], bestQuad[3]);
-
-  for (let i = 0; i < n - 3; i++) {
-    for (let j = i + 1; j < n - 2; j++) {
-      for (let k = j + 1; k < n - 1; k++) {
-        for (let l = k + 1; l < n; l++) {
-          const area = quadArea(sampled[i], sampled[j], sampled[k], sampled[l]);
-          if (area > maxScore) {
-            maxScore = area;
-            bestQuad = orderCornersClockwise([
-              sampled[i],
-              sampled[j],
-              sampled[k],
-              sampled[l],
-            ]);
-          }
-        }
-      }
-    }
-  }
-
-  return bestQuad;
-}
-
 /**
- * Refines each of the 4 quadrilateral edges by fitting a weighted line to the strongest
- * Sobel edge gradients along the middle 70% of each side, then computing the exact
- * geometric intersection of adjacent sides.
+ * Fits a straight line (a*x + b*y + c = 0) to a side boundary point set using
+ * RANSAC / M-estimator consensus so local corner tears, fingers, or shadow notches
+ * are ignored and the true straight paper edge is recovered.
  */
-function refineCornersWithEdgeLines(
-  corners: [
-    { x: number; y: number },
-    { x: number; y: number },
-    { x: number; y: number },
-    { x: number; y: number },
-  ],
-  gradMag: Float32Array,
-  W: number,
-  H: number
-): [
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-  { x: number; y: number },
-] {
-  const fitRefinedSideLine = (
-    pStart: { x: number; y: number },
-    pEnd: { x: number; y: number }
-  ): { a: number; b: number; c: number } => {
-    const dx = pEnd.x - pStart.x;
-    const dy = pEnd.y - pStart.y;
-    const len = Math.hypot(dx, dy);
-    if (len < 12) {
-      // Standard line a*x + b*y + c = 0
-      const a = -dy;
-      const b = dx;
-      const c = -(a * pStart.x + b * pStart.y);
-      return { a, b, c };
-    }
+function fitRobustEdgeLine(
+  pts: { x: number; y: number }[]
+): { a: number; b: number; c: number } {
+  if (pts.length < 2) {
+    return { a: 0, b: 1, c: 0 };
+  }
 
-    const nx = -dy / len;
-    const ny = dx / len;
-    const searchRadius = Math.max(4, Math.min(12, Math.round(len * 0.05)));
-    const samples = 28;
+  let bestScore = -1;
+  let bestA = 0;
+  let bestB = 1;
+  let bestC = 0;
 
-    const pts: { x: number; y: number; w: number }[] = [];
-    for (let s = 0; s <= samples; s++) {
-      // Sample middle 76% of the edge to avoid corner curvature
-      const t = 0.12 + (s / samples) * 0.76;
-      const bx = pStart.x + dx * t;
-      const by = pStart.y + dy * t;
+  const minSpanIdx = Math.max(2, Math.floor(pts.length * 0.22));
+  const stepJ = Math.max(1, Math.floor(pts.length / 25));
 
-      let bestMag = -1;
-      let bestX = bx;
-      let bestY = by;
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + minSpanIdx; j < pts.length; j += stepJ) {
+      const p1 = pts[i];
+      const p2 = pts[j];
+      const dx = p2.x - p1.x;
+      const dy = p2.y - p1.y;
+      const len = Math.hypot(dx, dy);
+      if (len < 10) continue;
 
-      for (let r = -searchRadius; r <= searchRadius; r++) {
-        const sx = Math.round(bx + nx * r);
-        const sy = Math.round(by + ny * r);
-        if (sx >= 1 && sx < W - 1 && sy >= 1 && sy < H - 1) {
-          const m = gradMag[sy * W + sx];
-          // Slight Gaussian preference for staying close to initial edge
-          const weightedM = m * (1 - Math.abs(r) / (searchRadius * 2.5));
-          if (weightedM > bestMag) {
-            bestMag = weightedM;
-            bestX = sx;
-            bestY = sy;
-          }
+      const a = -dy / len;
+      const b = dx / len;
+      const c = -(a * p1.x + b * p1.y);
+
+      let score = 0;
+      for (let k = 0; k < pts.length; k++) {
+        const d = Math.abs(a * pts[k].x + b * pts[k].y + c);
+        if (d < 3.0) {
+          score += 3.0 - d;
         }
       }
 
-      if (bestMag > 15) {
-        pts.push({ x: bestX, y: bestY, w: bestMag });
+      if (score > bestScore) {
+        bestScore = score;
+        bestA = a;
+        bestB = b;
+        bestC = c;
       }
     }
+  }
 
-    if (pts.length < 6) {
-      const a = -dy;
-      const b = dx;
-      const c = -(a * pStart.x + b * pStart.y);
-      return { a, b, c };
-    }
-
-    // Weighted orthogonal total least squares line fit
-    let sumW = 0;
-    let meanX = 0;
-    let meanY = 0;
-    for (const p of pts) {
-      sumW += p.w;
-      meanX += p.x * p.w;
-      meanY += p.y * p.w;
-    }
-    meanX /= sumW;
-    meanY /= sumW;
-
-    let sxx = 0;
-    let syy = 0;
-    let sxy = 0;
-    for (const p of pts) {
-      const ux = p.x - meanX;
-      const uy = p.y - meanY;
-      sxx += p.w * ux * ux;
-      syy += p.w * uy * uy;
-      sxy += p.w * ux * uy;
-    }
-
-    const theta = 0.5 * Math.atan2(2 * sxy, sxx - syy);
-    const dirX = Math.cos(theta);
-    const dirY = Math.sin(theta);
-    const a = -dirY;
-    const b = dirX;
-    const c = -(a * meanX + b * meanY);
+  if (bestScore < 0) {
+    const p1 = pts[0];
+    const p2 = pts[pts.length - 1];
+    const dx = p2.x - p1.x;
+    const dy = p2.y - p1.y;
+    const len = Math.max(1e-6, Math.hypot(dx, dy));
+    const a = -dy / len;
+    const b = dx / len;
+    const c = -(a * p1.x + b * p1.y);
     return { a, b, c };
-  };
+  }
 
-  const intersectLines = (
-    l1: { a: number; b: number; c: number },
-    l2: { a: number; b: number; c: number },
-    fallbackPt: { x: number; y: number }
-  ): { x: number; y: number } => {
-    const det = l1.a * l2.b - l2.a * l1.b;
-    if (Math.abs(det) < 1e-6) return fallbackPt;
-    const x = (l1.b * l2.c - l2.b * l1.c) / det;
-    const y = (l2.a * l1.c - l1.a * l2.c) / det;
-    // Only accept refined intersection if within a reasonable distance of the hull vertex
-    if (Math.hypot(x - fallbackPt.x, y - fallbackPt.y) > Math.max(W, H) * 0.12) {
-      return fallbackPt;
-    }
-    return { x, y };
-  };
+  return { a: bestA, b: bestB, c: bestC };
+}
 
-  const topLine = fitRefinedSideLine(corners[0], corners[1]);
-  const rightLine = fitRefinedSideLine(corners[1], corners[2]);
-  const bottomLine = fitRefinedSideLine(corners[2], corners[3]);
-  const leftLine = fitRefinedSideLine(corners[3], corners[0]);
-
-  return [
-    intersectLines(topLine, leftLine, corners[0]),
-    intersectLines(topLine, rightLine, corners[1]),
-    intersectLines(bottomLine, rightLine, corners[2]),
-    intersectLines(bottomLine, leftLine, corners[3]),
-  ];
+function intersectEdgeLines(
+  l1: { a: number; b: number; c: number },
+  l2: { a: number; b: number; c: number },
+  fallbackPt: { x: number; y: number }
+): { x: number; y: number } {
+  const det = l1.a * l2.b - l2.a * l1.b;
+  if (Math.abs(det) < 1e-6) return fallbackPt;
+  const x = (l1.b * l2.c - l2.b * l1.c) / det;
+  const y = (l2.a * l1.c - l1.a * l2.c) / det;
+  return { x, y };
 }
 
 function clamp(v: number, min: number, max: number): number {
