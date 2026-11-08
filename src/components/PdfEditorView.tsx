@@ -264,11 +264,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [drawColor] = useState('#4A1D5E');
   const [drawStrokeWidth] = useState(2.5);
 
-  // Default Font Size & Colors when adding/editing text boxes
+  // Default Font Size & Colors when adding/editing text boxes (Blue background + White text by default)
   const [defaultFontSize, setDefaultFontSize] = useState<number>(18);
-  const [defaultTextColor, setDefaultTextColor] = useState('#14101B');
+  const [defaultTextColor, setDefaultTextColor] = useState('#FFFFFF');
   const [defaultTextBoxBgColor, setDefaultTextBoxBgColor] =
-    useState<string>('#FFFFFF');
+    useState<string>('#2563EB');
   const [defaultTextBoxBorderColor, setDefaultTextBoxBorderColor] =
     useState<string>('transparent');
 
@@ -333,7 +333,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     };
   }, [activeDocument]);
 
-  // Apply Color Filter (OCV BLACK, Vivid Light, etc.) and Brightness Switch to rendered pages
+  // Apply Color Filter (OCV BLACK, Vivid Light, etc.) and Brightness Switch to rendered pages (prioritizing currentPage first for instant response)
   useEffect(() => {
     let cancelled = false;
     if (
@@ -349,8 +349,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
     setIsApplyingFilter(true);
     (async () => {
+      const orderedPages = [
+        ...pages.filter((p) => p.pageNumber === currentPage),
+        ...pages.filter((p) => p.pageNumber !== currentPage),
+      ];
       const nextMap: Record<number, string> = {};
-      for (const p of pages) {
+      for (const p of orderedPages) {
         if (cancelled) return;
         const processed = await applyImageEnhancements(p.dataUrl, {
           filter: pageColorFilter,
@@ -358,10 +362,15 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           contrast: pageContrast,
           rotation: 0,
         });
+        if (cancelled) return;
         nextMap[p.pageNumber] = processed;
+        setFilteredPageUrls((prev) => ({
+          ...prev,
+          [p.pageNumber]: processed,
+        }));
+        await new Promise((r) => setTimeout(r, 0));
       }
       if (!cancelled) {
-        setFilteredPageUrls(nextMap);
         setIsApplyingFilter(false);
       }
     })();
@@ -369,52 +378,61 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [pages, pageColorFilter, pageBrightness, pageContrast]);
+  }, [pages, pageColorFilter, pageBrightness, pageContrast, currentPage]);
 
-  const inspectAllEmbeddedImages = useCallback(
-    async (pdfBytes: Uint8Array, pageCount: number) => {
-      const map: Record<number, EmbeddedPdfImageInfo[]> = {};
-      for (let p = 1; p <= pageCount; p++) {
-        const imgs = await getEmbeddedPdfImagesOnPage(pdfBytes, p);
-        map[p] = imgs;
+  // Lazily inspect embedded PDF pictures/boxes on the active page so opening multi-page PDFs is lightweight and fast
+  useEffect(() => {
+    let cancelled = false;
+    if (!workingPdfBytes || pages.length === 0) return;
+    if (embeddedImagesByPage[currentPage] !== undefined) return;
+
+    (async () => {
+      const imgs = await getEmbeddedPdfImagesOnPage(
+        workingPdfBytes,
+        currentPage
+      );
+      if (!cancelled) {
+        setEmbeddedImagesByPage((prev) => ({
+          ...prev,
+          [currentPage]: imgs,
+        }));
       }
-      setEmbeddedImagesByPage(map);
-    },
-    []
-  );
+    })();
 
-  const renderAllPages = useCallback(
-    async (pdfBytes: Uint8Array) => {
-      setIsLoadingPages(true);
-      try {
-        const allRendered = await renderAllPdfPages(
-          pdfBytes,
-          1.5,
-          (renderedSoFar, total) => {
-            setTotalExpectedPages(total);
-            setPages(renderedSoFar);
-            if (renderedSoFar.length >= 1) {
-              setIsLoadingPages(false);
-            }
+    return () => {
+      cancelled = true;
+    };
+  }, [workingPdfBytes, currentPage, pages.length, embeddedImagesByPage]);
+
+  const renderAllPages = useCallback(async (pdfBytes: Uint8Array) => {
+    setIsLoadingPages(true);
+    setEmbeddedImagesByPage({});
+    try {
+      const allRendered = await renderAllPdfPages(
+        pdfBytes,
+        1.2,
+        (renderedSoFar, total) => {
+          setTotalExpectedPages(total);
+          setPages(renderedSoFar);
+          if (renderedSoFar.length >= 1) {
+            setIsLoadingPages(false);
           }
-        );
-        setPages(allRendered);
-        setTotalExpectedPages(allRendered.length);
-        setCurrentPage((prev) =>
-          Math.max(1, Math.min(prev, allRendered.length || 1))
-        );
-        await inspectAllEmbeddedImages(pdfBytes, allRendered.length);
-      } catch (err) {
-        console.error('Failed to render PDF:', err);
-        setStatusMessage(
-          'Could not render this PDF file. It may be corrupted or unsupported.'
-        );
-      } finally {
-        setIsLoadingPages(false);
-      }
-    },
-    [inspectAllEmbeddedImages]
-  );
+        }
+      );
+      setPages(allRendered);
+      setTotalExpectedPages(allRendered.length);
+      setCurrentPage((prev) =>
+        Math.max(1, Math.min(prev, allRendered.length || 1))
+      );
+    } catch (err) {
+      console.error('Failed to render PDF:', err);
+      setStatusMessage(
+        'Could not render this PDF file. It may be corrupted or unsupported.'
+      );
+    } finally {
+      setIsLoadingPages(false);
+    }
+  }, []);
 
   useEffect(() => {
     if (activeDocument) {
@@ -456,13 +474,17 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     }
   };
 
+  // Lightweight Undo snapshot: only clones PDF bytes when underlying PDF bytes actually change
   const pushAnnotationsWithUndo = useCallback(
     (next: AnnotationElement[], nextPdfBytes?: Uint8Array) => {
       setUndoStack((prev) => [
-        ...prev,
+        ...prev.slice(-29),
         {
           annotations,
-          pdfBytes: workingPdfBytes ? new Uint8Array(workingPdfBytes) : null,
+          pdfBytes:
+            nextPdfBytes && workingPdfBytes
+              ? new Uint8Array(workingPdfBytes)
+              : null,
         },
       ]);
       setRedoStack([]);
@@ -765,12 +787,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     let defaultText: string | undefined;
 
     if (activeTool === 'text') {
-      defaultText = 'Type text here';
-      defaultW = 0.32;
-      defaultH = 0.065;
+      defaultText = '';
+      defaultW = 0.34;
+      defaultH = 0.068;
       defaultColor = defaultTextColor;
     } else if (activeTool === 'comment') {
-      defaultText = 'Review comment note';
+      defaultText = '';
       defaultW = 0.28;
       defaultH = 0.09;
       defaultColor = '#D97706';
@@ -808,7 +830,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       endY: clickY + defaultH,
       text: defaultText,
       fontSize: defaultFontSize,
-      fontWeight: 'normal',
+      fontWeight: activeTool === 'text' ? 'bold' : 'normal',
       fontStyle: 'normal',
       color: defaultColor,
       backgroundColor:
@@ -828,15 +850,52 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
     pushAnnotationsWithUndo([...annotations, newAnn]);
     setSelectedAnnId(newId);
-    setEditingTextAnnId(null);
+    setEditingTextAnnId(activeTool === 'text' ? newId : null);
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
     setActiveTool('select');
     if (activeTool === 'text') {
       setStatusMessage(
-        `Added text box on Page ${pageNumber}. Drag anywhere on the box to move it smoothly, or type your text in the bottom bar!`
+        `Added text box on Page ${pageNumber}. Start typing right away, or drag the box anywhere on the page!`
       );
     }
+  };
+
+  // Immediately places a default Blue-background (#2563EB) + White-text (#FFFFFF) text box with "Type here" placeholder on the current page
+  const handleQuickAddDefaultTextBox = (pageNumber = currentPage) => {
+    const newId = `ann-txt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newAnn: AnnotationElement = {
+      id: newId,
+      pageNumber,
+      type: 'text',
+      x: 0.28,
+      y: 0.32,
+      width: 0.38,
+      height: 0.07,
+      endX: 0.66,
+      endY: 0.39,
+      text: '',
+      fontSize: defaultFontSize,
+      fontWeight: 'bold',
+      fontStyle: 'normal',
+      color: defaultTextColor,
+      backgroundColor: defaultTextBoxBgColor,
+      fillColor:
+        defaultTextBoxBorderColor !== 'transparent'
+          ? defaultTextBoxBorderColor
+          : undefined,
+      strokeWidth: 2,
+      opacity: 1,
+      createdAt: new Date().toISOString(),
+    };
+
+    pushAnnotationsWithUndo([...annotations, newAnn]);
+    setSelectedAnnId(newId);
+    setEditingTextAnnId(newId);
+    setSelectedEmbedded(null);
+    setSelectedPictureRegion(null);
+    setActiveTool('select');
+    setBottomPanelTab('text');
   };
 
   // Places an editable, color-customizable Text Box directly over a picture or region
@@ -846,8 +905,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     label?: string
   ) => {
     const newId = `ann-txt-pic-${Date.now()}`;
-    const boxW = Math.max(0.22, Math.min(0.75, targetRect.width));
-    const boxH = Math.max(0.06, Math.min(0.25, targetRect.height * 0.45));
+    const boxW = Math.max(0.24, Math.min(0.75, targetRect.width));
+    const boxH = Math.max(0.065, Math.min(0.25, targetRect.height * 0.45));
     const boxX = Math.max(
       0.02,
       Math.min(0.95 - boxW, targetRect.x + (targetRect.width - boxW) / 2)
@@ -865,7 +924,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       y: boxY,
       width: boxW,
       height: boxH,
-      text: 'Type text here',
+      text: '',
       fontSize: defaultFontSize,
       fontWeight: 'bold',
       fontStyle: 'normal',
@@ -884,11 +943,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
     setSelectedAnnId(newId);
-    setEditingTextAnnId(null);
+    setEditingTextAnnId(newId);
     setActiveTool('select');
+    setBottomPanelTab('text');
     setCurrentPage(pageNumber);
     setStatusMessage(
-      `Placed text box over ${label || 'picture'} on Page ${pageNumber}. Drag anywhere on the text box to move it smoothly!`
+      `Placed text box over ${label || 'picture'} on Page ${pageNumber}. Type your text or drag the box smoothly anywhere!`
     );
   };
 
@@ -1009,6 +1069,112 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     }
   };
 
+  const applyDragMovement = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!dragState) return;
+      const overlayEl = pageOverlayRefs.current[dragState.pageNumber];
+      if (!overlayEl) return;
+      const rect = overlayEl.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+
+      const pixelDist = Math.hypot(
+        clientX - dragState.startX,
+        clientY - dragState.startY
+      );
+      // Wait for >3px pointer movement before moving so a simple tap to focus/edit text doesn't jitter
+      if (pixelDist < 3) return;
+
+      // If the user starts dragging a text box while inline textarea is open, exit inline typing so the drag is 100% smooth
+      if (editingTextAnnId === dragState.id) {
+        setEditingTextAnnId(null);
+      }
+
+      const dx = (clientX - dragState.startX) / rect.width;
+      const dy = (clientY - dragState.startY) / rect.height;
+
+      setAnnotations((prev) =>
+        prev.map((a) => {
+          if (a.id !== dragState.id) return a;
+          if (dragState.mode === 'move') {
+            const nx = Math.max(0, Math.min(1 - a.width, dragState.origX + dx));
+            const ny = Math.max(
+              0,
+              Math.min(1 - a.height, dragState.origY + dy)
+            );
+            return {
+              ...a,
+              x: nx,
+              y: ny,
+              endX: nx + a.width,
+              endY: ny + a.height,
+            };
+          } else {
+            const dir = dragState.mode;
+            let nx = dragState.origX;
+            let ny = dragState.origY;
+            let nw = dragState.origW;
+            let nh = dragState.origH;
+
+            if (dir.includes('e')) {
+              nw = Math.max(0.025, Math.min(1 - nx, dragState.origW + dx));
+            }
+            if (dir.includes('s')) {
+              nh = Math.max(0.02, Math.min(1 - ny, dragState.origH + dy));
+            }
+            if (dir.includes('w')) {
+              const maxLeftShift = dragState.origW - 0.025;
+              const clampedDx = Math.max(
+                -dragState.origX,
+                Math.min(maxLeftShift, dx)
+              );
+              nx = dragState.origX + clampedDx;
+              nw = dragState.origW - clampedDx;
+            }
+            if (dir.includes('n')) {
+              const maxTopShift = dragState.origH - 0.02;
+              const clampedDy = Math.max(
+                -dragState.origY,
+                Math.min(maxTopShift, dy)
+              );
+              ny = dragState.origY + clampedDy;
+              nh = dragState.origH - clampedDy;
+            }
+
+            return {
+              ...a,
+              x: nx,
+              y: ny,
+              width: nw,
+              height: nh,
+              endX: nx + nw,
+              endY: ny + nh,
+            };
+          }
+        })
+      );
+    },
+    [dragState, editingTextAnnId]
+  );
+
+  // Global window pointer listeners so dragging written text boxes works smoothly across the entire screen
+  useEffect(() => {
+    if (!dragState) return;
+    const onWinPointerMove = (e: PointerEvent) => {
+      applyDragMovement(e.clientX, e.clientY);
+    };
+    const onWinPointerUp = () => {
+      setDragState(null);
+    };
+    window.addEventListener('pointermove', onWinPointerMove, { passive: true });
+    window.addEventListener('pointerup', onWinPointerUp);
+    window.addEventListener('pointercancel', onWinPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onWinPointerMove);
+      window.removeEventListener('pointerup', onWinPointerUp);
+      window.removeEventListener('pointercancel', onWinPointerUp);
+    };
+  }, [dragState, applyDragMovement]);
+
   const handlePointerMoveOverlay = (
     e: React.PointerEvent<HTMLDivElement>,
     pageNumber: number
@@ -1035,67 +1201,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       return;
     }
 
-    if (!dragState || dragState.pageNumber !== pageNumber) return;
-    const dx = (e.clientX - dragState.startX) / rect.width;
-    const dy = (e.clientY - dragState.startY) / rect.height;
-
-    setAnnotations((prev) =>
-      prev.map((a) => {
-        if (a.id !== dragState.id) return a;
-        if (dragState.mode === 'move') {
-          const nx = Math.max(0, Math.min(1 - a.width, dragState.origX + dx));
-          const ny = Math.max(0, Math.min(1 - a.height, dragState.origY + dy));
-          return {
-            ...a,
-            x: nx,
-            y: ny,
-            endX: nx + a.width,
-            endY: ny + a.height,
-          };
-        } else {
-          const dir = dragState.mode;
-          let nx = dragState.origX;
-          let ny = dragState.origY;
-          let nw = dragState.origW;
-          let nh = dragState.origH;
-
-          if (dir.includes('e')) {
-            nw = Math.max(0.025, Math.min(1 - nx, dragState.origW + dx));
-          }
-          if (dir.includes('s')) {
-            nh = Math.max(0.02, Math.min(1 - ny, dragState.origH + dy));
-          }
-          if (dir.includes('w')) {
-            const maxLeftShift = dragState.origW - 0.025;
-            const clampedDx = Math.max(
-              -dragState.origX,
-              Math.min(maxLeftShift, dx)
-            );
-            nx = dragState.origX + clampedDx;
-            nw = dragState.origW - clampedDx;
-          }
-          if (dir.includes('n')) {
-            const maxTopShift = dragState.origH - 0.02;
-            const clampedDy = Math.max(
-              -dragState.origY,
-              Math.min(maxTopShift, dy)
-            );
-            ny = dragState.origY + clampedDy;
-            nh = dragState.origH - clampedDy;
-          }
-
-          return {
-            ...a,
-            x: nx,
-            y: ny,
-            width: nw,
-            height: nh,
-            endX: nx + nw,
-            endY: ny + nh,
-          };
-        }
-      })
-    );
+    if (dragState && dragState.pageNumber === pageNumber) {
+      applyDragMovement(e.clientX, e.clientY);
+    }
   };
 
   const handlePointerUpOverlay = () => {
@@ -1131,10 +1239,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setRegionDragStart(null);
   };
 
+  // Fast in-place annotation state update without cloning megabytes of PDF bytes on every keystroke
   const updateSelectedAnnotation = (updates: Partial<AnnotationElement>) => {
     if (!selectedAnnId) return;
-    pushAnnotationsWithUndo(
-      annotations.map((a) => (a.id === selectedAnnId ? { ...a, ...updates } : a))
+    setAnnotations((prev) =>
+      prev.map((a) => (a.id === selectedAnnId ? { ...a, ...updates } : a))
     );
   };
 
@@ -2110,8 +2219,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 240,
                 Math.round(pageInfo.height * finalScale)
               );
-              // PDF.js rendered at 1.5x PDF points, so 1 PDF point = (finalScale * 1.5) CSS pixels
-              const pdfPointToPx = finalScale * 1.5;
+              // PDF.js rendered at 1.2x PDF points, so 1 PDF point = (finalScale * 1.2) CSS pixels
+              const pdfPointToPx = finalScale * 1.2;
               const displayPageSrc =
                 filteredPageUrls[pageNum] || pageInfo.dataUrl;
 
@@ -2519,31 +2628,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                             }}
                             onPointerDown={(e) => {
                               if (isReaderMode || isSilentRemovalMask) return;
-                              // If currently typing inside the textarea of this text box, let the textarea handle caret unless dragging the move handle
-                              if (
-                                editingTextAnnId === ann.id &&
-                                (e.target as HTMLElement)?.tagName ===
-                                  'TEXTAREA'
-                              ) {
-                                return;
-                              }
                               e.stopPropagation();
-                              try {
-                                e.currentTarget.setPointerCapture(e.pointerId);
-                              } catch {
-                                // Ignore if pointer capture is unsupported
-                              }
                               setCurrentPage(pageNum);
                               setSelectedAnnId(ann.id);
                               setSelectedEmbedded(null);
                               setSelectedPictureRegion(null);
                               setUndoStack((prev) => [
-                                ...prev,
+                                ...prev.slice(-29),
                                 {
                                   annotations,
-                                  pdfBytes: workingPdfBytes
-                                    ? new Uint8Array(workingPdfBytes)
-                                    : null,
+                                  pdfBytes: null,
                                 },
                               ]);
                               setRedoStack([]);
@@ -2689,7 +2783,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                             {ann.type === 'text' && (
                               <div
                                 style={{
-                                  color: ann.color || '#14101B',
+                                  color: ann.color || '#FFFFFF',
                                   backgroundColor:
                                     ann.backgroundColor &&
                                     ann.backgroundColor !== 'transparent'
@@ -2710,30 +2804,34 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                                   fontWeight: ann.fontWeight || 'normal',
                                   fontStyle: ann.fontStyle || 'normal',
                                 }}
-                                className="w-full h-full leading-snug whitespace-pre-wrap break-words font-sans px-1 py-0.5 rounded-xs"
+                                className="w-full h-full leading-snug whitespace-pre-wrap break-words font-sans px-1.5 py-0.5 rounded-xs"
                               >
                                 {isSelected && editingTextAnnId === ann.id ? (
                                   <textarea
                                     autoFocus
                                     value={ann.text || ''}
-                                    onPointerDown={(e) => e.stopPropagation()}
+                                    placeholder="Type here"
                                     onChange={(e) =>
                                       updateSelectedAnnotation({
                                         text: e.target.value,
                                       })
                                     }
                                     style={{
-                                      color: ann.color || '#14101B',
+                                      color: ann.color || '#FFFFFF',
                                       backgroundColor: 'transparent',
                                       fontSize: 'inherit',
                                       fontWeight: ann.fontWeight || 'normal',
                                       fontStyle: ann.fontStyle || 'normal',
                                     }}
-                                    className="w-full h-full resize-none focus:outline-none leading-snug select-text"
+                                    className="w-full h-full resize-none focus:outline-none leading-snug placeholder:opacity-75 placeholder:text-current cursor-grab active:cursor-grabbing"
                                   />
                                 ) : (
-                                  <span className="pointer-events-none select-none block w-full h-full">
-                                    {ann.text}
+                                  <span
+                                    className={`pointer-events-none select-none block w-full h-full ${
+                                      !ann.text ? 'opacity-75' : ''
+                                    }`}
+                                  >
+                                    {ann.text || 'Type here'}
                                   </span>
                                 )}
                               </div>
@@ -2755,7 +2853,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                                 <strong className="block text-[10px] uppercase">
                                   Note:
                                 </strong>
-                                {ann.text}
+                                {ann.text || 'Type here'}
                               </div>
                             )}
 
@@ -2769,11 +2867,33 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                               />
                             )}
 
-                            {/* Dedicated Smooth Drag Pill on Top-Left of Selected Element */}
+                            {/* Dedicated Smooth Drag Pill on Bottom-Left of Selected Element */}
                             {isSelected && (
                               <div
-                                title="Drag anywhere on the box or this handle to move smoothly"
-                                className="absolute -bottom-6 left-0 px-2 py-0.5 rounded-full bg-[#2563EB] text-white text-[10px] font-bold shadow-md flex items-center gap-1 cursor-grab active:cursor-grabbing z-40 whitespace-nowrap pointer-events-auto"
+                                onPointerDown={(e) => {
+                                  e.stopPropagation();
+                                  setEditingTextAnnId(null);
+                                  setCurrentPage(pageNum);
+                                  setSelectedAnnId(ann.id);
+                                  setUndoStack((prev) => [
+                                    ...prev.slice(-29),
+                                    { annotations, pdfBytes: null },
+                                  ]);
+                                  setRedoStack([]);
+                                  setDragState({
+                                    id: ann.id,
+                                    pageNumber: pageNum,
+                                    mode: 'move',
+                                    startX: e.clientX,
+                                    startY: e.clientY,
+                                    origX: ann.x,
+                                    origY: ann.y,
+                                    origW: ann.width,
+                                    origH: ann.height,
+                                  });
+                                }}
+                                title="Drag this handle or anywhere on the box to move smoothly"
+                                className="absolute -bottom-6 left-0 px-2.5 py-0.5 rounded-full bg-[#2563EB] text-white text-[10px] font-bold shadow-md flex items-center gap-1 cursor-grab active:cursor-grabbing z-40 whitespace-nowrap pointer-events-auto touch-none"
                               >
                                 <Move className="w-3 h-3" />
                                 <span>Drag to Move</span>
@@ -3037,20 +3157,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                                     key={h.dir}
                                     onPointerDown={(e) => {
                                       e.stopPropagation();
-                                      try {
-                                        e.currentTarget.setPointerCapture(
-                                          e.pointerId
-                                        );
-                                      } catch {
-                                        // Ignore if unsupported
-                                      }
                                       setUndoStack((prev) => [
-                                        ...prev,
+                                        ...prev.slice(-29),
                                         {
                                           annotations,
-                                          pdfBytes: workingPdfBytes
-                                            ? new Uint8Array(workingPdfBytes)
-                                            : null,
+                                          pdfBytes: null,
                                         },
                                       ]);
                                       setRedoStack([]);
@@ -3340,6 +3451,15 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
+                    onClick={() => handleQuickAddDefaultTextBox(currentPage)}
+                    className="px-2.5 py-1 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap shadow-xs"
+                  >
+                    <Type className="w-3.5 h-3.5" />
+                    <span>+ Add Text Box</span>
+                  </button>
+
+                  <button
+                    type="button"
                     onClick={() => {
                       setWorkspaceMode('annotate');
                       setActiveTool('text');
@@ -3347,20 +3467,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         'Tap anywhere on the PDF page to place a new text box.'
                       );
                     }}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap ${
+                    className={`px-2 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap ${
                       activeTool === 'text'
                         ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12]'
                         : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8]'
                     }`}
                   >
-                    <Type className="w-3.5 h-3.5" />
-                    <span>+ Tap Page to Add Text</span>
+                    <span>Tap Page to Place</span>
                   </button>
 
-                  {/* Live Text Input right in the bottom bar so the user can type while dragging the text box smoothly on the canvas */}
+                  {/* Live Text Input right in the bottom bar with "Type here" placeholder (never requires deleting placeholder text) */}
                   {(selectedAnnotation?.type === 'text' ||
                     selectedAnnotation?.type === 'comment') && (
-                    <div className="flex items-center gap-1 bg-white dark:bg-[#16111F] border border-[#2563EB] rounded-lg px-2 py-0.5">
+                    <div className="flex items-center gap-1 bg-white dark:bg-[#16111F] border-2 border-[#2563EB] rounded-lg px-2 py-0.5">
                       <Pencil className="w-3 h-3 text-[#2563EB] shrink-0" />
                       <input
                         type="text"
@@ -3368,9 +3487,72 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         onChange={(e) =>
                           updateSelectedAnnotation({ text: e.target.value })
                         }
-                        placeholder="Type text here..."
+                        placeholder="Type here"
                         className="w-36 sm:w-48 text-xs font-medium bg-transparent focus:outline-none text-[#14101B] dark:text-[#F4F1F8]"
                       />
+                    </div>
+                  )}
+
+                  {/* Quick 4-Way Nudge Buttons for Moving Written Text Precisely */}
+                  {selectedAnnotation && (
+                    <div className="flex items-center gap-0.5 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-1 py-0.5">
+                      <span className="text-[9px] font-bold text-[#6E667D] px-0.5">
+                        Move:
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSelectedAnnotation({
+                            x: Math.max(0, selectedAnnotation.x - 0.02),
+                          })
+                        }
+                        title="Move Left"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <ChevronLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSelectedAnnotation({
+                            y: Math.max(0, selectedAnnotation.y - 0.02),
+                          })
+                        }
+                        title="Move Up"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSelectedAnnotation({
+                            y: Math.min(
+                              1 - selectedAnnotation.height,
+                              selectedAnnotation.y + 0.02
+                            ),
+                          })
+                        }
+                        title="Move Down"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateSelectedAnnotation({
+                            x: Math.min(
+                              1 - selectedAnnotation.width,
+                              selectedAnnotation.x + 0.02
+                            ),
+                          })
+                        }
+                        title="Move Right"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <ChevronRight className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   )}
 
@@ -3466,8 +3648,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       Text:
                     </span>
                     {[
-                      '#14101B',
                       '#FFFFFF',
+                      '#14101B',
                       '#4A1D5E',
                       '#DC2626',
                       '#2563EB',
@@ -3539,6 +3721,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       Clear
                     </button>
                     {[
+                      '#2563EB',
                       '#FFFFFF',
                       '#FEF08A',
                       '#DBEAFE',
@@ -3577,7 +3760,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                           ? selectedAnnotation.backgroundColor
                           : defaultTextBoxBgColor.startsWith('#')
                             ? defaultTextBoxBgColor
-                            : '#FFFFFF'
+                            : '#2563EB'
                       }
                       onChange={(e) => {
                         setDefaultTextBoxBgColor(e.target.value);
@@ -4427,8 +4610,15 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   const nextTab = isActive ? 'none' : item.id;
                   setBottomPanelTab(nextTab);
                   if (item.id === 'text' && !isActive) {
-                    setWorkspaceMode('content-edit');
-                    setActiveTool('select');
+                    setWorkspaceMode('annotate');
+                    const hasTextOnPage = annotations.some(
+                      (a) => a.pageNumber === currentPage && a.type === 'text'
+                    );
+                    if (!hasTextOnPage) {
+                      handleQuickAddDefaultTextBox(currentPage);
+                    } else {
+                      setActiveTool('select');
+                    }
                   } else if (item.id === 'pictures' && !isActive) {
                     setWorkspaceMode('content-edit');
                     setActiveTool('select');

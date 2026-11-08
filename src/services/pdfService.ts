@@ -171,7 +171,7 @@ export async function renderPdfPage(
  */
 export async function renderAllPdfPages(
   pdfBytes: Uint8Array,
-  scale = 1.5,
+  scale = 1.2,
   onProgress?: (renderedPages: RenderedPageInfo[], totalPages: number) => void
 ): Promise<RenderedPageInfo[]> {
   const dataCopy = new Uint8Array(pdfBytes);
@@ -187,16 +187,16 @@ export async function renderAllPdfPages(
           pdf,
           pageNumber,
           scale,
-          'image/png',
-          0.92
+          'image/jpeg',
+          0.88
         );
         renderedList.push(pageInfo);
       } catch (pageErr) {
         console.error(`Error rendering page ${pageNumber}:`, pageErr);
         // Fallback blank page canvas so multi-page numbering never breaks
         const fallbackCanvas = document.createElement('canvas');
-        fallbackCanvas.width = 893;
-        fallbackCanvas.height = 1263;
+        fallbackCanvas.width = 714;
+        fallbackCanvas.height = 1010;
         const fCtx = fallbackCanvas.getContext('2d');
         if (fCtx) {
           fCtx.fillStyle = '#FFFFFF';
@@ -206,7 +206,7 @@ export async function renderAllPdfPages(
           pageNumber,
           width: fallbackCanvas.width,
           height: fallbackCanvas.height,
-          dataUrl: fallbackCanvas.toDataURL('image/png'),
+          dataUrl: fallbackCanvas.toDataURL('image/jpeg', 0.85),
           extractedText: '',
           nativeTextBlocks: [],
         });
@@ -215,6 +215,8 @@ export async function renderAllPdfPages(
       if (onProgress) {
         onProgress([...renderedList], totalPages);
       }
+      // Yield briefly to keep the main thread responsive on multi-page documents
+      await new Promise((r) => setTimeout(r, 0));
     }
   } finally {
     await loadingTask.destroy();
@@ -562,6 +564,10 @@ export async function bakeAnnotationsIntoPdf(
           });
         }
       } else if (ann.type === 'text') {
+        // Skip untouched empty placeholder text boxes that didn't replace native PDF text
+        if (!ann.text?.trim() && !ann.replacesNativeTextId) {
+          continue;
+        }
         const hasBg =
           ann.backgroundColor && ann.backgroundColor !== 'transparent';
         const hasBorder = Boolean(
@@ -579,7 +585,7 @@ export async function bakeAnnotationsIntoPdf(
             opacity,
           });
         }
-        if (ann.text) {
+        if (ann.text && ann.text.trim()) {
           const fontSize = ann.fontSize || 14;
           const chosenFont =
             ann.fontWeight === 'bold' && ann.fontStyle === 'italic'
@@ -701,15 +707,42 @@ export async function extractPdfPages(
   pdfBytes: Uint8Array,
   pageNumbers: number[]
 ): Promise<Uint8Array> {
-  const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
-  const newDoc = await PDFDocument.create();
-  const validIndices = pageNumbers
-    .map((n) => n - 1)
-    .filter((idx) => idx >= 0 && idx < srcDoc.getPageCount());
+  try {
+    const srcDoc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+    const totalPages = srcDoc.getPageCount();
+    const newDoc = await PDFDocument.create();
+    const validIndices = pageNumbers
+      .map((n) => n - 1)
+      .filter((idx) => idx >= 0 && idx < totalPages);
 
-  const copied = await newDoc.copyPages(srcDoc, validIndices);
-  copied.forEach((p) => newDoc.addPage(p));
-  return newDoc.save();
+    if (validIndices.length === 0 && totalPages > 0) {
+      validIndices.push(0);
+    }
+
+    const copied = await newDoc.copyPages(srcDoc, validIndices);
+    copied.forEach((p) => newDoc.addPage(p));
+    return await newDoc.save();
+  } catch (err) {
+    console.warn(
+      'Direct copyPages failed on PDF; using high-resolution page render fallback for Split PDF:',
+      err
+    );
+    const totalCount = await getPdfPageCount(pdfBytes);
+    const validPages = pageNumbers.filter((n) => n >= 1 && n <= totalCount);
+    const targetPages = validPages.length > 0 ? validPages : [1];
+    const pageImages: string[] = [];
+    for (const pNum of targetPages) {
+      const rendered = await renderPdfPage(
+        pdfBytes,
+        pNum,
+        1.4,
+        'image/jpeg',
+        0.9
+      );
+      pageImages.push(rendered.dataUrl);
+    }
+    return createPdfFromImages(pageImages, { pageSize: 'A4', marginPt: 0 });
+  }
 }
 
 /**
@@ -1547,6 +1580,7 @@ export async function compositeTextBoxesOntoImageDataUrl(
       const scaleFactor = img.width / 595.28;
 
       for (const box of textBoxes) {
+        if (!box.text || !box.text.trim()) continue;
         const bx = box.x * img.width;
         const by = box.y * img.height;
         const bw = box.width * img.width;
@@ -1563,27 +1597,25 @@ export async function compositeTextBoxesOntoImageDataUrl(
           ctx.strokeRect(bx, by, bw, bh);
         }
 
-        if (box.text) {
-          const pxFontSize = Math.max(
-            10,
-            Math.round((box.fontSize || 16) * scaleFactor)
-          );
-          const styleStr = box.fontStyle === 'italic' ? 'italic ' : '';
-          const weightStr = box.fontWeight === 'bold' ? 'bold ' : '';
-          ctx.font = `${styleStr}${weightStr}${pxFontSize}px Inter, Helvetica, Arial, sans-serif`;
-          ctx.fillStyle = box.textColor || '#14101B';
-          ctx.textBaseline = 'top';
+        const pxFontSize = Math.max(
+          10,
+          Math.round((box.fontSize || 16) * scaleFactor)
+        );
+        const styleStr = box.fontStyle === 'italic' ? 'italic ' : '';
+        const weightStr = box.fontWeight === 'bold' ? 'bold ' : '';
+        ctx.font = `${styleStr}${weightStr}${pxFontSize}px Inter, Helvetica, Arial, sans-serif`;
+        ctx.fillStyle = box.textColor || '#FFFFFF';
+        ctx.textBaseline = 'top';
 
-          const padding = Math.round(5 * scaleFactor);
-          const lines = box.text.split('\n');
-          lines.forEach((line, idx) => {
-            ctx.fillText(
-              line,
-              bx + padding,
-              by + padding + idx * Math.round(pxFontSize * 1.25)
-            );
-          });
-        }
+        const padding = Math.round(5 * scaleFactor);
+        const lines = box.text.split('\n');
+        lines.forEach((line, idx) => {
+          ctx.fillText(
+            line,
+            bx + padding,
+            by + padding + idx * Math.round(pxFontSize * 1.25)
+          );
+        });
       }
 
       resolve(canvas.toDataURL(format, quality));

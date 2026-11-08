@@ -24,6 +24,7 @@ import {
   Undo2,
   Bold,
   Italic,
+  Move,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -192,7 +193,48 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
 
   // 2. SPLIT PDF STATE
   const [splitRangeInput, setSplitRangeInput] = useState('1');
+  const [splitMode, setSplitMode] = useState<'range' | 'each-page'>('range');
+  const [actualSplitPageCount, setActualSplitPageCount] = useState<number>(
+    selectedDoc?.pageCount || 1
+  );
+  const [splitResults, setSplitResults] = useState<
+    {
+      id: string;
+      name: string;
+      bytes: Uint8Array;
+      pageCount: number;
+      pagesLabel: string;
+    }[]
+  >([]);
+
+  // Ensure actualSplitPageCount always reflects the true number of pages in selectedDoc.pdfData
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedDoc) {
+      setActualSplitPageCount(1);
+      setSplitResults([]);
+      return;
+    }
+    setSplitResults([]);
+    setActualSplitPageCount(Math.max(1, selectedDoc.pageCount || 1));
+    (async () => {
+      try {
+        const realCount = await getPdfPageCount(selectedDoc.pdfData);
+        if (!cancelled && realCount > 0) {
+          setActualSplitPageCount(realCount);
+          setSplitRangeInput(realCount > 1 ? `1-${Math.min(2, realCount)}` : '1');
+        }
+      } catch {
+        // Ignore
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDoc]);
+
   const parsePageRanges = (input: string, maxPages: number): number[] => {
+    const safeMax = Math.max(1, maxPages);
     const set = new Set<number>();
     const parts = input.split(',');
     for (const part of parts) {
@@ -208,36 +250,154 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
             p <= Math.max(start, end);
             p++
           ) {
-            if (p >= 1 && p <= maxPages) set.add(p);
+            if (p >= 1 && p <= safeMax) set.add(p);
           }
         }
       } else {
         const p = parseInt(trimmed, 10);
-        if (!Number.isNaN(p) && p >= 1 && p <= maxPages) set.add(p);
+        if (!Number.isNaN(p) && p >= 1 && p <= safeMax) set.add(p);
       }
     }
     return Array.from(set).sort((a, b) => a - b);
   };
 
+  const handleToggleSplitPageNumber = (pageNum: number) => {
+    const currentList = parsePageRanges(splitRangeInput, actualSplitPageCount);
+    const exists = currentList.includes(pageNum);
+    const nextList = exists
+      ? currentList.filter((p) => p !== pageNum)
+      : [...currentList, pageNum].sort((a, b) => a - b);
+    setSplitRangeInput(nextList.length > 0 ? nextList.join(', ') : '1');
+  };
+
+  const handleUploadPdfForSplit = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setIsBusy(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      const count = await getPdfPageCount(bytes);
+      const newDoc: StoredDocument = {
+        id: `doc-upload-split-${Date.now()}`,
+        name: file.name.endsWith('.pdf') ? file.name : `${file.name}.pdf`,
+        category: 'Other',
+        starred: false,
+        sizeBytes: bytes.byteLength,
+        pageCount: count,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: bytes,
+      };
+      await onSaveNewDocument(newDoc);
+      setSelectedDocId(newDoc.id);
+      setActualSplitPageCount(count);
+      setSplitRangeInput(count > 1 ? `1-${Math.min(2, count)}` : '1');
+      setFeedback(
+        `Loaded "${newDoc.name}" (${count} pages) for splitting.`
+      );
+    } catch (err) {
+      console.error('Upload for split failed:', err);
+      setFeedback('Could not load the selected PDF file.');
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   const handleRunSplitExtract = async () => {
     if (!selectedDoc) return;
-    const pagesToExtract = parsePageRanges(
-      splitRangeInput,
-      selectedDoc.pageCount
+    const maxPages = Math.max(
+      actualSplitPageCount,
+      selectedDoc.pageCount || 1
     );
+
+    if (splitMode === 'each-page') {
+      setIsBusy(true);
+      setFeedback(null);
+      try {
+        const baseTitle = selectedDoc.name.replace(/\.pdf$/i, '');
+        const generated: {
+          id: string;
+          name: string;
+          bytes: Uint8Array;
+          pageCount: number;
+          pagesLabel: string;
+        }[] = [];
+
+        for (let p = 1; p <= maxPages; p++) {
+          const splitBytes = await extractPdfPages(selectedDoc.pdfData, [p]);
+          const outName = `${baseTitle}_Page_${p}.pdf`;
+          generated.push({
+            id: `split-p${p}-${Date.now()}`,
+            name: outName,
+            bytes: splitBytes,
+            pageCount: 1,
+            pagesLabel: `Page ${p}`,
+          });
+        }
+
+        setSplitResults(generated);
+        // Trigger download of the first split file immediately and save all to vault
+        if (generated.length > 0) {
+          downloadBytesAsFile(generated[0].bytes, generated[0].name);
+        }
+        for (const item of generated) {
+          await onSaveNewDocument({
+            id: `doc-${item.id}`,
+            name: item.name,
+            category: selectedDoc.category,
+            starred: false,
+            sizeBytes: item.bytes.byteLength,
+            pageCount: 1,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: item.bytes,
+          });
+        }
+        setFeedback(
+          `Split "${selectedDoc.name}" into ${generated.length} separate PDF page file(s)! Click any "Download PDF" button below to download.`
+        );
+      } catch (err) {
+        console.error('Error splitting PDF:', err);
+        setFeedback('Failed to split PDF pages. Please try again.');
+      } finally {
+        setIsBusy(false);
+      }
+      return;
+    }
+
+    const pagesToExtract = parsePageRanges(splitRangeInput, maxPages);
     if (pagesToExtract.length === 0) {
       setFeedback(
-        `Please enter valid page numbers between 1 and ${selectedDoc.pageCount}.`
+        `Please select or enter valid page numbers between 1 and ${maxPages}.`
       );
       return;
     }
     setIsBusy(true);
+    setFeedback(null);
     try {
       const splitBytes = await extractPdfPages(
         selectedDoc.pdfData,
         pagesToExtract
       );
       const outName = `${selectedDoc.name.replace(/\.pdf$/i, '')}_Pages_${pagesToExtract.join('-')}.pdf`;
+      const resultItem = {
+        id: `split-range-${Date.now()}`,
+        name: outName,
+        bytes: splitBytes,
+        pageCount: pagesToExtract.length,
+        pagesLabel: `Pages ${pagesToExtract.join(', ')}`,
+      };
+      setSplitResults([resultItem]);
+
+      // Trigger browser download immediately before async IndexedDB save so mobile browsers never block the download gesture
+      downloadBytesAsFile(splitBytes, outName);
+
       const newDoc: StoredDocument = {
         id: `doc-split-${Date.now()}`,
         name: outName,
@@ -251,10 +411,12 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         pdfData: splitBytes,
       };
       await onSaveNewDocument(newDoc);
-      downloadBytesAsFile(splitBytes, outName);
       setFeedback(
-        `Extracted ${pagesToExtract.length} page(s) into "${outName}" and downloaded.`
+        `Split ${pagesToExtract.length} page(s) into "${outName}" (${formatBytes(splitBytes.byteLength)}). Click the green "Download Split PDF" button below if your browser blocked automatic download.`
       );
+    } catch (err) {
+      console.error('Error extracting split PDF:', err);
+      setFeedback('Could not extract selected pages from this PDF.');
     } finally {
       setIsBusy(false);
     }
@@ -353,7 +515,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
 
   // 5. PDF TO IMAGES & EXTRACT TEXT + WRITE TEXT OVER CONVERTED PICTURES STATE
   const [exportFormat, setExportFormat] = useState<'image/png' | 'image/jpeg'>(
-    'image/png'
+    'image/jpeg'
   );
   const [renderedImages, setRenderedImages] = useState<RenderedPageInfo[]>([]);
   const [extractedPagesText, setExtractedPagesText] = useState<
@@ -361,6 +523,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   >([]);
 
   // Text boxes placed over converted PDF pictures (indexed by pageNumber)
+  // Default: Blue background (#2563EB) + White text (#FFFFFF) + "Type here" placeholder
   const [pictureTextBoxesByPage, setPictureTextBoxesByPage] = useState<
     Record<number, PictureTextBoxOverlay[]>
   >({});
@@ -371,8 +534,8 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     pageNumber: number;
     id: string;
   } | null>(null);
-  const [defaultPicTextColor, setDefaultPicTextColor] = useState('#14101B');
-  const [defaultPicBoxBgColor, setDefaultPicBoxBgColor] = useState('#FFFFFF');
+  const [defaultPicTextColor, setDefaultPicTextColor] = useState('#FFFFFF');
+  const [defaultPicBoxBgColor, setDefaultPicBoxBgColor] = useState('#2563EB');
   const [defaultPicBoxBorderColor, setDefaultPicBoxBorderColor] =
     useState('transparent');
   const [draggingPicBox, setDraggingPicBox] = useState<{
@@ -388,10 +551,80 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     containerRect: DOMRect;
   } | null>(null);
 
+  // Global window pointer listeners so dragging written text boxes on converted PDF pictures is 100% smooth
+  useEffect(() => {
+    if (!draggingPicBox) return;
+    const onWinPointerMove = (e: PointerEvent) => {
+      const dx =
+        (e.clientX - draggingPicBox.startX) /
+        Math.max(1, draggingPicBox.containerRect.width);
+      const dy =
+        (e.clientY - draggingPicBox.startY) /
+        Math.max(1, draggingPicBox.containerRect.height);
+
+      if (
+        Math.hypot(
+          e.clientX - draggingPicBox.startX,
+          e.clientY - draggingPicBox.startY
+        ) < 3
+      ) {
+        return;
+      }
+
+      setPictureTextBoxesByPage((prev) => ({
+        ...prev,
+        [draggingPicBox.pageNumber]: (
+          prev[draggingPicBox.pageNumber] || []
+        ).map((b) => {
+          if (b.id !== draggingPicBox.id) return b;
+          if (draggingPicBox.mode === 'move') {
+            return {
+              ...b,
+              x: Math.max(
+                0,
+                Math.min(1 - b.width, draggingPicBox.origX + dx)
+              ),
+              y: Math.max(
+                0,
+                Math.min(1 - b.height, draggingPicBox.origY + dy)
+              ),
+            };
+          } else {
+            return {
+              ...b,
+              width: Math.max(
+                0.08,
+                Math.min(1 - b.x, draggingPicBox.origW + dx)
+              ),
+              height: Math.max(
+                0.04,
+                Math.min(1 - b.y, draggingPicBox.origH + dy)
+              ),
+            };
+          }
+        }),
+      }));
+    };
+    const onWinPointerUp = () => {
+      setDraggingPicBox(null);
+    };
+    window.addEventListener('pointermove', onWinPointerMove, { passive: true });
+    window.addEventListener('pointerup', onWinPointerUp);
+    window.addEventListener('pointercancel', onWinPointerUp);
+    return () => {
+      window.removeEventListener('pointermove', onWinPointerMove);
+      window.removeEventListener('pointerup', onWinPointerUp);
+      window.removeEventListener('pointercancel', onWinPointerUp);
+    };
+  }, [draggingPicBox]);
+
   const pushPictureTextBoxesWithUndo = (
     next: Record<number, PictureTextBoxOverlay[]>
   ) => {
-    setPictureTextBoxUndoStack((prev) => [...prev, pictureTextBoxesByPage]);
+    setPictureTextBoxUndoStack((prev) => [
+      ...prev.slice(-19),
+      pictureTextBoxesByPage,
+    ]);
     setPictureTextBoxesByPage(next);
   };
 
@@ -415,7 +648,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       y: Math.max(0.03, Math.min(0.84, clickY)),
       width: 0.36,
       height: 0.1,
-      text: 'Type text here',
+      text: '',
       textColor: defaultPicTextColor,
       boxBgColor: defaultPicBoxBgColor,
       boxBorderColor: defaultPicBoxBorderColor,
@@ -436,11 +669,12 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   ) => {
     if (!selectedPicTextBox) return;
     const { pageNumber, id } = selectedPicTextBox;
-    const list = pictureTextBoxesByPage[pageNumber] || [];
-    pushPictureTextBoxesWithUndo({
-      ...pictureTextBoxesByPage,
-      [pageNumber]: list.map((b) => (b.id === id ? { ...b, ...updates } : b)),
-    });
+    setPictureTextBoxesByPage((prev) => ({
+      ...prev,
+      [pageNumber]: (prev[pageNumber] || []).map((b) =>
+        b.id === id ? { ...b, ...updates } : b
+      ),
+    }));
   };
 
   const removeSelectedPicTextBox = (pageNumber: number, id: string) => {
@@ -519,14 +753,15 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     if (!selectedDoc) return;
     setIsBusy(true);
     try {
+      const realPageCount = await getPdfPageCount(selectedDoc.pdfData);
       const imgs: RenderedPageInfo[] = [];
-      for (let i = 1; i <= selectedDoc.pageCount; i++) {
+      for (let i = 1; i <= realPageCount; i++) {
         const pageInfo = await renderPdfPage(
           selectedDoc.pdfData,
           i,
-          1.6,
+          1.25,
           exportFormat,
-          0.92
+          0.88
         );
         imgs.push(pageInfo);
       }
@@ -534,7 +769,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       const texts = await extractAllPdfText(selectedDoc.pdfData);
       setExtractedPagesText(texts);
       setFeedback(
-        `Converted ${imgs.length} PDF page(s) into pictures. Click anywhere on a picture (or click "+ Add Text Box") to write text with custom colors!`
+        `Converted ${imgs.length} PDF page(s) into pictures. Click anywhere on a picture (or click "+ Add Text Box") to write text!`
       );
     } finally {
       setIsBusy(false);
@@ -950,38 +1185,244 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
 
         {/* 2. SPLIT PDF */}
         {activeTool === 'split-pdf' && selectedDoc && (
-          <div className="space-y-6 max-w-2xl">
-            <div>
-              <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                Split PDF or Extract Selected Pages
-              </h2>
-              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                Active document: <strong>{selectedDoc.name}</strong> (
-                {selectedDoc.pageCount} pages total)
-              </p>
-            </div>
+          <div className="space-y-6 max-w-3xl">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Split PDF & Download Extracted Pages
+                </h2>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                  Active document: <strong>{selectedDoc.name}</strong> (
+                  {actualSplitPageCount} pages total ·{' '}
+                  {formatBytes(selectedDoc.sizeBytes)})
+                </p>
+              </div>
 
-            <div className="space-y-2">
-              <label className="block text-xs font-semibold">
-                Page Numbers or Ranges (e.g. 1-2, 3)
+              <label className="px-4 py-2 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold flex items-center gap-2 cursor-pointer self-start">
+                <Upload className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                <span>Upload PDF to Split</span>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  className="hidden"
+                  onChange={handleUploadPdfForSplit}
+                />
               </label>
-              <input
-                type="text"
-                value={splitRangeInput}
-                onChange={(e) => setSplitRangeInput(e.target.value)}
-                placeholder={`1-${selectedDoc.pageCount}`}
-                className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
-              />
             </div>
 
-            <button
-              onClick={handleRunSplitExtract}
-              disabled={isBusy}
-              className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer"
-            >
-              <Scissors className="w-4 h-4" />
-              <span>Extract Pages & Download PDF</span>
-            </button>
+            {/* Split Mode Selector */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => setSplitMode('range')}
+                className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                  splitMode === 'range'
+                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/5 dark:bg-[#9D5CE5]/15'
+                    : 'border-[#E4DFEC] dark:border-[#261F33]'
+                }`}
+              >
+                <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Extract Selected Pages (Single Split PDF)
+                </p>
+                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                  Tap page numbers below or enter a range (e.g. 1-3, 5) to download as a new PDF.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSplitMode('each-page')}
+                className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                  splitMode === 'each-page'
+                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/5 dark:bg-[#9D5CE5]/15'
+                    : 'border-[#E4DFEC] dark:border-[#261F33]'
+                }`}
+              >
+                <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Split Every Page into Separate PDFs
+                </p>
+                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                  Splits all {actualSplitPageCount} page(s) into individual 1-page PDF files ready to download.
+                </p>
+              </button>
+            </div>
+
+            {splitMode === 'range' && (
+              <div className="space-y-4">
+                {/* Interactive Page Number Selector Pills */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8]">
+                      Tap Pages to Include in Split PDF:
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setSplitRangeInput(
+                            actualSplitPageCount > 1
+                              ? `1-${actualSplitPageCount}`
+                              : '1'
+                          )
+                        }
+                        className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
+                      >
+                        Select All ({actualSplitPageCount})
+                      </button>
+                      {actualSplitPageCount >= 2 && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSplitRangeInput(
+                                `1-${Math.max(1, Math.floor(actualSplitPageCount / 2))}`
+                              )
+                            }
+                            className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
+                          >
+                            First Half
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSplitRangeInput(
+                                `${Math.floor(actualSplitPageCount / 2) + 1}-${actualSplitPageCount}`
+                              )
+                            }
+                            className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
+                          >
+                            Second Half
+                          </button>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setSplitRangeInput('1')}
+                        className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
+                      >
+                        Reset to Page 1
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                    {Array.from(
+                      { length: actualSplitPageCount },
+                      (_, idx) => idx + 1
+                    ).map((pNum) => {
+                      const selectedList = parsePageRanges(
+                        splitRangeInput,
+                        actualSplitPageCount
+                      );
+                      const isPicked = selectedList.includes(pNum);
+                      return (
+                        <button
+                          key={pNum}
+                          type="button"
+                          onClick={() => handleToggleSplitPageNumber(pNum)}
+                          className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer ${
+                            isPicked
+                              ? 'bg-[#2563EB] text-white shadow-xs'
+                              : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] hover:border-[#2563EB]'
+                          }`}
+                        >
+                          Page {pNum}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-semibold">
+                    Or Type Page Numbers / Ranges (e.g. 1-2, 4)
+                  </label>
+                  <input
+                    type="text"
+                    value={splitRangeInput}
+                    onChange={(e) => setSplitRangeInput(e.target.value)}
+                    placeholder={`1-${actualSplitPageCount}`}
+                    className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={handleRunSplitExtract}
+                disabled={isBusy}
+                className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50"
+              >
+                <Scissors className="w-4 h-4" />
+                <span>
+                  {isBusy
+                    ? 'Splitting PDF...'
+                    : splitMode === 'each-page'
+                      ? `Split All ${actualSplitPageCount} Pages & Download`
+                      : 'Split PDF & Download Now'}
+                </span>
+              </button>
+            </div>
+
+            {/* Persistent Download Split PDF Result Cards */}
+            {splitResults.length > 0 && (
+              <div className="p-4 rounded-xl bg-[#15803D]/10 border-2 border-[#15803D]/40 space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    Ready to Download ({splitResults.length} Split PDF{' '}
+                    {splitResults.length === 1 ? 'File' : 'Files'})
+                  </p>
+                  {splitResults.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        splitResults.forEach((item, idx) => {
+                          setTimeout(() => {
+                            downloadBytesAsFile(item.bytes, item.name);
+                          }, idx * 250);
+                        });
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Download All ({splitResults.length})</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-2 max-h-64 overflow-y-auto">
+                  {splitResults.map((item) => (
+                    <div
+                      key={item.id}
+                      className="p-3 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3"
+                    >
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                          {item.name}
+                        </p>
+                        <p className="text-[11px] font-mono text-[#6E667D] dark:text-[#A39BB5]">
+                          {item.pagesLabel} · {item.pageCount}{' '}
+                          {item.pageCount === 1 ? 'page' : 'pages'} ·{' '}
+                          {formatBytes(item.bytes.byteLength)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          downloadBytesAsFile(item.bytes, item.name)
+                        }
+                        className="px-4 py-2 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shrink-0 self-start sm:self-auto shadow-xs"
+                      >
+                        <Download className="w-4 h-4" />
+                        <span>Download Split PDF</span>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1663,88 +2104,99 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                                   box.boxBorderColor !== 'transparent'
                                     ? '1.5px'
                                     : '0px',
-                                borderStyle: 'solid',
-                                color: box.textColor,
-                                fontSize: `${box.fontSize}px`,
-                                fontWeight: box.fontWeight || 'normal',
-                                fontStyle: box.fontStyle || 'normal',
-                              }}
-                              className={`absolute p-1 rounded-xs cursor-move ${
-                                isBoxSelected
-                                  ? 'ring-2 ring-[#4A1D5E] dark:ring-[#9D5CE5] z-20'
-                                  : 'hover:ring-1 hover:ring-[#4A1D5E]/60 z-10'
-                              }`}
-                            >
-                              <textarea
-                                value={box.text}
-                                onPointerDown={(e) => e.stopPropagation()}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setSelectedPicTextBox({
-                                    pageNumber: img.pageNumber,
-                                    id: box.id,
-                                  });
-                                }}
-                                onChange={(e) => {
-                                  const val = e.target.value;
-                                  setPictureTextBoxesByPage((prev) => ({
-                                    ...prev,
-                                    [img.pageNumber]: (
-                                      prev[img.pageNumber] || []
-                                    ).map((b) =>
-                                      b.id === box.id ? { ...b, text: val } : b
-                                    ),
-                                  }));
-                                }}
-                                style={{
+                                  borderStyle: 'solid',
                                   color: box.textColor,
-                                  backgroundColor: 'transparent',
+                                  fontSize: `${box.fontSize}px`,
                                   fontWeight: box.fontWeight || 'normal',
                                   fontStyle: box.fontStyle || 'normal',
+                                  touchAction: 'none',
                                 }}
-                                className="w-full h-full resize-none focus:outline-none leading-snug"
-                              />
+                                className={`absolute p-1.5 rounded-xs cursor-grab active:cursor-grabbing touch-none ${
+                                  isBoxSelected
+                                    ? 'ring-2 ring-[#2563EB] z-20'
+                                    : 'hover:ring-1 hover:ring-[#2563EB]/60 z-10'
+                                }`}
+                              >
+                                <textarea
+                                  value={box.text}
+                                  placeholder="Type here"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setSelectedPicTextBox({
+                                      pageNumber: img.pageNumber,
+                                      id: box.id,
+                                    });
+                                  }}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    setPictureTextBoxesByPage((prev) => ({
+                                      ...prev,
+                                      [img.pageNumber]: (
+                                        prev[img.pageNumber] || []
+                                      ).map((b) =>
+                                        b.id === box.id
+                                          ? { ...b, text: val }
+                                          : b
+                                      ),
+                                    }));
+                                  }}
+                                  style={{
+                                    color: box.textColor,
+                                    backgroundColor: 'transparent',
+                                    fontWeight: box.fontWeight || 'normal',
+                                    fontStyle: box.fontStyle || 'normal',
+                                  }}
+                                  className="w-full h-full resize-none focus:outline-none leading-snug placeholder:opacity-80 placeholder:text-current cursor-grab active:cursor-grabbing"
+                                />
 
-                              {isBoxSelected && (
-                                <>
-                                  <button
-                                    type="button"
-                                    onPointerDown={(e) => e.stopPropagation()}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      removeSelectedPicTextBox(
-                                        img.pageNumber,
-                                        box.id
-                                      );
-                                    }}
-                                    className="absolute -top-6 right-0 px-1.5 py-0.5 rounded bg-[#DC2626] text-white text-[10px] font-bold shadow cursor-pointer"
-                                  >
-                                    Remove
-                                  </button>
-                                  <div
-                                    onPointerDown={(e) => {
-                                      e.stopPropagation();
-                                      const parentRect =
-                                        e.currentTarget.parentElement?.parentElement?.getBoundingClientRect();
-                                      if (!parentRect) return;
-                                      setDraggingPicBox({
-                                        pageNumber: img.pageNumber,
-                                        id: box.id,
-                                        mode: 'resize',
-                                        startX: e.clientX,
-                                        startY: e.clientY,
-                                        origX: box.x,
-                                        origY: box.y,
-                                        origW: box.width,
-                                        origH: box.height,
-                                        containerRect: parentRect,
-                                      });
-                                    }}
-                                    className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-[#4A1D5E] border-2 border-white cursor-nwse-resize"
-                                  />
-                                </>
-                              )}
-                            </div>
+                                {isBoxSelected && (
+                                  <>
+                                    <div
+                                      title="Drag anywhere on this box or handle to move smoothly"
+                                      className="absolute -bottom-6 left-0 px-2 py-0.5 rounded-full bg-[#2563EB] text-white text-[10px] font-bold shadow flex items-center gap-1 pointer-events-none whitespace-nowrap"
+                                    >
+                                      <Move className="w-3 h-3" />
+                                      <span>Drag to Move</span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        removeSelectedPicTextBox(
+                                          img.pageNumber,
+                                          box.id
+                                        );
+                                      }}
+                                      className="absolute -top-6 right-0 px-1.5 py-0.5 rounded bg-[#DC2626] text-white text-[10px] font-bold shadow cursor-pointer"
+                                    >
+                                      Remove
+                                    </button>
+                                    <div
+                                      onPointerDown={(e) => {
+                                        e.stopPropagation();
+                                        const parentRect =
+                                          e.currentTarget.parentElement?.parentElement?.getBoundingClientRect();
+                                        if (!parentRect) return;
+                                        setDraggingPicBox({
+                                          pageNumber: img.pageNumber,
+                                          id: box.id,
+                                          mode: 'resize',
+                                          startX: e.clientX,
+                                          startY: e.clientY,
+                                          origX: box.x,
+                                          origY: box.y,
+                                          origW: box.width,
+                                          origH: box.height,
+                                          containerRect: parentRect,
+                                        });
+                                      }}
+                                      style={{ touchAction: 'none' }}
+                                      className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 rounded-full bg-[#2563EB] border-2 border-white cursor-nwse-resize touch-none"
+                                    />
+                                  </>
+                                )}
+                              </div>
                           );
                         })}
                       </div>
