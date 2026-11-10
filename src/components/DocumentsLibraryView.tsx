@@ -28,6 +28,7 @@ interface DocumentsLibraryViewProps {
   documents: StoredDocument[];
   folders: DocumentFolder[];
   onOpenInEditor: (doc: StoredDocument, readerMode?: boolean) => void;
+  onRequestOpenWithOptions?: (doc: StoredDocument) => void;
   onRenameDocument: (doc: StoredDocument, newName: string) => Promise<void>;
   onToggleStar: (doc: StoredDocument) => Promise<void>;
   onAssignFolder: (
@@ -52,6 +53,7 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
   documents,
   folders,
   onOpenInEditor,
+  onRequestOpenWithOptions,
   onRenameDocument,
   onToggleStar,
   onAssignFolder,
@@ -421,7 +423,11 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                             ) : (
                               <div>
                                 <button
-                                  onClick={() => onOpenInEditor(doc, false)}
+                                  onClick={() =>
+                                    onRequestOpenWithOptions
+                                      ? onRequestOpenWithOptions(doc)
+                                      : onOpenInEditor(doc, true)
+                                  }
                                   className="font-bold text-sm text-[#14101B] dark:text-[#F4F1F8] hover:text-[#4A1D5E] dark:hover:text-[#D5B3FF] text-left cursor-pointer"
                                 >
                                   {doc.name}
@@ -490,11 +496,19 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                           <td className="py-3 pl-3 pr-4 text-right">
                             <div className="flex items-center justify-end gap-1">
                               <button
+                                onClick={() => onOpenInEditor(doc, true)}
+                                title="Open in ElimikaPDF Reader"
+                                className="px-2 py-1 rounded bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                                <span>Read</span>
+                              </button>
+                              <button
                                 onClick={() => handleOpenQuickPreview(doc)}
-                                title="Preview Document"
+                                title="Quick Page Thumbnail Preview"
                                 className="p-1.5 rounded hover:bg-[#E4DFEC] dark:hover:bg-[#261F33] cursor-pointer"
                               >
-                                <Eye className="w-4 h-4" />
+                                <Search className="w-4 h-4" />
                               </button>
                               <button
                                 onClick={() => onOpenInEditor(doc, false)}

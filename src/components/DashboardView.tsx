@@ -39,6 +39,7 @@ interface DashboardViewProps {
   onOpenTool: (tool: ToolId) => void;
   onOpenToolForDocument?: (doc: StoredDocument, tool: ToolId) => void;
   onOpenDocumentInEditor: (doc: StoredDocument, readerMode?: boolean) => void;
+  onRequestOpenWithOptions?: (doc: StoredDocument) => void;
   onUploadPdfFiles: (
     files: FileList | File[],
     openInEditorAfter?: boolean,
@@ -159,6 +160,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenTool,
   onOpenToolForDocument,
   onOpenDocumentInEditor,
+  onRequestOpenWithOptions,
   onUploadPdfFiles,
   onImportImagesToScanner,
   onToggleStar,
@@ -424,7 +426,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     </button>
 
                     <button
-                      onClick={() => onOpenDocumentInEditor(doc, false)}
+                      onClick={() =>
+                        onRequestOpenWithOptions
+                          ? onRequestOpenWithOptions(doc)
+                          : onOpenDocumentInEditor(doc, true)
+                      }
                       className="text-left min-w-0 flex-1 cursor-pointer group"
                     >
                       <p className="text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] truncate">

@@ -650,6 +650,7 @@ export default function App() {
           onOpenTool={handleOpenTool}
           onOpenToolForDocument={handleOpenToolForDocument}
           onOpenDocumentInEditor={handleOpenDocumentInEditor}
+          onRequestOpenWithOptions={(doc) => setOpenWithPromptDoc(doc)}
           onUploadPdfFiles={handleUploadPdfFiles}
           onImportImagesToScanner={(files) => {
             setScannerImportedFiles(files);
@@ -707,6 +708,7 @@ export default function App() {
           documents={documents}
           folders={folders}
           onOpenInEditor={handleOpenDocumentInEditor}
+          onRequestOpenWithOptions={(doc) => setOpenWithPromptDoc(doc)}
           onRenameDocument={handleRenameDocument}
           onToggleStar={handleToggleStar}
           onAssignFolder={handleAssignFolder}
