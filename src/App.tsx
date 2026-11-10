@@ -228,6 +228,71 @@ export default function App() {
     }
   };
 
+  // Handle files opened via OS File Handlers (window.launchQueue) or Android/Desktop Web Share Target
+  useEffect(() => {
+    const ingestExternalFile = async (file: File) => {
+      const lower = file.name.toLowerCase();
+      if (file.type === 'application/pdf' || lower.endsWith('.pdf')) {
+        await handleUploadPdfFiles([file], true);
+      } else if (
+        lower.endsWith('.docx') ||
+        lower.endsWith('.doc') ||
+        file.type.includes('word')
+      ) {
+        setActiveTool('word-to-pdf');
+        navigateToView('tools');
+        showToast(`Opened "${file.name}" in Word to PDF Converter.`);
+      } else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower)) {
+        setScannerImportedFiles([file]);
+        navigateToView('scanner');
+        showToast(`Imported shared image "${file.name}" into Document Scanner.`);
+      }
+    };
+
+    // 1. OS File Handlers API (window.launchQueue)
+    const win = window as Window & {
+      launchQueue?: {
+        setConsumer: (
+          consumer: (launchParams: {
+            files?: Array<{ getFile: () => Promise<File> }>;
+          }) => void
+        ) => void;
+      };
+    };
+
+    if (win.launchQueue && typeof win.launchQueue.setConsumer === 'function') {
+      win.launchQueue.setConsumer(async (launchParams) => {
+        if (!launchParams.files || launchParams.files.length === 0) return;
+        try {
+          const fileHandle = launchParams.files[0];
+          const file = await fileHandle.getFile();
+          await ingestExternalFile(file);
+        } catch {
+          // Ignore if file handle permission was cancelled
+        }
+      });
+    }
+
+    // 2. Web Share Target API (/?shared=1 redirected from Service Worker POST /?share-target=1)
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('shared') === '1') {
+      fetch('/__shared_file_latest')
+        .then(async (res) => {
+          if (!res.ok) return;
+          const rawName = res.headers.get('X-Shared-Filename') || 'Shared_Document.pdf';
+          const filename = decodeURIComponent(rawName);
+          const mimeType = res.headers.get('Content-Type') || 'application/pdf';
+          const blob = await res.blob();
+          const file = new File([blob], filename, { type: mimeType });
+          await ingestExternalFile(file);
+        })
+        .catch(() => {
+          // Ignore if no shared file was cached
+        });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleOpenTool = (toolId: ToolId) => {
     if (toolId === 'scan-to-pdf') {
       navigateToView('scanner');

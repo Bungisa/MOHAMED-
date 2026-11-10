@@ -104,6 +104,66 @@ export default defineConfig(() => {
               icons: [{src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png'}],
             },
           ],
+          launch_handler: {
+            client_mode: ['navigate-existing', 'auto'],
+          },
+          handle_links: 'preferred',
+          edge_side_panel: {
+            preferred_width: 420,
+          },
+          file_handlers: [
+            {
+              action: '/?action=pdf-editor',
+              accept: {
+                'application/pdf': ['.pdf'],
+              },
+            },
+            {
+              action: '/?action=pdf-tools',
+              accept: {
+                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+                'application/msword': ['.doc'],
+              },
+            },
+            {
+              action: '/?action=scan',
+              accept: {
+                'image/png': ['.png'],
+                'image/jpeg': ['.jpg', '.jpeg'],
+                'image/webp': ['.webp'],
+              },
+            },
+          ],
+          share_target: {
+            action: '/?share-target=1',
+            method: 'POST',
+            enctype: 'multipart/form-data',
+            params: {
+              title: 'title',
+              text: 'text',
+              url: 'url',
+              files: [
+                {
+                  name: 'SharedFiles',
+                  accept: [
+                    'application/pdf',
+                    '.pdf',
+                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    '.docx',
+                    'image/png',
+                    'image/jpeg',
+                    'image/webp',
+                  ],
+                },
+              ],
+            },
+          },
+          protocol_handlers: [
+            {
+              protocol: 'web+elimikapdf',
+              url: '/?doc=%s',
+            },
+          ],
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,

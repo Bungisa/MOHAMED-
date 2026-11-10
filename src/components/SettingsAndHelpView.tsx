@@ -131,18 +131,55 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              onClick={async () => {
+                if (!('Notification' in window)) {
+                  setSavedNotice('Notifications are not supported in this browser.');
+                  return;
+                }
+                const perm = await Notification.requestPermission();
+                if (perm === 'granted') {
+                  if ('serviceWorker' in navigator) {
+                    const reg = await navigator.serviceWorker.getRegistration();
+                    if (reg && 'showNotification' in reg) {
+                      await reg.showNotification('ElimikaPDF Ready', {
+                        body: 'Offline Service Worker, File Handlers & Share Target are active.',
+                        icon: '/pwa-192x192.png',
+                      });
+                      setSavedNotice('Sent test notification via ElimikaPDF Service Worker.');
+                      setTimeout(() => setSavedNotice(null), 3000);
+                      return;
+                    }
+                  }
+                  new Notification('ElimikaPDF Ready', {
+                    body: 'Offline Service Worker, File Handlers & Share Target are active.',
+                    icon: '/pwa-192x192.png',
+                  });
+                } else {
+                  setSavedNotice('Notification permission was not granted.');
+                  setTimeout(() => setSavedNotice(null), 3000);
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold cursor-pointer"
+            >
+              Test Notification
+            </button>
             <PWAInstallButton variant="card" />
           </div>
         </div>
 
-        {/* PWA Compliance Checklist Badges */}
+        {/* PWA Compliance & Advanced App Capabilities Badges */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
           {[
             { label: 'Web App Manifest', detail: 'Standalone + Shortcuts' },
-            { label: 'Maskable & Any Icons', detail: '192px, 512px & Safe Zone' },
-            { label: 'Offline Service Worker', detail: 'Workbox Precache Active' },
+            { label: 'Maskable & Any Icons', detail: '192px & 512px Exact Size' },
+            { label: 'Offline Service Worker', detail: 'Cache + Offline Fallback' },
             { label: 'Digital Asset Links', detail: '/.well-known/assetlinks.json' },
+            { label: 'File Handlers', detail: 'Open .pdf, .docx & images' },
+            { label: 'Web Share Target', detail: 'Receive shared PDFs/images' },
+            { label: 'Background & Periodic Sync', detail: 'sw.js sync + periodicsync' },
+            { label: 'Push & Launch Handler', detail: 'Single-window + Push API' },
           ].map((item) => (
             <div
               key={item.label}
