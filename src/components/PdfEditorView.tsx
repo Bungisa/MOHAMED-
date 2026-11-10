@@ -2195,6 +2195,97 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         </div>
       )}
 
+      {/* Compact, Always-Visible Mobile & Desktop Top Bar */}
+      <header className="h-12 px-2.5 sm:px-4 bg-white dark:bg-[#16111F] border-b border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-2 shrink-0 z-30">
+        {/* Left: Back button + Document Title + Page Counter */}
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={async () => {
+              await persistCurrentEditsToVault({ silent: true });
+              if (onCloseEditor) {
+                onCloseEditor();
+              }
+            }}
+            title="Back to Home"
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer shrink-0"
+          >
+            <ChevronLeft className="w-5 h-5" />
+          </button>
+          <span className="text-xs sm:text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+            {activeDocument.name}
+          </span>
+          {pages.length > 0 && (
+            <span className="text-[11px] font-mono font-semibold text-[#6E667D] dark:text-[#A39BB5] shrink-0">
+              ({currentPage}/{pages.length})
+            </span>
+          )}
+        </div>
+
+        {/* Right: Read/Edit Switch + Undo + Share + Prominent Save Button */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {/* Clean Read / Edit Toggle */}
+          <div className="flex items-center p-0.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47]">
+            <button
+              type="button"
+              onClick={() => {
+                setWorkspaceMode('reader');
+                setBottomPanelTab('none');
+              }}
+              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                isReaderMode
+                  ? 'bg-[#003FE8] text-white shadow-xs'
+                  : 'text-[#6E667D] dark:text-[#A39BB5]'
+              }`}
+            >
+              Read
+            </button>
+            <button
+              type="button"
+              onClick={() => setWorkspaceMode('content-edit')}
+              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                !isReaderMode
+                  ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] shadow-xs'
+                  : 'text-[#6E667D] dark:text-[#A39BB5]'
+              }`}
+            >
+              Edit
+            </button>
+          </div>
+
+          {!isReaderMode && (
+            <button
+              type="button"
+              onClick={handleUndo}
+              disabled={undoStack.length === 0}
+              title="Undo"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-[#14101B] dark:text-[#F4F1F8] disabled:opacity-25 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+            >
+              <Undo2 className="w-4 h-4" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={handleSharePdf}
+            title="Share PDF"
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+          >
+            <Share2 className="w-4 h-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={handleOpenSaveSheet}
+            title="Save or Download PDF"
+            className="h-8 px-2.5 sm:px-3 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+          >
+            <Check className="w-3.5 h-3.5 stroke-[2.5]" />
+            <span>Save</span>
+          </button>
+        </div>
+      </header>
+
       {/* Main Almost-Full-Screen Studio Body */}
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
         {/* Optional Left Thumbnail Rail (toggled via More -> Side Panels on Desktop) */}
@@ -4699,27 +4790,27 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               </div>
             )}
 
-            {/* 8. MORE PANEL (Document Switcher, Open PDF, Full Page/Fit Width, Zoom, Print, Share) */}
+            {/* 8. MORE PANEL (Watermark, Copy Text, Document Switcher, Open PDF, Full Page/Fit Width, Zoom, Print, Share) */}
             {bottomPanelTab === 'more' && (
               <div className="flex items-center justify-between gap-2 overflow-x-auto">
                 <div className="flex items-center gap-1.5 shrink-0">
-                  <select
-                    value={activeDocument.id}
-                    onChange={(e) => {
-                      const found = allDocuments.find(
-                        (d) => d.id === e.target.value
-                      );
-                      if (found) onSelectDocument(found);
-                    }}
-                    aria-label="Select active PDF document"
-                    className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-2 py-1 text-[#14101B] dark:text-[#F4F1F8] max-w-[160px] truncate cursor-pointer"
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanelTab('watermark')}
+                    className="px-2.5 py-1 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF] text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
                   >
-                    {allDocuments.map((d) => (
-                      <option key={d.id} value={d.id}>
-                        {d.name} ({d.pageCount}p)
-                      </option>
-                    ))}
-                  </select>
+                    <Stamp className="w-3.5 h-3.5" />
+                    <span>Watermark</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setBottomPanelTab('copy')}
+                    className="px-2.5 py-1 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF] text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                    <span>Copy Text</span>
+                  </button>
 
                   <button
                     type="button"
@@ -4794,35 +4885,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     </button>
                   </div>
 
-                  {/* Single Page vs All Pages Scroll */}
-                  <button
-                    type="button"
-                    onClick={() => setViewAllPagesVertically((v) => !v)}
-                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-                  >
-                    {viewAllPagesVertically
-                      ? 'Mode: All Pages'
-                      : 'Mode: Single Page'}
-                  </button>
-
-                  {/* Reader Mode Toggle */}
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setWorkspaceMode((m) =>
-                        m === 'reader' ? 'content-edit' : 'reader'
-                      )
-                    }
-                    className={`px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap ${
-                      isReaderMode
-                        ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
-                        : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33]'
-                    }`}
-                  >
-                    <Eye className="w-3.5 h-3.5" />
-                    <span>{isReaderMode ? 'Reader: ON' : 'Reader'}</span>
-                  </button>
-
                   <button
                     type="button"
                     onClick={handlePrintPdf}
@@ -4834,57 +4896,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
                   <button
                     type="button"
-                    onClick={handleSharePdf}
+                    onClick={() => setShowHelpGuide(true)}
                     className="px-2.5 py-1 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap"
                   >
-                    <Share2 className="w-3.5 h-3.5" />
-                    <span>Share</span>
+                    <HelpCircle className="w-3.5 h-3.5" />
+                    <span>Help</span>
                   </button>
-
-                  <button
-                    type="button"
-                    onClick={toggleFullscreen}
-                    className="px-2.5 py-1 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                  >
-                    <Maximize className="w-3.5 h-3.5" />
-                    <span>Fullscreen</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowDesktopSidebars((s) => !s)}
-                    className="hidden lg:inline-flex px-2.5 py-1 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-                  >
-                    {showDesktopSidebars
-                      ? 'Hide Side Panels'
-                      : 'Show Side Panels'}
-                  </button>
-
-                  {onNavigate && (
-                    <div className="flex items-center gap-1 pl-1 border-l border-[#E4DFEC] dark:border-[#261F33]">
-                      <button
-                        type="button"
-                        onClick={() => onNavigate('scanner')}
-                        className="px-2 py-1 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-                      >
-                        Scanner
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onNavigate('tools')}
-                        className="px-2 py-1 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-                      >
-                        PDF Tools
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onNavigate('documents')}
-                        className="px-2 py-1 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-                      >
-                        Library
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 <button
@@ -4899,221 +4916,141 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </div>
         )}
 
-        {/* Row A: Main Bottom Tool Strip (Icon on top + Label below, matching Reference Picture) */}
-        <div className="px-2 py-1.5 flex items-center justify-around sm:justify-center sm:gap-6 overflow-x-auto border-b border-[#E4DFEC]/70 dark:border-[#261F33]">
-          {(
-            [
-              { id: 'watermark', label: 'Watermark', icon: Stamp },
-              { id: 'text', label: 'Text', icon: Type },
-              { id: 'highlight', label: 'Highlight', icon: Highlighter },
-              { id: 'doodle', label: 'Doodle', icon: Pencil },
-              { id: 'copy', label: 'Copy', icon: Copy },
-              { id: 'pictures', label: 'Pictures', icon: ImageOff },
-              { id: 'filter', label: 'Filter', icon: Sparkles },
-              { id: 'more', label: 'More', icon: MoreVertical },
-            ] as const
-          ).map((item) => {
-            const Icon = item.icon;
-            const isActive = bottomPanelTab === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => {
-                  const nextTab = isActive ? 'none' : item.id;
-                  setBottomPanelTab(nextTab);
-                  if (item.id === 'text' && !isActive) {
-                    setWorkspaceMode('annotate');
-                    const hasTextOnPage = annotations.some(
-                      (a) => a.pageNumber === currentPage && a.type === 'text'
-                    );
-                    if (!hasTextOnPage) {
-                      handleQuickAddDefaultTextBox(currentPage);
-                    } else {
-                      setActiveTool('select');
-                    }
-                  } else if (item.id === 'pictures' && !isActive) {
-                    setWorkspaceMode('content-edit');
-                    setActiveTool('select');
-                  } else if (item.id === 'doodle' && !isActive) {
-                    setWorkspaceMode('annotate');
-                    setActiveTool('draw');
-                  } else if (item.id === 'highlight' && !isActive) {
-                    setWorkspaceMode('annotate');
-                    setActiveTool('highlight');
-                  }
-                }}
-                className={`flex flex-col items-center justify-center px-3 py-1 rounded-lg transition-colors cursor-pointer shrink-0 min-w-[54px] ${
-                  isActive
-                    ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-bold bg-[#4A1D5E]/8 dark:bg-[#9D5CE5]/15'
-                    : 'text-[#5A5565] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
-                }`}
-              >
-                <Icon className="w-5 h-5 mb-0.5 stroke-[1.8]" />
-                <span className="text-[11px] leading-tight whitespace-nowrap">
-                  {item.label}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        {/* Row B: Bottom-Most "Document Editor" Bar (X on left, Document Editor + ? in center, Checkmark on right) */}
-        <div className="h-12 px-3 sm:px-6 flex items-center justify-between bg-white dark:bg-[#16111F]">
-          {/* Left: Close (X) + Quick Undo / Redo */}
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onClick={async () => {
-                if (bottomPanelTab !== 'none') {
-                  setBottomPanelTab('none');
-                } else {
-                  await persistCurrentEditsToVault({ silent: true });
-                  if (onCloseEditor) {
-                    onCloseEditor();
-                  }
-                }
-              }}
-              title={
-                bottomPanelTab !== 'none'
-                  ? 'Close active tool drawer'
-                  : 'Save changes & exit Document Editor'
-              }
-              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
-            >
-              <X className="w-5 h-5 stroke-[2]" />
-            </button>
-
-            <button
-              type="button"
-              onClick={handleUndo}
-              disabled={undoStack.length === 0}
-              title="Undo (Ctrl+Z)"
-              className="p-1.5 rounded-lg text-[#3A3545] dark:text-[#F4F1F8] disabled:opacity-25 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer flex items-center gap-0.5"
-            >
-              <Undo2 className="w-4 h-4" />
-              {undoStack.length > 0 && (
-                <span className="text-[10px] font-mono font-bold text-[#4A1D5E] dark:text-[#D5B3FF]">
-                  {undoStack.length}
-                </span>
-              )}
-            </button>
-            <button
-              type="button"
-              onClick={handleRedo}
-              disabled={redoStack.length === 0}
-              title="Redo (Ctrl+Y)"
-              className="p-1.5 rounded-lg text-[#3A3545] dark:text-[#F4F1F8] disabled:opacity-25 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
-            >
-              <Redo2 className="w-4 h-4" />
-            </button>
-          </div>
-
-          {/* Center: "Document Editor" + Help (?) + Compact Page Stepper */}
-          <div className="flex items-center gap-2">
-            {pages.length > 1 && (
+        {/* Bottom Bar: Clean Reader Controls in Reader Mode OR 6-Button Tool Grid in Edit Mode */}
+        {isReaderMode ? (
+          <div className="h-14 px-3 sm:px-6 flex items-center justify-between gap-2 bg-white dark:bg-[#16111F]">
+            {/* Page Navigation */}
+            <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={() => jumpToPage(currentPage - 1)}
                 disabled={currentPage <= 1}
-                className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] disabled:opacity-25 cursor-pointer"
+                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center disabled:opacity-30 cursor-pointer"
                 title="Previous page"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
-            )}
-
-            <div className="flex items-center gap-1.5">
-              <span className="text-sm sm:text-base font-medium text-[#14101B] dark:text-[#F4F1F8] tracking-tight whitespace-nowrap">
-                {isReaderMode ? 'ElimikaPDF Reader' : 'Document Editor'}
+              <span className="px-2 text-xs font-mono font-bold text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap">
+                Page {currentPage} / {pages.length || 1}
               </span>
-              {pages.length > 1 && (
-                <span className="text-[11px] font-mono font-semibold text-[#6E667D] dark:text-[#A39BB5] hidden xs:inline">
-                  ({currentPage}/{pages.length})
-                </span>
-              )}
-              <button
-                type="button"
-                onClick={() =>
-                  setWorkspaceMode((m) =>
-                    m === 'reader' ? 'content-edit' : 'reader'
-                  )
-                }
-                title={
-                  isReaderMode
-                    ? 'Switch to Document Editor mode'
-                    : 'Switch to distraction-free PDF Reader mode'
-                }
-                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer transition-colors ${
-                  isReaderMode
-                    ? 'bg-[#003FE8] text-white'
-                    : 'bg-[#F2EFF6] dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF]'
-                }`}
-              >
-                {isReaderMode ? 'Switch to Edit' : 'Reader Mode'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setShowHelpGuide((v) => !v)}
-                title="Document Editor Help & Tips"
-                className="w-5 h-5 rounded-full bg-[#B5B8C0] dark:bg-[#342B47] text-white flex items-center justify-center hover:opacity-90 cursor-pointer"
-              >
-                <HelpCircle className="w-3.5 h-3.5" />
-              </button>
-            </div>
-
-            {pages.length > 1 && (
               <button
                 type="button"
                 onClick={() => jumpToPage(currentPage + 1)}
                 disabled={currentPage >= pages.length}
-                className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] disabled:opacity-25 cursor-pointer"
+                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center disabled:opacity-30 cursor-pointer"
                 title="Next page"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
-            )}
-          </div>
+            </div>
 
-          {/* Right: Share + Quick Compress + Download + Checkmark (✓) Save Button */}
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={handleSharePdf}
-              title="Share PDF via WhatsApp, Google Drive, or Email"
-              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
-            >
-              <Share2 className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={async () => {
-                await handleOpenSaveSheet();
-                setShowCompressModal(true);
-              }}
-              title="Compress Document & Adjust Quality"
-              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
-            >
-              <Minimize2 className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenSaveSheet}
-              title="Save & Export Options"
-              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
-            >
-              <Download className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={handleOpenSaveSheet}
-              title="Save Document (✓)"
-              className="p-2 rounded-full text-[#3A3545] dark:text-[#F4F1F8] hover:bg-[#4A1D5E]/10 dark:hover:bg-[#9D5CE5]/20 hover:text-[#4A1D5E] dark:hover:text-[#D5B3FF] transition-colors cursor-pointer"
-            >
-              <Check className="w-5 h-5 stroke-[2.2]" />
-            </button>
+            {/* Zoom & Fit Controls */}
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))
+                }
+                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFitMode((m) =>
+                    m === 'fit-page' ? 'fit-width' : 'fit-page'
+                  );
+                  setZoom(1.0);
+                }}
+                className="h-9 px-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
+              >
+                {fitMode === 'fit-page' ? 'Fit Width' : 'Fit Page'}
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))
+                }
+                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
+                title="Zoom In"
+              >
+                <ZoomIn className="w-4 h-4" />
+              </button>
+            </div>
           </div>
-        </div>
+        ) : (
+          /* Edit Mode: 6-Button Grid that fits 100% of any Phone Screen without horizontal clipping */
+          <div className="px-1.5 py-1.5 grid grid-cols-6 items-center gap-1 bg-white dark:bg-[#16111F]">
+            {(
+              [
+                { id: 'text', label: 'Text', icon: Type },
+                { id: 'pictures', label: 'Pictures', icon: ImageOff },
+                { id: 'filter', label: 'Filter', icon: Sparkles },
+                { id: 'doodle', label: 'Draw', icon: Pencil },
+                { id: 'highlight', label: 'Highlight', icon: Highlighter },
+                { id: 'more', label: 'More', icon: MoreVertical },
+              ] as const
+            ).map((item) => {
+              const Icon = item.icon;
+              const isActive =
+                bottomPanelTab === item.id ||
+                (item.id === 'more' &&
+                  (bottomPanelTab === 'watermark' ||
+                    bottomPanelTab === 'copy'));
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    const nextTab = bottomPanelTab === item.id ? 'none' : item.id;
+                    setBottomPanelTab(nextTab);
+                    if (item.id === 'text' && bottomPanelTab !== 'text') {
+                      setWorkspaceMode('annotate');
+                      const hasTextOnPage = annotations.some(
+                        (a) => a.pageNumber === currentPage && a.type === 'text'
+                      );
+                      if (!hasTextOnPage) {
+                        handleQuickAddDefaultTextBox(currentPage);
+                      } else {
+                        setActiveTool('select');
+                      }
+                    } else if (
+                      item.id === 'pictures' &&
+                      bottomPanelTab !== 'pictures'
+                    ) {
+                      setWorkspaceMode('content-edit');
+                      setActiveTool('select');
+                    } else if (
+                      item.id === 'doodle' &&
+                      bottomPanelTab !== 'doodle'
+                    ) {
+                      setWorkspaceMode('annotate');
+                      setActiveTool('draw');
+                    } else if (
+                      item.id === 'highlight' &&
+                      bottomPanelTab !== 'highlight'
+                    ) {
+                      setWorkspaceMode('annotate');
+                      setActiveTool('highlight');
+                    }
+                  }}
+                  className={`min-h-[48px] flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-colors cursor-pointer ${
+                    isActive
+                      ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20'
+                      : 'text-[#5A5565] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-5 h-5 mb-0.5 stroke-[1.8] shrink-0" />
+                  <span className="text-[11px] leading-tight truncate max-w-full">
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* =====================================================================

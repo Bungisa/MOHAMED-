@@ -139,8 +139,13 @@ async function startServer() {
   // Serve Digital Asset Links for Google Play Store Trusted Web Activity (TWA) verification
   app.get('/.well-known/assetlinks.json', (_req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'no-cache, max-age=0');
     res.sendFile(path.join(__dirname, 'public', '.well-known', 'assetlinks.json'));
+  });
+
+  // Fallback for cold-start Web Share Target POST requests if Service Worker hasn't claimed client yet
+  app.post('/share-target', (_req, res) => {
+    res.redirect(303, '/?action=pdf-reader');
   });
 
   if (process.env.NODE_ENV !== 'production') {

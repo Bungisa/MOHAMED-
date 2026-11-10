@@ -96,7 +96,6 @@ export const Layout: React.FC<LayoutProps> = ({
   onQuickScan,
   children,
 }) => {
-  // Max local quota visualization reference (50 MB nominal tier)
   const quotaBytes = 50 * 1024 * 1024;
   const usagePercent = Math.min(
     100,
@@ -234,9 +233,9 @@ export const Layout: React.FC<LayoutProps> = ({
           activeView === 'editor' ? 'pb-0 h-dvh overflow-hidden' : 'pb-16 lg:pb-0'
         }`}
       >
-        {/* Strict 3-Zone Top Bar Contract (hidden in full-screen Document Editor mode) */}
+        {/* Clean, Uncluttered Top Bar (hidden in full-screen Document Editor mode) */}
         {activeView !== 'editor' && (
-          <header className="h-14 sm:h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
+          <header className="h-14 px-3 sm:px-6 lg:px-8 flex items-center justify-between gap-2 sm:gap-6 bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
             {/* Zone 1: Brand icon & wordmark */}
             <button
               onClick={() => onNavigate('dashboard')}
@@ -250,7 +249,7 @@ export const Layout: React.FC<LayoutProps> = ({
               <span>ElimikaPDF</span>
             </button>
 
-            {/* Zone 2: 5 concise single-line navigation links */}
+            {/* Zone 2: Desktop single-line navigation links */}
             <nav
               className="hidden md:flex items-center gap-6 text-sm font-medium text-[#6E667D] dark:text-[#A39BB5]"
               aria-label="Primary Workspace Navigation"
@@ -270,18 +269,20 @@ export const Layout: React.FC<LayoutProps> = ({
               ))}
             </nav>
 
-            {/* Zone 3: Offline Status, Install App, Theme, Settings & Primary Action */}
-            <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+            {/* Zone 3: Compact, Always-Visible Actions */}
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <OfflineIndicator />
-              <PWAInstallButton
-                variant="header"
-                onOpenPlayStoreSettings={() => onNavigate('settings')}
-              />
+              <div className="hidden sm:block">
+                <PWAInstallButton
+                  variant="header"
+                  onOpenPlayStoreSettings={() => onNavigate('settings')}
+                />
+              </div>
               <button
                 onClick={cycleTheme}
-                title={`Theme: ${theme} (click to switch)`}
+                title={`Theme: ${theme}`}
                 aria-label={`Current theme ${theme}. Click to switch theme`}
-                className="w-10 h-10 flex items-center justify-center rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer"
+                className="w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer shrink-0"
               >
                 {theme === 'light' && <Sun className="w-4 h-4" />}
                 {theme === 'dark' && <Moon className="w-4 h-4" />}
@@ -291,9 +292,9 @@ export const Layout: React.FC<LayoutProps> = ({
                 onClick={() =>
                   onNavigate(activeView === 'settings' ? 'dashboard' : 'settings')
                 }
-                title="Preferences & Storage Settings"
-                aria-label="Preferences and Storage Settings"
-                className={`w-10 h-10 flex items-center justify-center rounded-lg border transition-colors cursor-pointer ${
+                title="Settings"
+                aria-label="Settings"
+                className={`w-9 h-9 sm:w-10 sm:h-10 flex items-center justify-center rounded-lg border transition-colors cursor-pointer shrink-0 ${
                   activeView === 'settings'
                     ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]'
                     : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
@@ -303,7 +304,7 @@ export const Layout: React.FC<LayoutProps> = ({
               </button>
               <button
                 onClick={onQuickScan}
-                className="px-3.5 sm:px-4 h-10 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
+                className="px-3 sm:px-4 h-9 sm:h-10 text-xs font-semibold text-white dark:text-[#0D0A12] bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] rounded-lg transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5"
               >
                 <Camera className="w-3.5 h-3.5 shrink-0" />
                 <span>Scan</span>
@@ -322,7 +323,7 @@ export const Layout: React.FC<LayoutProps> = ({
         </main>
       </div>
 
-      {/* Mobile Bottom Navigation: 5 Spacious Thumb-Zone Pillars (Home, Scan, Editor, Tools, Files) */}
+      {/* Mobile Bottom Navigation: 5 Clear Thumb-Zone Tabs */}
       {activeView !== 'editor' && (
         <nav
           aria-label="Mobile Bottom Navigation"

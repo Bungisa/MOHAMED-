@@ -112,7 +112,7 @@ export default defineConfig(() => {
             },
           ],
           launch_handler: {
-            client_mode: ['navigate-existing', 'auto'],
+            client_mode: 'navigate-existing',
           },
           handle_links: 'preferred',
           edge_side_panel: {
@@ -122,30 +122,12 @@ export default defineConfig(() => {
             {
               action: '/?action=pdf-reader',
               accept: {
-                'application/pdf': ['.pdf', '.PDF'],
-                'application/x-pdf': ['.pdf'],
-                'application/acrobat': ['.pdf'],
-                'applications/vnd.pdf': ['.pdf'],
-              },
-            },
-            {
-              action: '/?action=pdf-tools',
-              accept: {
-                'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-                'application/msword': ['.doc'],
-              },
-            },
-            {
-              action: '/?action=scan',
-              accept: {
-                'image/png': ['.png'],
-                'image/jpeg': ['.jpg', '.jpeg'],
-                'image/webp': ['.webp'],
+                'application/pdf': ['.pdf'],
               },
             },
           ],
           share_target: {
-            action: '/?share-target=1',
+            action: '/share-target',
             method: 'POST',
             enctype: 'multipart/form-data',
             params: {
@@ -155,25 +137,11 @@ export default defineConfig(() => {
               files: [
                 {
                   name: 'SharedFiles',
-                  accept: [
-                    'application/pdf',
-                    '.pdf',
-                    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    '.docx',
-                    'image/png',
-                    'image/jpeg',
-                    'image/webp',
-                  ],
+                  accept: ['application/pdf', 'image/png', 'image/jpeg'],
                 },
               ],
             },
           },
-          protocol_handlers: [
-            {
-              protocol: 'web+elimikapdf',
-              url: '/?doc=%s',
-            },
-          ],
         },
         workbox: {
           maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,

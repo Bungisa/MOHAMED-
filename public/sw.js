@@ -44,7 +44,7 @@ self.addEventListener('fetch', (event) => {
   if (
     request.method === 'POST' &&
     url.origin === self.location.origin &&
-    url.searchParams.has('share-target')
+    (url.pathname === '/share-target' || url.searchParams.has('share-target'))
   ) {
     event.respondWith(
       (async () => {

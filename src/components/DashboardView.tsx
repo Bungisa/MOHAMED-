@@ -8,18 +8,13 @@ import {
   Merge,
   Scissors,
   Minimize2,
-  FileImage,
   Images,
-  RotateCw,
   LayoutGrid,
   ScanText,
   Star,
-  Download,
   Trash2,
   Eye,
   FolderOpen,
-  HardDrive,
-  ShieldCheck,
   ArrowUpRight,
   Share2,
   FileText,
@@ -29,7 +24,6 @@ import {
   StoredDocument,
   ActiveView,
   ToolId,
-  DocumentCategory,
 } from '../types/document';
 import { formatBytes } from '../services/storageService';
 
@@ -51,106 +45,59 @@ interface DashboardViewProps {
   onRequestDeleteDocument: (doc: StoredDocument) => void;
 }
 
-const TOOL_GROUPS: {
-  groupTitle: string;
-  groupSubtitle: string;
-  tools: {
-    id: ToolId;
-    title: string;
-    description: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }[];
+const QUICK_TOOLS: {
+  id: ToolId;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  accentClass: string;
 }[] = [
   {
-    groupTitle: '01. PDF Reader, Capture & Full-Screen Editing',
-    groupSubtitle: 'Read PDFs distraction-free, scan physical pages, or edit & remove watermarks',
-    tools: [
-      {
-        id: 'read-pdf',
-        title: 'PDF Reader (Read Mode)',
-        description: 'Full-screen PDF reader, continuous scroll & zoom',
-        icon: Eye,
-      },
-      {
-        id: 'scan-to-pdf',
-        title: 'Scan to PDF',
-        description: 'Auto-corner crop & OCV BLACK filter',
-        icon: Camera,
-      },
-      {
-        id: 'edit-pdf',
-        title: 'Edit PDF & Watermark',
-        description: 'Add text, remove watermarks & filter',
-        icon: FileEdit,
-      },
-      {
-        id: 'img-to-pdf',
-        title: 'Photos to PDF',
-        description: 'Combine device images into A4 PDF',
-        icon: FileImage,
-      },
-    ],
+    id: 'pdf-to-word',
+    label: 'PDF to Word',
+    icon: FileOutput,
+    accentClass: 'text-[#2563EB] bg-[#2563EB]/10 dark:bg-[#2563EB]/20',
   },
   {
-    groupTitle: '02. Page & File Size Tools',
-    groupSubtitle: 'Extract page ranges, combine documents, or shrink PDF size',
-    tools: [
-      {
-        id: 'split-pdf',
-        title: 'Split / Extract PDF',
-        description: 'Extract page ranges & download',
-        icon: Scissors,
-      },
-      {
-        id: 'merge-pdf',
-        title: 'Merge PDFs',
-        description: 'Combine multiple PDFs in order',
-        icon: Merge,
-      },
-      {
-        id: 'compress-pdf',
-        title: 'Compress PDF',
-        description: 'Shrink file size with quality control',
-        icon: Minimize2,
-      },
-      {
-        id: 'organize-pdf',
-        title: 'Organize & Rotate',
-        description: 'Reorder, rotate, or delete pages',
-        icon: LayoutGrid,
-      },
-    ],
+    id: 'word-to-pdf',
+    label: 'Word to PDF',
+    icon: FileText,
+    accentClass: 'text-[#4A1D5E] dark:text-[#D5B3FF] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20',
   },
   {
-    groupTitle: '03. Word, Convert & Text Recognition (OCR)',
-    groupSubtitle:
-      'Convert between Word (.DOCX) and PDF, export pictures, or extract English & Swahili text',
-    tools: [
-      {
-        id: 'pdf-to-word',
-        title: 'PDF to Word (.DOCX)',
-        description: 'Convert PDF pages into editable Word file',
-        icon: FileOutput,
-      },
-      {
-        id: 'word-to-pdf',
-        title: 'Word to PDF',
-        description: 'Convert .DOCX / .DOC / .TXT into A4 PDF',
-        icon: FileText,
-      },
-      {
-        id: 'pdf-to-img',
-        title: 'PDF to Pictures',
-        description: 'Save pages as JPG/PNG & add text',
-        icon: Images,
-      },
-      {
-        id: 'ocr-pdf',
-        title: 'OCR – Extract Text',
-        description: 'Recognize English & Swahili text',
-        icon: ScanText,
-      },
-    ],
+    id: 'merge-pdf',
+    label: 'Merge PDF',
+    icon: Merge,
+    accentClass: 'text-[#0284C7] bg-[#0284C7]/10 dark:bg-[#0284C7]/20',
+  },
+  {
+    id: 'split-pdf',
+    label: 'Split PDF',
+    icon: Scissors,
+    accentClass: 'text-[#D97706] bg-[#D97706]/10 dark:bg-[#D97706]/20',
+  },
+  {
+    id: 'compress-pdf',
+    label: 'Compress',
+    icon: Minimize2,
+    accentClass: 'text-[#15803D] dark:text-[#4ADE80] bg-[#15803D]/10 dark:bg-[#15803D]/20',
+  },
+  {
+    id: 'pdf-to-img',
+    label: 'PDF to JPG',
+    icon: Images,
+    accentClass: 'text-[#7C3AED] dark:text-[#C4B5FD] bg-[#7C3AED]/10 dark:bg-[#7C3AED]/20',
+  },
+  {
+    id: 'ocr-pdf',
+    label: 'OCR Text',
+    icon: ScanText,
+    accentClass: 'text-[#EA580C] bg-[#EA580C]/10 dark:bg-[#EA580C]/20',
+  },
+  {
+    id: 'organize-pdf',
+    label: 'Organize',
+    icon: LayoutGrid,
+    accentClass: 'text-[#4A1D5E] dark:text-[#D5B3FF] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20',
   },
 ];
 
@@ -158,7 +105,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   documents,
   onNavigate,
   onOpenTool,
-  onOpenToolForDocument,
   onOpenDocumentInEditor,
   onRequestOpenWithOptions,
   onUploadPdfFiles,
@@ -220,11 +166,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   });
 
-  const totalStorageBytes = documents.reduce((acc, d) => acc + d.sizeBytes, 0);
-  const totalPages = documents.reduce((acc, d) => acc + d.pageCount, 0);
-
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-5 sm:py-8 space-y-8">
+    <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5">
       {/* Hidden File Inputs */}
       <input
         ref={pdfInputRef}
@@ -251,172 +194,158 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onChange={handleImageUploadChange}
       />
 
-      {/* Primary Action Hub */}
-      <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-5 sm:p-7 space-y-6">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
-          <div className="space-y-1.5 max-w-2xl">
-            <p className="text-xs font-medium text-[#6E667D] dark:text-[#A39BB5]">
-              On-Device PDF Reader, Document Scanner & PDF Studio
-            </p>
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] text-balance">
-              What would you like to do with your document today?
-            </h1>
+      {/* Section 1: 4 Simple, Prominent Action Tiles (2x2 on Phone, 4 columns on Desktop) */}
+      <section className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-3.5">
+        <button
+          onClick={() => pdfReaderInputRef.current?.click()}
+          disabled={isUploading}
+          className="text-left p-3.5 sm:p-4 rounded-2xl bg-[#003FE8] hover:bg-[#0033BA] text-white transition-colors cursor-pointer flex items-center gap-3 shadow-xs"
+        >
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+            <Eye className="w-5 h-5" />
           </div>
+          <div className="min-w-0">
+            <p className="text-xs sm:text-sm font-bold truncate">Read PDF</p>
+            <p className="text-[11px] opacity-85 truncate">Open PDF Reader</p>
+          </div>
+        </button>
 
-          {/* Compact Vault Status Summary */}
-          <div className="flex flex-wrap items-center gap-4 text-xs text-[#6E667D] dark:text-[#A39BB5]">
-            <span className="font-mono tabular-nums">
-              <strong className="text-[#14101B] dark:text-[#F4F1F8]">
-                {documents.length}
-              </strong>{' '}
-              PDFs
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono tabular-nums">
-              <strong className="text-[#14101B] dark:text-[#F4F1F8]">
-                {totalPages}
-              </strong>{' '}
-              Pages
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono tabular-nums">
-              {formatBytes(totalStorageBytes)} used
-            </span>
+        <button
+          onClick={() => onNavigate('scanner')}
+          className="text-left p-3.5 sm:p-4 rounded-2xl bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] transition-colors cursor-pointer flex items-center gap-3 shadow-xs"
+        >
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-white/15 dark:bg-black/15 flex items-center justify-center shrink-0">
+            <Camera className="w-5 h-5" />
           </div>
+          <div className="min-w-0">
+            <p className="text-xs sm:text-sm font-bold truncate">Scan Page</p>
+            <p className="text-[11px] opacity-85 truncate">Camera & Crop</p>
+          </div>
+        </button>
+
+        <button
+          onClick={() => pdfInputRef.current?.click()}
+          disabled={isUploading}
+          className="text-left p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] border border-[#E4DFEC] dark:border-[#261F33] transition-colors cursor-pointer flex items-center gap-3"
+        >
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#F2EFF6] dark:bg-[#261F33] flex items-center justify-center shrink-0 text-[#4A1D5E] dark:text-[#D5B3FF]">
+            <FileUp className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs sm:text-sm font-bold truncate">
+              {isUploading ? 'Opening...' : 'Edit PDF'}
+            </p>
+            <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] truncate">
+              Text & Watermark
+            </p>
+          </div>
+        </button>
+
+        <button
+          onClick={() => imgInputRef.current?.click()}
+          className="text-left p-3.5 sm:p-4 rounded-2xl bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] border border-[#E4DFEC] dark:border-[#261F33] transition-colors cursor-pointer flex items-center gap-3"
+        >
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-[#F2EFF6] dark:bg-[#261F33] flex items-center justify-center shrink-0 text-[#4A1D5E] dark:text-[#D5B3FF]">
+            <ImagePlus className="w-5 h-5" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs sm:text-sm font-bold truncate">Photo to PDF</p>
+            <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] truncate">
+              Gallery to A4
+            </p>
+          </div>
+        </button>
+      </section>
+
+      {/* Section 2: Clean 8-Icon Quick Tools Grid (4x2 on Phone, 8x1 on Desktop) */}
+      <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-4 sm:p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+            Quick PDF & Word Tools
+          </h2>
+          <button
+            onClick={() => onNavigate('tools')}
+            className="text-xs font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap"
+          >
+            <span>All Tools</span>
+            <ArrowUpRight className="w-3.5 h-3.5" />
+          </button>
         </div>
 
-        {/* 4 Clear Primary Entry Cards (including PDF Reader) */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-          <button
-            onClick={() => pdfReaderInputRef.current?.click()}
-            disabled={isUploading}
-            className="text-left p-4 sm:p-5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white transition-colors cursor-pointer flex items-start gap-3.5 shadow-xs"
-          >
-            <div className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
-              <Eye className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold whitespace-nowrap">
-                PDF Reader (Read PDF)
-              </p>
-              <p className="text-xs opacity-90 mt-0.5 leading-snug">
-                Open & read any PDF file in full-screen Reader Mode
-              </p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => onNavigate('scanner')}
-            className="text-left p-4 sm:p-5 rounded-xl bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] transition-colors cursor-pointer flex items-start gap-3.5 shadow-xs"
-          >
-            <div className="w-11 h-11 rounded-xl bg-white/15 dark:bg-black/15 flex items-center justify-center shrink-0">
-              <Camera className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold whitespace-nowrap">
-                Scan with Camera
-              </p>
-              <p className="text-xs opacity-85 mt-0.5 leading-snug">
-                Auto-detect corners, perspective crop & OCV BLACK
-              </p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => pdfInputRef.current?.click()}
-            disabled={isUploading}
-            className="text-left p-4 sm:p-5 rounded-xl bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] dark:hover:bg-[#342B47] text-[#14101B] dark:text-[#F4F1F8] border border-[#E4DFEC] dark:border-[#342B47] transition-colors cursor-pointer flex items-start gap-3.5"
-          >
-            <div className="w-11 h-11 rounded-xl bg-white dark:bg-[#16111F] flex items-center justify-center shrink-0 text-[#4A1D5E] dark:text-[#D5B3FF]">
-              <FileUp className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold whitespace-nowrap">
-                {isUploading ? 'Opening PDF...' : 'Open & Choose Action'}
-              </p>
-              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 leading-snug">
-                Pick a PDF to Read, Edit, Convert to Word, or OCR
-              </p>
-            </div>
-          </button>
-
-          <button
-            onClick={() => imgInputRef.current?.click()}
-            className="text-left p-4 sm:p-5 rounded-xl bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] border border-[#E4DFEC] dark:border-[#261F33] transition-colors cursor-pointer flex items-start gap-3.5"
-          >
-            <div className="w-11 h-11 rounded-xl bg-[#F2EFF6] dark:bg-[#261F33] flex items-center justify-center shrink-0 text-[#4A1D5E] dark:text-[#D5B3FF]">
-              <ImagePlus className="w-5 h-5" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-sm font-bold whitespace-nowrap">
-                Import Photo to Crop
-              </p>
-              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 leading-snug">
-                Pick a photo from gallery for corner detection & PDF scan
-              </p>
-            </div>
-          </button>
+        <div className="grid grid-cols-4 sm:grid-cols-4 lg:grid-cols-8 gap-2 sm:gap-3">
+          {QUICK_TOOLS.map((tool) => {
+            const Icon = tool.icon;
+            return (
+              <button
+                key={tool.id}
+                onClick={() => onOpenTool(tool.id)}
+                className="p-2.5 sm:p-3 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer flex flex-col items-center justify-center text-center gap-1.5"
+              >
+                <div
+                  className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${tool.accentClass}`}
+                >
+                  <Icon className="w-5 h-5" />
+                </div>
+                <span className="text-[11px] font-semibold text-[#14101B] dark:text-[#F4F1F8] leading-tight whitespace-nowrap">
+                  {tool.label}
+                </span>
+              </button>
+            );
+          })}
         </div>
       </section>
 
-      {/* Recent Documents with Direct One-Tap Contextual Actions */}
-      <section className="space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-              Recent Documents
-            </h2>
-            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Tap any document to open in the Full-Screen Editor, or use quick actions on the right
-            </p>
-          </div>
+      {/* Section 3: Recent Documents (Simple, Clean Mobile Rows with Visible Buttons) */}
+      <section className="space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap">
+            Recent Files ({documents.length})
+          </h2>
 
-          <div className="flex items-center gap-2.5">
-            <div className="relative flex-1 sm:w-64">
-              <Search className="w-4 h-4 text-[#6E667D] dark:text-[#A39BB5] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <div className="flex items-center gap-2 flex-1 max-w-xs justify-end">
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Quick find document..."
-                className="w-full pl-9 pr-3 py-2 text-xs rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] dark:placeholder-[#A39BB5] focus:outline-none focus:border-[#4A1D5E] dark:focus:border-[#9D5CE5]"
+                placeholder="Search files..."
+                className="w-full pl-8 pr-2.5 py-1.5 text-xs rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] focus:outline-none focus:border-[#4A1D5E]"
               />
             </div>
             <button
               onClick={() => onNavigate('documents')}
-              className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer whitespace-nowrap shrink-0 flex items-center gap-1"
+              className="px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer whitespace-nowrap shrink-0"
             >
-              <span>All Files ({documents.length})</span>
-              <ArrowUpRight className="w-3.5 h-3.5" />
+              All Files
             </button>
           </div>
         </div>
 
         <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] overflow-hidden">
           {filteredDocs.length === 0 ? (
-            <div className="p-10 text-center space-y-3">
-              <FolderOpen className="w-8 h-8 text-[#6E667D] dark:text-[#A39BB5] mx-auto" />
-              <div className="space-y-1">
-                <p className="text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8]">
-                  No documents match your search
-                </p>
-                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Scan a new document or upload an existing PDF to get started.
-                </p>
-              </div>
+            <div className="p-8 text-center space-y-2">
+              <FolderOpen className="w-7 h-7 text-[#6E667D] dark:text-[#A39BB5] mx-auto" />
+              <p className="text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8]">
+                No PDF files found
+              </p>
+              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                Tap Read PDF or Scan Page above to get started.
+              </p>
             </div>
           ) : (
             <div className="divide-y divide-[#E4DFEC] dark:divide-[#261F33]">
-              {filteredDocs.slice(0, 6).map((doc) => (
+              {filteredDocs.slice(0, 8).map((doc) => (
                 <div
                   key={doc.id}
-                  className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-[#F2EFF6]/50 dark:hover:bg-[#261F33]/40 transition-colors"
+                  className="p-3 sm:px-4 flex items-center justify-between gap-2.5 hover:bg-[#F2EFF6]/50 dark:hover:bg-[#261F33]/40 transition-colors"
                 >
-                  <div className="flex items-center gap-3 min-w-0">
+                  {/* Left: Star + Document Name & Info (Tap to open action sheet) */}
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
                     <button
                       onClick={() => onToggleStar(doc)}
                       title={doc.starred ? 'Remove star' : 'Star document'}
-                      className="w-9 h-9 rounded-lg flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#D97706] hover:bg-[#E4DFEC]/50 dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#D97706] cursor-pointer shrink-0"
                     >
                       <Star
                         className={`w-4 h-4 ${
@@ -433,79 +362,35 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       }
                       className="text-left min-w-0 flex-1 cursor-pointer group"
                     >
-                      <p className="text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] truncate">
+                      <p className="text-xs sm:text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] truncate">
                         {doc.name}
                       </p>
-                      <div className="flex flex-wrap items-center gap-1.5 text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 font-mono tabular-nums">
-                        <span>{doc.pageCount} pg</span>
-                        <span aria-hidden="true">·</span>
+                      <div className="flex items-center gap-1.5 text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5 font-mono tabular-nums">
+                        <span>{doc.pageCount}p</span>
+                        <span>·</span>
                         <span>{formatBytes(doc.sizeBytes)}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="font-sans">{doc.category}</span>
-                        <span aria-hidden="true">·</span>
-                        <span>
-                          {new Date(doc.updatedAt).toLocaleDateString()}
-                        </span>
                       </div>
                     </button>
                   </div>
 
-                  {/* Direct Contextual Action Strip */}
-                  <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
+                  {/* Right: Compact, Always-Visible Actions (Read, Edit, Share/Download, Delete) */}
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <button
                       onClick={() => onOpenDocumentInEditor(doc, true)}
-                      title="Open in ElimikaPDF Reader (distraction-free reading)"
-                      className="px-3 py-1.5 rounded-lg bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                      title="Read PDF"
+                      className="h-9 px-2.5 sm:px-3 rounded-lg bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      <Eye className="w-3.5 h-3.5" />
+                      <Eye className="w-3.5 h-3.5 shrink-0" />
                       <span>Read</span>
                     </button>
 
                     <button
                       onClick={() => onOpenDocumentInEditor(doc, false)}
-                      className="px-3 py-1.5 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#4A1D5E] hover:text-white dark:hover:bg-[#9D5CE5] dark:hover:text-[#0D0A12] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                      title="Edit PDF"
+                      className="h-9 px-2.5 sm:px-3 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#4A1D5E] hover:text-white text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
                     >
-                      <FileEdit className="w-3.5 h-3.5" />
+                      <FileEdit className="w-3.5 h-3.5 shrink-0" />
                       <span>Edit</span>
-                    </button>
-
-                    <button
-                      onClick={() =>
-                        onOpenToolForDocument
-                          ? onOpenToolForDocument(doc, 'split-pdf')
-                          : onOpenTool('split-pdf')
-                      }
-                      title="Split or extract pages from this PDF"
-                      className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-medium text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      <Scissors className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5]" />
-                      <span>Split</span>
-                    </button>
-
-                    <button
-                      onClick={() =>
-                        onOpenToolForDocument
-                          ? onOpenToolForDocument(doc, 'pdf-to-word')
-                          : onOpenTool('pdf-to-word')
-                      }
-                      title="Convert this PDF to an editable Microsoft Word (.DOCX) file"
-                      className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-medium text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      <FileOutput className="w-3.5 h-3.5 text-[#2563EB]" />
-                      <span>To Word</span>
-                    </button>
-
-                    <button
-                      onClick={() =>
-                        onOpenToolForDocument
-                          ? onOpenToolForDocument(doc, 'compress-pdf')
-                          : onOpenTool('compress-pdf')
-                      }
-                      title="Compress this PDF"
-                      className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-medium text-[#14101B] dark:text-[#F4F1F8] hidden sm:flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
-                    >
-                      <Minimize2 className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5]" />
-                      <span>Compress</span>
                     </button>
 
                     <button
@@ -535,24 +420,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         }
                         onDownloadDocument(doc);
                       }}
-                      title="Share PDF via WhatsApp, Google Drive, or Email"
-                      className="w-8 h-8 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#2563EB] dark:hover:text-[#60A5FA] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      title="Share or Download PDF"
+                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#2563EB] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
                     >
                       <Share2 className="w-4 h-4" />
                     </button>
 
                     <button
-                      onClick={() => onDownloadDocument(doc)}
-                      title="Download PDF"
-                      className="w-8 h-8 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#15803D] dark:hover:text-[#4ADE80] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
-                    >
-                      <Download className="w-4 h-4" />
-                    </button>
-
-                    <button
                       onClick={() => onRequestDeleteDocument(doc)}
-                      title="Delete Document"
-                      className="w-8 h-8 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#DC2626] dark:hover:text-[#F87171] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      title="Delete File"
+                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#6E667D] dark:text-[#A39BB5] hover:text-[#DC2626] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
                     >
                       <Trash2 className="w-4 h-4" />
                     </button>
@@ -561,73 +438,6 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               ))}
             </div>
           )}
-        </div>
-      </section>
-
-      {/* Grouped PDF & Recognition Tools (3 Organized Pillars) */}
-      <section className="space-y-5">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-              Document Tools by Task
-            </h2>
-            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Organized into 3 clear groups so you can find the right tool immediately
-            </p>
-          </div>
-          <button
-            onClick={() => onNavigate('tools')}
-            className="text-xs font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] hover:underline flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <span>Open Workbench</span>
-            <ArrowUpRight className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-          {TOOL_GROUPS.map((group) => (
-            <div
-              key={group.groupTitle}
-              className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-5 space-y-4 flex flex-col justify-between"
-            >
-              <div className="space-y-3">
-                <div className="border-b border-[#E4DFEC] dark:border-[#261F33] pb-3">
-                  <h3 className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    {group.groupTitle}
-                  </h3>
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                    {group.groupSubtitle}
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  {group.tools.map((tool) => {
-                    const Icon = tool.icon;
-                    return (
-                      <button
-                        key={tool.id}
-                        onClick={() => onOpenTool(tool.id)}
-                        className="w-full group text-left p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12]/60 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-transparent hover:border-[#4A1D5E]/30 dark:hover:border-[#9D5CE5]/40 transition-colors cursor-pointer flex items-center gap-3.5"
-                      >
-                        <div className="w-10 h-10 rounded-xl bg-[#F2EFF6] dark:bg-[#261F33] group-hover:bg-[#4A1D5E] dark:group-hover:bg-[#9D5CE5] flex items-center justify-center shrink-0 transition-colors">
-                          <Icon className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] group-hover:text-white dark:group-hover:text-[#0D0A12] transition-colors" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] transition-colors">
-                            {tool.title}
-                          </p>
-                          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
-                            {tool.description}
-                          </p>
-                        </div>
-                        <ArrowUpRight className="w-4 h-4 text-[#6E667D] dark:text-[#A39BB5] opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          ))}
         </div>
       </section>
     </div>

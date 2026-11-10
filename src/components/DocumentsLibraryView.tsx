@@ -22,7 +22,6 @@ import {
   DocumentCategory,
 } from '../types/document';
 import { formatBytes } from '../services/storageService';
-import { renderPdfPage } from '../services/pdfService';
 
 interface DocumentsLibraryViewProps {
   documents: StoredDocument[];
@@ -56,8 +55,6 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
   onRequestOpenWithOptions,
   onRenameDocument,
   onToggleStar,
-  onAssignFolder,
-  onChangeCategory,
   onDownloadDocument,
   onRequestDeleteDocument,
   onCreateFolder,
@@ -76,28 +73,6 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
   // Inline rename
   const [renamingDocId, setRenamingDocId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
-
-  // Quick Preview Drawer
-  const [previewDoc, setPreviewDoc] = useState<StoredDocument | null>(null);
-  const [previewImgUrl, setPreviewImgUrl] = useState<string | null>(null);
-  const [isLoadingPreview, setIsLoadingPreview] = useState(false);
-
-  const handleOpenQuickPreview = async (doc: StoredDocument) => {
-    setPreviewDoc(doc);
-    if (doc.thumbnailDataUrl) {
-      setPreviewImgUrl(doc.thumbnailDataUrl);
-      return;
-    }
-    setIsLoadingPreview(true);
-    try {
-      const rendered = await renderPdfPage(doc.pdfData, 1, 1.2);
-      setPreviewImgUrl(rendered.dataUrl);
-    } catch {
-      setPreviewImgUrl(null);
-    } finally {
-      setIsLoadingPreview(false);
-    }
-  };
 
   const handleCreateFolderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -141,33 +116,33 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
     });
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-5">
-        <div>
-          <h1 className="text-xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-            Document Library & Local Vault
+    <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
+      {/* Compact Header */}
+      <div className="flex items-center justify-between gap-3 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4">
+        <div className="min-w-0">
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] truncate">
+            My Files ({documents.length})
           </h1>
-          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-            Organize documents into folders, search indexed OCR text, preview pages, or export PDFs
+          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
+            Tap any file to Read, Edit, or Share
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={() => setShowNewFolderInput(true)}
-            className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+            onClick={() => setShowNewFolderInput((v) => !v)}
+            className="h-9 px-3 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
           >
-            <FolderPlus className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-            <span>New Folder</span>
+            <FolderPlus className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+            <span className="hidden xs:inline">Folder</span>
           </button>
 
-          <label className="px-4 py-2 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer">
-            <FileUp className="w-4 h-4" />
+          <label className="h-9 px-3.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
+            <FileUp className="w-4 h-4 shrink-0" />
             <span>Upload PDF</span>
             <input
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,.pdf"
               multiple
               className="hidden"
               onChange={(e) => {
@@ -185,434 +160,269 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
       {showNewFolderInput && (
         <form
           onSubmit={handleCreateFolderSubmit}
-          className="p-4 rounded-xl bg-white dark:bg-[#16111F] border border-[#4A1D5E] dark:border-[#9D5CE5] flex items-center gap-3"
+          className="p-3.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#4A1D5E] dark:border-[#9D5CE5] flex items-center gap-2"
         >
-          <Folder className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+          <Folder className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
           <input
             type="text"
             autoFocus
             value={newFolderName}
             onChange={(e) => setNewFolderName(e.target.value)}
-            placeholder="Enter new folder name (e.g. Tax Receipts 2026)..."
+            placeholder="New folder name..."
             className="flex-1 text-xs px-3 py-2 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
           />
           <button
             type="submit"
-            className="px-4 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold cursor-pointer"
+            className="px-3.5 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold cursor-pointer"
           >
-            Create Folder
+            Create
           </button>
           <button
             type="button"
             onClick={() => setShowNewFolderInput(false)}
-            className="px-3 py-2 text-xs text-[#6E667D] cursor-pointer"
+            className="px-2 py-2 text-xs text-[#6E667D] cursor-pointer"
           >
             Cancel
           </button>
         </form>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-        {/* Left Views & Folders Sidebar (3 cols) */}
-        <div className="lg:col-span-3 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-3 space-y-4">
-          <div className="space-y-1">
-            <p className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-[#6E667D] dark:text-[#A39BB5]">
-              Views
-            </p>
-            {(
-              [
-                { id: 'all', label: 'All Documents', icon: Files },
-                { id: 'recent', label: 'Recently Opened', icon: Clock },
-                { id: 'starred', label: 'Starred Documents', icon: Star },
-              ] as const
-            ).map((v) => {
-              const Icon = v.icon;
-              const active = filterMode === v.id;
-              return (
+      {/* Clean Filter Tabs + Search & Sort Bar */}
+      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-3 space-y-3">
+        {/* Horizontal Filter Strip */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          {(
+            [
+              { id: 'all', label: 'All Files', icon: Files },
+              { id: 'recent', label: 'Recent', icon: Clock },
+              { id: 'starred', label: 'Starred', icon: Star },
+            ] as const
+          ).map((v) => {
+            const Icon = v.icon;
+            const active = filterMode === v.id;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setFilterMode(v.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12]'
+                    : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span>{v.label}</span>
+              </button>
+            );
+          })}
+
+          {folders.map((f) => {
+            const active = filterMode === f.id;
+            return (
+              <div
+                key={f.id}
+                className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 ${
+                  active
+                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12]'
+                    : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D] dark:text-[#A39BB5]'
+                }`}
+              >
                 <button
-                  key={v.id}
-                  onClick={() => setFilterMode(v.id)}
-                  className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                    active
-                      ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-semibold'
-                      : 'text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
-                  }`}
+                  onClick={() => setFilterMode(f.id)}
+                  className="flex items-center gap-1.5 cursor-pointer"
                 >
-                  <span className="flex items-center gap-2">
-                    <Icon className="w-3.5 h-3.5" />
-                    <span>{v.label}</span>
-                  </span>
+                  <Folder className="w-3.5 h-3.5 shrink-0" />
+                  <span>{f.name}</span>
                 </button>
-              );
-            })}
+                <button
+                  onClick={() => {
+                    if (filterMode === f.id) setFilterMode('all');
+                    onDeleteFolder(f.id);
+                  }}
+                  title="Delete folder"
+                  className="ml-1 opacity-70 hover:opacity-100 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Search & Sort Row */}
+        <div className="flex items-center justify-between gap-2">
+          <div className="relative flex-1">
+            <Search className="w-3.5 h-3.5 text-[#6E667D] absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search documents..."
+              className="w-full pl-8 pr-3 py-1.5 text-xs rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
+            />
           </div>
 
-          <div className="space-y-1 pt-2 border-t border-[#E4DFEC] dark:border-[#261F33]">
-            <p className="px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider text-[#6E667D] dark:text-[#A39BB5]">
-              Folders ({folders.length})
+          <div className="flex items-center gap-1 shrink-0">
+            {(['updatedAt', 'name', 'sizeBytes'] as const).map((field) => (
+              <button
+                key={field}
+                onClick={() => {
+                  if (sortField === field) {
+                    setSortAsc(!sortAsc);
+                  } else {
+                    setSortField(field);
+                    setSortAsc(field === 'name');
+                  }
+                }}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border cursor-pointer whitespace-nowrap ${
+                  sortField === field
+                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] text-[#4A1D5E] dark:text-[#D5B3FF] font-semibold'
+                    : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
+                }`}
+              >
+                <span>
+                  {field === 'updatedAt'
+                    ? 'Date'
+                    : field === 'name'
+                      ? 'Name'
+                      : 'Size'}
+                </span>
+                <ArrowUpDown className="w-3 h-3" />
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Clean Mobile & Desktop File List (Zero Horizontal Clipping) */}
+      <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] overflow-hidden">
+        {filteredDocs.length === 0 ? (
+          <div className="p-10 text-center space-y-2">
+            <p className="text-sm font-bold">No documents found</p>
+            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+              Upload a PDF or clear your search filter.
             </p>
-            {folders.map((f) => {
-              const active = filterMode === f.id;
-              const count = documents.filter((d) => d.folderId === f.id).length;
+          </div>
+        ) : (
+          <div className="divide-y divide-[#E4DFEC] dark:divide-[#261F33]">
+            {filteredDocs.map((doc) => {
+              const isRenaming = renamingDocId === doc.id;
               return (
                 <div
-                  key={f.id}
-                  className={`flex items-center justify-between px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
-                    active
-                      ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-semibold'
-                      : 'text-[#6E667D] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
-                  }`}
+                  key={doc.id}
+                  className="p-3 sm:px-4 flex items-center justify-between gap-2.5 hover:bg-[#F2EFF6]/50 dark:hover:bg-[#261F33]/40 transition-colors"
                 >
-                  <button
-                    onClick={() => setFilterMode(f.id)}
-                    className="flex-1 flex items-center gap-2 text-left truncate cursor-pointer"
-                  >
-                    <Folder className="w-3.5 h-3.5 shrink-0" />
-                    <span className="truncate">{f.name}</span>
-                  </button>
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-[11px] tabular-nums">
-                      {count}
-                    </span>
+                  {/* Left: Star + Document Name */}
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <button
+                      onClick={() => onToggleStar(doc)}
+                      className="w-8 h-8 rounded-lg flex items-center justify-center text-[#6E667D] hover:text-[#D97706] cursor-pointer shrink-0"
+                    >
+                      <Star
+                        className={`w-4 h-4 ${
+                          doc.starred ? 'fill-[#D97706] text-[#D97706]' : ''
+                        }`}
+                      />
+                    </button>
+
+                    {isRenaming ? (
+                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
+                        <input
+                          type="text"
+                          value={renameValue}
+                          onChange={(e) => setRenameValue(e.target.value)}
+                          className="flex-1 min-w-0 px-2.5 py-1 text-xs rounded-lg border border-[#4A1D5E] bg-[#FAF9FB] dark:bg-[#0D0A12]"
+                        />
+                        <button
+                          onClick={async () => {
+                            if (renameValue.trim()) {
+                              await onRenameDocument(doc, renameValue.trim());
+                            }
+                            setRenamingDocId(null);
+                          }}
+                          className="p-1.5 text-[#15803D] cursor-pointer"
+                        >
+                          <Check className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setRenamingDocId(null)}
+                          className="p-1.5 text-[#6E667D] cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() =>
+                          onRequestOpenWithOptions
+                            ? onRequestOpenWithOptions(doc)
+                            : onOpenInEditor(doc, true)
+                        }
+                        className="text-left min-w-0 flex-1 cursor-pointer group"
+                      >
+                        <p className="text-xs sm:text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] truncate">
+                          {doc.name}
+                        </p>
+                        <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono tabular-nums mt-0.5 truncate">
+                          {doc.pageCount}p · {formatBytes(doc.sizeBytes)} ·{' '}
+                          {new Date(doc.updatedAt).toLocaleDateString()}
+                        </p>
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Right: Always-Visible Action Buttons */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => onOpenInEditor(doc, true)}
+                      title="Open in ElimikaPDF Reader"
+                      className="h-9 px-2.5 rounded-lg bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    >
+                      <Eye className="w-3.5 h-3.5 shrink-0" />
+                      <span>Read</span>
+                    </button>
+
+                    <button
+                      onClick={() => onOpenInEditor(doc, false)}
+                      title="Edit PDF"
+                      className="h-9 px-2.5 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#4A1D5E] hover:text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    >
+                      <FileEdit className="w-3.5 h-3.5 shrink-0" />
+                      <span>Edit</span>
+                    </button>
+
                     <button
                       onClick={() => {
-                        if (filterMode === f.id) setFilterMode('all');
-                        onDeleteFolder(f.id);
+                        setRenamingDocId(doc.id);
+                        setRenameValue(doc.name);
                       }}
-                      title="Delete folder"
-                      className="opacity-60 hover:opacity-100 cursor-pointer"
+                      title="Rename Document"
+                      className="hidden sm:flex w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] items-center justify-center text-[#6E667D] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
                     >
-                      <X className="w-3 h-3" />
+                      <Edit3 className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      onClick={() => onDownloadDocument(doc)}
+                      title="Download PDF"
+                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#15803D] dark:text-[#4ADE80] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+                    >
+                      <Download className="w-4 h-4" />
+                    </button>
+
+                    <button
+                      onClick={() => onRequestDeleteDocument(doc)}
+                      title="Delete Document"
+                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#DC2626] hover:bg-[#DC2626]/10 cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
               );
             })}
           </div>
-        </div>
-
-        {/* Center/Right Document Table & Preview (9 cols) */}
-        <div className="lg:col-span-9 space-y-4">
-          {/* Search & Sort Controls */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-3">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-[#6E667D] absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search filenames, categories, or recognized OCR text..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
-              />
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0">
-              <span className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                Sort by:
-              </span>
-              {(['updatedAt', 'name', 'sizeBytes'] as const).map((field) => (
-                <button
-                  key={field}
-                  onClick={() => {
-                    if (sortField === field) {
-                      setSortAsc(!sortAsc);
-                    } else {
-                      setSortField(field);
-                      setSortAsc(field === 'name');
-                    }
-                  }}
-                  className={`px-2.5 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1 border cursor-pointer ${
-                    sortField === field
-                      ? 'border-[#4A1D5E] dark:border-[#9D5CE5] text-[#4A1D5E] dark:text-[#D5B3FF] font-semibold'
-                      : 'border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
-                  }`}
-                >
-                  <span>
-                    {field === 'updatedAt'
-                      ? 'Date'
-                      : field === 'name'
-                        ? 'Name'
-                        : 'Size'}
-                  </span>
-                  <ArrowUpDown className="w-3 h-3" />
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Document Table */}
-          <div className="rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] overflow-hidden">
-            {filteredDocs.length === 0 ? (
-              <div className="p-10 text-center space-y-2">
-                <p className="text-sm font-bold">No documents in this view</p>
-                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Try clearing your search filter or uploading a new PDF.
-                </p>
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5]">
-                      <th className="py-3 pl-4 pr-2 w-8"></th>
-                      <th className="py-3 px-3">Document</th>
-                      <th className="py-3 px-3 hidden md:table-cell">
-                        Folder & Category
-                      </th>
-                      <th className="py-3 px-3 text-right hidden sm:table-cell">
-                        Size & Pages
-                      </th>
-                      <th className="py-3 pl-3 pr-4 text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E4DFEC] dark:divide-[#261F33] text-xs">
-                    {filteredDocs.map((doc) => {
-                      const isRenaming = renamingDocId === doc.id;
-                      return (
-                        <tr
-                          key={doc.id}
-                          className="hover:bg-[#F2EFF6]/50 dark:hover:bg-[#261F33]/40 transition-colors"
-                        >
-                          <td className="py-3 pl-4 pr-2">
-                            <button
-                              onClick={() => onToggleStar(doc)}
-                              className="text-[#6E667D] hover:text-[#D97706] cursor-pointer"
-                            >
-                              <Star
-                                className={`w-4 h-4 ${
-                                  doc.starred
-                                    ? 'fill-[#D97706] text-[#D97706]'
-                                    : ''
-                                }`}
-                              />
-                            </button>
-                          </td>
-
-                          <td className="py-3 px-3">
-                            {isRenaming ? (
-                              <div className="flex items-center gap-1.5">
-                                <input
-                                  type="text"
-                                  value={renameValue}
-                                  onChange={(e) =>
-                                    setRenameValue(e.target.value)
-                                  }
-                                  className="px-2 py-1 text-xs rounded border border-[#4A1D5E] bg-[#FAF9FB] dark:bg-[#0D0A12]"
-                                />
-                                <button
-                                  onClick={async () => {
-                                    if (renameValue.trim()) {
-                                      await onRenameDocument(
-                                        doc,
-                                        renameValue.trim()
-                                      );
-                                    }
-                                    setRenamingDocId(null);
-                                  }}
-                                  className="p-1 text-[#15803D] cursor-pointer"
-                                >
-                                  <Check className="w-4 h-4" />
-                                </button>
-                                <button
-                                  onClick={() => setRenamingDocId(null)}
-                                  className="p-1 text-[#6E667D] cursor-pointer"
-                                >
-                                  <X className="w-4 h-4" />
-                                </button>
-                              </div>
-                            ) : (
-                              <div>
-                                <button
-                                  onClick={() =>
-                                    onRequestOpenWithOptions
-                                      ? onRequestOpenWithOptions(doc)
-                                      : onOpenInEditor(doc, true)
-                                  }
-                                  className="font-bold text-sm text-[#14101B] dark:text-[#F4F1F8] hover:text-[#4A1D5E] dark:hover:text-[#D5B3FF] text-left cursor-pointer"
-                                >
-                                  {doc.name}
-                                </button>
-                                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono tabular-nums mt-0.5">
-                                  Updated{' '}
-                                  {new Date(doc.updatedAt).toLocaleDateString()}
-                                  {doc.isProtected ? ' · Protected' : ''}
-                                </p>
-                              </div>
-                            )}
-                          </td>
-
-                          <td className="py-3 px-3 hidden md:table-cell">
-                            <div className="flex items-center gap-2">
-                              <select
-                                value={doc.folderId || ''}
-                                onChange={(e) =>
-                                  onAssignFolder(doc, e.target.value || null)
-                                }
-                                className="px-2 py-1 rounded border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] text-[11px]"
-                              >
-                                <option value="">No Folder</option>
-                                {folders.map((f) => (
-                                  <option key={f.id} value={f.id}>
-                                    {f.name}
-                                  </option>
-                                ))}
-                              </select>
-
-                              <select
-                                value={doc.category}
-                                onChange={(e) =>
-                                  onChangeCategory(
-                                    doc,
-                                    e.target.value as DocumentCategory
-                                  )
-                                }
-                                className="px-2 py-1 rounded border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] text-[11px]"
-                              >
-                                {(
-                                  [
-                                    'Scans',
-                                    'Contracts',
-                                    'Receipts',
-                                    'Reports',
-                                    'Forms',
-                                    'Other',
-                                  ] as const
-                                ).map((cat) => (
-                                  <option key={cat} value={cat}>
-                                    {cat}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                          </td>
-
-                          <td className="py-3 px-3 text-right hidden sm:table-cell font-mono tabular-nums text-[#6E667D] dark:text-[#A39BB5]">
-                            <div>{formatBytes(doc.sizeBytes)}</div>
-                            <div className="text-[10px]">
-                              {doc.pageCount} pages
-                            </div>
-                          </td>
-
-                          <td className="py-3 pl-3 pr-4 text-right">
-                            <div className="flex items-center justify-end gap-1">
-                              <button
-                                onClick={() => onOpenInEditor(doc, true)}
-                                title="Open in ElimikaPDF Reader"
-                                className="px-2 py-1 rounded bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer"
-                              >
-                                <Eye className="w-3.5 h-3.5" />
-                                <span>Read</span>
-                              </button>
-                              <button
-                                onClick={() => handleOpenQuickPreview(doc)}
-                                title="Quick Page Thumbnail Preview"
-                                className="p-1.5 rounded hover:bg-[#E4DFEC] dark:hover:bg-[#261F33] cursor-pointer"
-                              >
-                                <Search className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => onOpenInEditor(doc, false)}
-                                title="Open in PDF Editor"
-                                className="p-1.5 rounded hover:bg-[#E4DFEC] dark:hover:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF] cursor-pointer"
-                              >
-                                <FileEdit className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => {
-                                  setRenamingDocId(doc.id);
-                                  setRenameValue(doc.name);
-                                }}
-                                title="Rename Document"
-                                className="p-1.5 rounded hover:bg-[#E4DFEC] dark:hover:bg-[#261F33] cursor-pointer"
-                              >
-                                <Edit3 className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => onDownloadDocument(doc)}
-                                title="Download PDF"
-                                className="p-1.5 rounded hover:bg-[#E4DFEC] dark:hover:bg-[#261F33] text-[#15803D] cursor-pointer"
-                              >
-                                <Download className="w-4 h-4" />
-                              </button>
-                              <button
-                                onClick={() => onRequestDeleteDocument(doc)}
-                                title="Delete Document"
-                                className="p-1.5 rounded hover:bg-[#DC2626]/10 text-[#DC2626] cursor-pointer"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-
-          {/* Document Preview Card when selected */}
-          {previewDoc && (
-            <div className="rounded-xl bg-white dark:bg-[#16111F] border border-[#4A1D5E] dark:border-[#9D5CE5] p-5 flex flex-col sm:flex-row items-start gap-5">
-              <div className="w-40 h-52 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg flex items-center justify-center overflow-hidden shrink-0">
-                {isLoadingPreview ? (
-                  <span className="text-[11px] text-[#6E667D]">
-                    Rendering...
-                  </span>
-                ) : previewImgUrl ? (
-                  <img
-                    src={previewImgUrl}
-                    alt={previewDoc.name}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-contain"
-                  />
-                ) : (
-                  <span className="text-[11px] text-[#6E667D]">No preview</span>
-                )}
-              </div>
-              <div className="flex-1 space-y-2">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <h3 className="text-base font-bold">{previewDoc.name}</h3>
-                    <p className="text-xs text-[#6E667D] font-mono tabular-nums">
-                      {previewDoc.pageCount} pages ·{' '}
-                      {formatBytes(previewDoc.sizeBytes)} · Category:{' '}
-                      {previewDoc.category}
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setPreviewDoc(null)}
-                    className="p-1 text-[#6E667D] cursor-pointer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {previewDoc.ocrText && (
-                  <div className="p-2.5 rounded bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-mono max-h-24 overflow-y-auto">
-                    {previewDoc.ocrText}
-                  </div>
-                )}
-
-                <div className="pt-2 flex flex-wrap gap-2">
-                  <button
-                    onClick={() => onOpenInEditor(previewDoc, true)}
-                    className="px-3.5 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold cursor-pointer"
-                  >
-                    Open in Clean Reader
-                  </button>
-                  <button
-                    onClick={() => onOpenInEditor(previewDoc, false)}
-                    className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer"
-                  >
-                    Edit & Annotate PDF
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        )}
       </div>
     </div>
   );

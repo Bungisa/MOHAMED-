@@ -1366,106 +1366,76 @@ Status: Approved for Production Distribution`;
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Header, Active Document Bar & Grouped Tool Switcher */}
-      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-5 space-y-5">
-        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-              PDF Tools, Word Converter & OCR Workbench
-            </h1>
-            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Select a tool below. Every action runs locally on your device with instant download.
-            </p>
-          </div>
+    <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
+      {/* Compact Header & Tool Grid */}
+      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4 space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <h1 className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
+            PDF & Word Tools
+          </h1>
 
-          {/* Sticky Active File Context Bar (for single-doc tools) */}
+          {/* Active File Selector (for single-doc tools) */}
           {activeTool !== 'merge-pdf' &&
             activeTool !== 'img-to-pdf' &&
             activeTool !== 'word-to-pdf' && (
-            <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-2">
-              <span className="text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] pl-1.5 whitespace-nowrap">
-                Active PDF:
-              </span>
-              <select
-                value={selectedDocId}
-                onChange={(e) => setSelectedDocId(e.target.value)}
-                className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2.5 py-1.5 text-[#14101B] dark:text-[#F4F1F8] max-w-[220px] sm:max-w-xs truncate cursor-pointer"
-              >
-                {documents.map((doc) => (
-                  <option key={doc.id} value={doc.id}>
-                    {doc.name} ({doc.pageCount} pg · {formatBytes(doc.sizeBytes)})
-                  </option>
-                ))}
-              </select>
-
-              {onUploadNewPdf && (
-                <label className="px-2.5 py-1.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
-                  <Upload className="w-3.5 h-3.5 shrink-0" />
-                  <span>Upload PDF</span>
-                  <input
-                    type="file"
-                    accept="application/pdf"
-                    className="hidden"
-                    onChange={async (e) => {
-                      if (e.target.files && e.target.files.length > 0) {
-                        const files = Array.from(e.target.files);
-                        e.target.value = '';
-                        await onUploadNewPdf(files, false);
-                      }
-                    }}
-                  />
-                </label>
-              )}
-
-              {selectedDoc && onOpenInEditor && (
-                <button
-                  type="button"
-                  onClick={() => onOpenInEditor(selectedDoc)}
-                  className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer whitespace-nowrap"
+              <div className="flex items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-1.5">
+                <select
+                  value={selectedDocId}
+                  onChange={(e) => setSelectedDocId(e.target.value)}
+                  className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2 py-1.5 text-[#14101B] dark:text-[#F4F1F8] flex-1 min-w-0 max-w-[200px] sm:max-w-xs truncate cursor-pointer"
                 >
-                  Open in Editor
-                </button>
-              )}
-            </div>
-          )}
+                  {documents.map((doc) => (
+                    <option key={doc.id} value={doc.id}>
+                      {doc.name} ({doc.pageCount}p)
+                    </option>
+                  ))}
+                </select>
+
+                {onUploadNewPdf && (
+                  <label className="px-2.5 py-1.5 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0">
+                    <Upload className="w-3.5 h-3.5 shrink-0" />
+                    <span>Upload</span>
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      className="hidden"
+                      onChange={async (e) => {
+                        if (e.target.files && e.target.files.length > 0) {
+                          const files = Array.from(e.target.files);
+                          e.target.value = '';
+                          await onUploadNewPdf(files, false);
+                        }
+                      }}
+                    />
+                  </label>
+                )}
+              </div>
+            )}
         </div>
 
-        {/* Grouped 3-Category Tool Switcher */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          {TOOL_CATEGORIES.map((group) => (
-            <div
-              key={group.category}
-              className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2"
-            >
-              <p className="px-1.5 text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5]">
-                {group.category}
-              </p>
-              <div className="flex flex-wrap gap-1.5">
-                {group.items.map((t) => {
-                  const Icon = t.icon;
-                  const active = activeTool === t.id;
-                  return (
-                    <button
-                      key={t.id}
-                      onClick={() => {
-                        setActiveTool(t.id);
-                        setFeedback(null);
-                      }}
-                      className={`flex-1 min-w-[96px] px-2.5 py-2 rounded-lg text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                        active
-                          ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-bold shadow-xs'
-                          : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
-                      }`}
-                    >
-                      <Icon className="w-3.5 h-3.5 shrink-0" />
-                      <span>{t.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+        {/* Clean 5-Column (3-Column on Phone) Tool Switcher Grid */}
+        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 sm:gap-2">
+          {TOOL_CATEGORIES.flatMap((g) => g.items).map((t) => {
+            const Icon = t.icon;
+            const active = activeTool === t.id;
+            return (
+              <button
+                key={t.id}
+                onClick={() => {
+                  setActiveTool(t.id);
+                  setFeedback(null);
+                }}
+                className={`px-2 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer truncate ${
+                  active
+                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-bold shadow-xs'
+                    : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5 shrink-0" />
+                <span className="truncate">{t.label}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
