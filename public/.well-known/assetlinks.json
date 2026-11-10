@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.elimikapdf.www.twa",
+        "sha256_cert_fingerprints": ["6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF"]
+      }
+    }]
