@@ -805,7 +805,7 @@ export async function buildDocxFromPdfPages(
 
   const doc = new Document({
     title: documentTitle,
-    creator: 'ScanPro Studio',
+    creator: 'ElimikaPDF',
     sections: [
       {
         properties: {},

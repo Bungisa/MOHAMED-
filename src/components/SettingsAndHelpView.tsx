@@ -41,7 +41,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
-  const [androidPackageId, setAndroidPackageId] = useState('app.scanpro.studio');
+  const [androidPackageId, setAndroidPackageId] = useState('app.elimikapdf.studio');
   const [sha256Fingerprint, setSha256Fingerprint] = useState(
     'FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C'
   );
@@ -53,7 +53,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         relation: ['delegate_permission/common.handle_all_urls'],
         target: {
           namespace: 'android_app',
-          package_name: androidPackageId.trim() || 'app.scanpro.studio',
+          package_name: androidPackageId.trim() || 'app.elimikapdf.studio',
           sha256_cert_fingerprints: [sha256Fingerprint.trim()],
         },
       },
@@ -115,13 +115,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       <div className="bg-white dark:bg-[#16111F] border-2 border-[#4A1D5E]/25 dark:border-[#9D5CE5]/35 rounded-xl p-6 space-y-5 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
           <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="p-2 rounded-lg bg-[#4A1D5E] text-white">
-                <Smartphone className="w-4 h-4 text-emerald-300" />
-              </span>
+            <div className="flex items-center gap-3">
+              <img
+                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+                alt="ElimikaPDF Icon"
+                className="w-10 h-10 rounded-xl object-cover shadow-xs shrink-0"
+              />
               <div>
                 <h2 className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  Google Play Store & PWA Packaging Center
+                  ElimikaPDF — Google Play Store & PWA Packaging Center
                 </h2>
                 <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
                   Ready for Android App Bundle (<code>.aab</code>) export via PWABuilder or Bubblewrap Trusted Web Activity (TWA)
@@ -168,7 +170,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                 type="text"
                 value={androidPackageId}
                 onChange={(e) => setAndroidPackageId(e.target.value)}
-                placeholder="app.scanpro.studio"
+                placeholder="app.elimikapdf.studio"
                 className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
               />
             </div>
@@ -242,7 +244,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               {assetLinksJson}
             </pre>
             <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5]">
-              You can also package ScanPro Studio in 1 click at <strong>pwabuilder.com</strong> by pasting your deployed app URL and selecting <strong>Package for Store &rarr; Google Play</strong>.
+              You can also package ElimikaPDF in 1 click at <strong>pwabuilder.com</strong> by pasting your deployed app URL and selecting <strong>Package for Store &rarr; Google Play</strong>.
             </p>
           </div>
         </div>
@@ -379,7 +381,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               <span>Cloud Synchronization Adapter (Supabase Ready)</span>
             </p>
             <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5]">
-              ScanPro’s storage layer implements the <code>IDocumentRepository</code> interface so Supabase Auth & Storage buckets can be attached without modifying editor or scanner workflows.
+              ElimikaPDF’s storage layer implements the <code>IDocumentRepository</code> interface so Supabase Auth & Storage buckets can be attached without modifying editor or scanner workflows.
             </p>
           </div>
           <span className="text-[11px] font-mono text-[#6E667D] shrink-0">
@@ -451,7 +453,7 @@ export const HelpAndSupportView: React.FC = () => {
             <span>1. Document Scanner & Perspective Warp</span>
           </div>
           <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-            Use your device camera or upload photos of physical pages. ScanPro runs a Sobel edge gradient detector to locate the 4 page corners. You can fine-tune any corner handle manually before applying a 4-point projective homography warp and adaptive B&W or Shadow Clean filters.
+            Use your device camera or upload photos of physical pages. ElimikaPDF runs a Sobel edge gradient detector to locate the 4 page corners. You can fine-tune any corner handle manually before applying a 4-point projective homography warp and adaptive B&W or Shadow Clean filters.
           </p>
         </div>
 

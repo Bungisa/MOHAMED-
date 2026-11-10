@@ -1,23 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
   <defs>
-    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="#4A1D5E" />
-      <stop offset="100%" stop-color="#2563EB" />
-    </linearGradient>
+    <clipPath id="docClip">
+      <path d="M 112 16 H 376 L 496 136 V 400 C 496 453 453 496 400 496 H 112 C 59 496 16 453 16 400 V 112 C 16 59 59 16 112 16 Z" />
+    </clipPath>
   </defs>
-  <rect width="512" height="512" rx="112" fill="url(#bg)" />
-  <!-- Scanner Corner Brackets -->
-  <path d="M108 164 V124 Q108 108 124 108 H164" fill="none" stroke="#60A5FA" stroke-width="18" stroke-linecap="round" />
-  <path d="M348 108 H388 Q404 108 404 124 V164" fill="none" stroke="#60A5FA" stroke-width="18" stroke-linecap="round" />
-  <path d="M108 348 V388 Q108 404 124 404 H164" fill="none" stroke="#60A5FA" stroke-width="18" stroke-linecap="round" />
-  <path d="M348 404 H388 Q404 404 404 388 V348" fill="none" stroke="#60A5FA" stroke-width="18" stroke-linecap="round" />
-  <!-- Document Sheet -->
-  <rect x="148" y="136" width="216" height="240" rx="20" fill="#FFFFFF" />
-  <!-- Text Lines -->
-  <rect x="180" y="180" width="110" height="16" rx="8" fill="#4A1D5E" />
-  <rect x="180" y="216" width="152" height="14" rx="7" fill="#94A3B8" />
-  <rect x="180" y="248" width="152" height="14" rx="7" fill="#94A3B8" />
-  <rect x="180" y="308" width="124" height="14" rx="7" fill="#2563EB" />
-  <!-- Laser Scan Beam -->
-  <rect x="92" y="274" width="328" height="12" rx="6" fill="#38BDF8" />
+  <g clip-path="url(#docClip)">
+    <rect x="0" y="0" width="256" height="512" fill="#F10A1C" />
+    <rect x="256" y="0" width="256" height="512" fill="#003FE8" />
+    <!-- Folded corner shadow & flap -->
+    <path d="M 376 16 V 104 C 376 122 390 136 408 136 H 496 Z" fill="#FFFFFF" />
+  </g>
+  <!-- White 'E' with fountain pen nib middle bar -->
+  <path d="M 148 118 H 356 V 172 H 208 V 222 H 304 L 364 252 L 304 282 H 208 V 332 H 356 V 386 H 148 Z" fill="#FFFFFF" />
+  <circle cx="298" cy="252" r="11" fill="#003FE8" />
+  <rect x="306" y="250" width="58" height="4" fill="#003FE8" />
+  <!-- PDF label -->
+  <text x="256" y="468" font-family="Arial, Helvetica, sans-serif" font-weight="900" font-size="68" fill="#FFFFFF" text-anchor="middle" letter-spacing="3">PDF</text>
 </svg>

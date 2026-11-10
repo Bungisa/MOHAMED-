@@ -1,0 +1,82 @@
+{
+  "id": "/",
+  "name": "ElimikaPDF — Document Scanner & PDF Editor",
+  "short_name": "ElimikaPDF",
+  "description": "Enterprise-grade document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
+  "theme_color": "#003FE8",
+  "background_color": "#FAF9FB",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "business", "utilities"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "540x960",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "ElimikaPDF Smart Document Scanner & Auto-Crop"
+    },
+    {
+      "src": "/screenshot-desktop.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "ElimikaPDF Editor & Word Conversion Workbench"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Scan Document",
+      "short_name": "Scan",
+      "description": "Capture and auto-crop a new document or receipt",
+      "url": "/?action=scan",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Edit PDF",
+      "short_name": "PDF Editor",
+      "description": "Annotate, sign, and redact PDF documents",
+      "url": "/?action=pdf-editor",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Word & PDF Converter",
+      "short_name": "Convert",
+      "description": "Convert Word to PDF or PDF to Word (.docx)",
+      "url": "/?action=pdf-tools",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}

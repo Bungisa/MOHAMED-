@@ -458,7 +458,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                           try {
                             await nav.share({
                               title: doc.name,
-                              text: `Sharing PDF from ScanPro Studio: ${doc.name}`,
+                              text: `Sharing PDF from ElimikaPDF: ${doc.name}`,
                               files: [fileObj],
                             });
                             return;

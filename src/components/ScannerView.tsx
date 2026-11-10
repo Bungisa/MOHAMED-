@@ -592,7 +592,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           try {
             await nav.share({
               title: cleanName,
-              text: `Scanned PDF from ScanPro Studio: ${cleanName}`,
+              text: `Scanned PDF from ElimikaPDF: ${cleanName}`,
               files: [fileObj],
             });
             setStatusBanner(
@@ -750,7 +750,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                       Capture or Import a Document Page
                     </h2>
                     <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-                      Use your phone or laptop camera to photograph contracts, exam sheets, or notes. ScanPro automatically locates all 4 outer page corners and flattens perspective distortion.
+                      Use your phone or laptop camera to photograph contracts, exam sheets, or notes. ElimikaPDF automatically locates all 4 outer page corners and flattens perspective distortion.
                     </p>
                   </div>
 

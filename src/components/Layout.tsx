@@ -116,10 +116,15 @@ export const Layout: React.FC<LayoutProps> = ({
         <div className="h-16 px-6 flex items-center justify-between border-b border-[#E4DFEC] dark:border-[#261F33]">
           <button
             onClick={() => onNavigate('dashboard')}
-            className="text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4A1D5E] dark:focus-visible:ring-[#9D5CE5] rounded cursor-pointer"
+            className="flex items-center gap-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4A1D5E] dark:focus-visible:ring-[#9D5CE5] rounded cursor-pointer"
           >
+            <img
+              src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+              alt="ElimikaPDF Icon"
+              className="w-8 h-8 rounded-lg object-cover shrink-0 shadow-xs"
+            />
             <span className="text-lg font-bold tracking-tight text-[#4A1D5E] dark:text-[#F4F1F8] whitespace-nowrap">
-              ScanPro Studio
+              ElimikaPDF
             </span>
           </button>
         </div>
@@ -232,12 +237,17 @@ export const Layout: React.FC<LayoutProps> = ({
         {/* Strict 3-Zone Top Bar Contract (hidden in full-screen Document Editor mode) */}
         {activeView !== 'editor' && (
           <header className="h-14 sm:h-16 px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-8 bg-white/90 dark:bg-[#16111F]/90 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33] sticky top-0 z-30">
-            {/* Zone 1: Single text element wordmark */}
+            {/* Zone 1: Brand icon & wordmark */}
             <button
               onClick={() => onNavigate('dashboard')}
-              className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
+              className="flex items-center gap-2 text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
             >
-              ScanPro Studio
+              <img
+                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+                alt="ElimikaPDF Icon"
+                className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg object-cover shrink-0 shadow-xs"
+              />
+              <span>ElimikaPDF</span>
             </button>
 
             {/* Zone 2: 5 concise single-line navigation links */}

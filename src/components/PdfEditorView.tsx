@@ -1962,7 +1962,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       try {
         await navigator.share({
           title: nameToShare,
-          text: 'Shared from ScanPro Studio',
+          text: 'Shared from ElimikaPDF',
           files: [file],
         });
         return;

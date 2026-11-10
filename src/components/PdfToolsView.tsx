@@ -1171,7 +1171,7 @@ This Word-to-PDF document demonstrates instant on-device conversion of Microsoft
 * Bilingual Optical Character Recognition (OCR) supporting English and Kiswahili
 
 ## 3. Schedule & Sign-Off
-Prepared by: ScanPro Studio Document Engineering
+Prepared by: ElimikaPDF Document Engineering
 Date: ${new Date().toISOString().slice(0, 10)}
 Status: Approved for Production Distribution`;
 
@@ -2936,7 +2936,7 @@ Status: Approved for Production Distribution`;
                 <span>Honest Browser-Side PDF Security Notice</span>
               </div>
               <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-                Pure client-side JavaScript PDF libraries (<code>pdf-lib</code>) do not natively write AES-256 stream encryption dictionaries without server-side or WebAssembly C++ binaries. ScanPro provides two genuine client-side protections: (1) <strong>Local Vault Passphrase Lock</strong> before opening/exporting from IndexedDB, and (2) <strong>Permanent Vector Security Watermarking</strong> baked across all pages.
+                Pure client-side JavaScript PDF libraries (<code>pdf-lib</code>) do not natively write AES-256 stream encryption dictionaries without server-side or WebAssembly C++ binaries. ElimikaPDF provides two genuine client-side protections: (1) <strong>Local Vault Passphrase Lock</strong> before opening/exporting from IndexedDB, and (2) <strong>Permanent Vector Security Watermarking</strong> baked across all pages.
               </p>
             </div>
 

@@ -152,6 +152,27 @@ async function startServer() {
       },
       appType: 'spa',
     });
+
+    // Prevent /@vite/client from opening a failing HMR WebSocket on port 24678 in Cloud Run / AI Studio preview
+    app.get('/@vite/client', async (req, res, next) => {
+      try {
+        const result = await vite.transformRequest(req.originalUrl || '/@vite/client');
+        if (result && result.code) {
+          const patchedCode = result.code.replace(
+            /createWebSocketModuleRunnerTransport\s*\(/g,
+            '(() => ({ async connect() {}, async disconnect() {}, send() {}, async invoke() { return {}; } }))('
+          );
+          res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
+          res.setHeader('Cache-Control', 'no-store');
+          res.status(200).send(patchedCode);
+          return;
+        }
+      } catch {
+        // Fall through to default Vite middleware if transformRequest fails
+      }
+      next();
+    });
+
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(__dirname, 'dist');
@@ -162,7 +183,7 @@ async function startServer() {
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ScanPro Studio server listening on http://0.0.0.0:${PORT}`);
+    console.log(`ElimikaPDF server listening on http://0.0.0.0:${PORT}`);
   });
 }
 

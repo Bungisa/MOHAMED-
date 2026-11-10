@@ -5,7 +5,6 @@ import {
   PlusSquare,
   X,
   WifiOff,
-  Smartphone,
   CheckCircle2,
   ExternalLink,
   Copy,
@@ -13,6 +12,9 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { usePWAInstall, useOnlineStatus } from '../hooks/usePWAInstall';
+
+const ELIMIKA_ICON_URL =
+  '/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg';
 
 export function PWAInstallButton({
   variant = 'header',
@@ -24,7 +26,6 @@ export function PWAInstallButton({
   const {
     isInstalled,
     hasNativePrompt,
-    isIOS,
     isInIframe,
     showIOSGuide,
     setShowIOSGuide,
@@ -56,7 +57,7 @@ export function PWAInstallButton({
         <button
           onClick={promptInstall}
           className="w-full flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3A154B] text-white text-xs font-semibold shadow-sm transition-all cursor-pointer"
-          title="Install ScanPro Studio as an offline-ready app"
+          title="Install ElimikaPDF as an offline-ready app"
         >
           <span className="flex items-center gap-2">
             <Download className="w-4 h-4 text-emerald-300 shrink-0" />
@@ -70,7 +71,7 @@ export function PWAInstallButton({
         <button
           onClick={promptInstall}
           className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#4A1D5E] hover:bg-[#3A154B] text-white shadow-sm transition-all cursor-pointer shrink-0"
-          aria-label="Install ScanPro Studio App"
+          aria-label="Install ElimikaPDF App"
         >
           <Download className="w-3.5 h-3.5 text-emerald-300" />
           <span>Install App</span>
@@ -95,14 +96,16 @@ export function PWAInstallButton({
             </button>
 
             <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-[#4A1D5E] text-white flex items-center justify-center font-bold">
-                SP
-              </div>
+              <img
+                src={ELIMIKA_ICON_URL}
+                alt="ElimikaPDF Icon"
+                className="w-11 h-11 rounded-xl object-cover shadow-xs shrink-0"
+              />
               <div>
                 <h3 id="ios-install-title" className="text-base font-bold text-stone-900">
-                  Install ScanPro Studio
+                  Install ElimikaPDF
                 </h3>
-                <p className="text-xs text-stone-500">Full-screen offline scanner on iOS</p>
+                <p className="text-xs text-stone-500">Full-screen offline scanner & PDF editor on iOS</p>
               </div>
             </div>
 
@@ -153,12 +156,14 @@ export function PWAInstallButton({
             </button>
 
             <div className="flex items-center gap-3 mb-4">
-              <div className="w-11 h-11 rounded-xl bg-[#4A1D5E] text-white flex items-center justify-center shadow-sm">
-                <Smartphone className="w-6 h-6 text-emerald-300" />
-              </div>
+              <img
+                src={ELIMIKA_ICON_URL}
+                alt="ElimikaPDF Icon"
+                className="w-12 h-12 rounded-xl object-cover shadow-sm shrink-0"
+              />
               <div>
                 <h3 id="pwa-install-title" className="text-base font-bold text-stone-900">
-                  Install ScanPro Studio (PWA & Play Store)
+                  Install ElimikaPDF (PWA & Play Store)
                 </h3>
                 <p className="text-xs text-stone-500">
                   100% Offline-Ready Web App &bull; Trusted Web Activity Verified
@@ -199,7 +204,7 @@ export function PWAInstallButton({
                 </p>
                 <p className="text-stone-600 leading-relaxed">
                   Open the app URL in Chrome or Edge and tap the{' '}
-                  <strong>Install ScanPro Studio</strong> icon in the address bar or browser menu (
+                  <strong>Install ElimikaPDF</strong> icon in the address bar or browser menu (
                   <strong>⋮ &rarr; Install app</strong>).
                 </p>
               </div>
@@ -210,7 +215,7 @@ export function PWAInstallButton({
                   <span>Option 2: Package `.aab` for Google Play Store</span>
                 </div>
                 <p className="text-emerald-800 leading-relaxed">
-                  ScanPro Studio includes a complete Web App Manifest, maskable icons, screenshots,
+                  ElimikaPDF includes a complete Web App Manifest, maskable icons, screenshots,
                   Service Worker, and{' '}
                   <code className="font-mono bg-white/80 px-1 py-0.5 rounded">
                     /.well-known/assetlinks.json
