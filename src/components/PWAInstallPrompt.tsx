@@ -14,7 +14,7 @@ import {
 import { usePWAInstall, useOnlineStatus } from '../hooks/usePWAInstall';
 
 const ELIMIKA_ICON_URL =
-  '/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg';
+  '/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg';
 
 export function PWAInstallButton({
   variant = 'header',

@@ -18,7 +18,7 @@ export default defineConfig(() => {
           'pwa-512x512.png',
           'pwa-maskable-512x512.png',
           'elimikapdf-icon.png',
-          'assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg',
+          'assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
           'screenshot-mobile.png',
           'screenshot-desktop.png',
         ],
@@ -59,7 +59,7 @@ export default defineConfig(() => {
               purpose: 'maskable',
             },
             {
-              src: 'assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg',
+              src: 'assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
               sizes: '512x512',
               type: 'image/jpeg',
               purpose: 'any',

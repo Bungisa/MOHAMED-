@@ -117,7 +117,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           <div className="space-y-1">
             <div className="flex items-center gap-3">
               <img
-                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg"
                 alt="ElimikaPDF Icon"
                 className="w-10 h-10 rounded-xl object-cover shadow-xs shrink-0"
               />

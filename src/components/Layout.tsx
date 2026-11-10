@@ -119,7 +119,7 @@ export const Layout: React.FC<LayoutProps> = ({
             className="flex items-center gap-2.5 text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-[#4A1D5E] dark:focus-visible:ring-[#9D5CE5] rounded cursor-pointer"
           >
             <img
-              src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+              src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg"
               alt="ElimikaPDF Icon"
               className="w-8 h-8 rounded-lg object-cover shrink-0 shadow-xs"
             />
@@ -243,7 +243,7 @@ export const Layout: React.FC<LayoutProps> = ({
               className="flex items-center gap-2 text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap shrink-0 cursor-pointer focus:outline-none"
             >
               <img
-                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_8.49.06_AM_2a60a4c2.jpeg"
+                src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg"
                 alt="ElimikaPDF Icon"
                 className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg object-cover shrink-0 shadow-xs"
               />
