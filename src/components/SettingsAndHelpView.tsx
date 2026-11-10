@@ -43,7 +43,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
   const [androidPackageId, setAndroidPackageId] = useState('app.elimikapdf.studio');
   const [sha256Fingerprint, setSha256Fingerprint] = useState(
-    'FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C'
+    '6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF'
   );
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
@@ -284,6 +284,38 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               You can also package ElimikaPDF in 1 click at <strong>pwabuilder.com</strong> by pasting your deployed app URL and selecting <strong>Package for Store &rarr; Google Play</strong>.
             </p>
           </div>
+        </div>
+
+        {/* Native Android "Open With..." PDF Reader Intent Filter */}
+        <div className="p-4 rounded-xl bg-[#003FE8]/5 dark:bg-[#003FE8]/15 border border-[#003FE8]/25 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-[#003FE8] dark:text-[#60A5FA]">
+              Default PDF Reader (&ldquo;Open With ElimikaPDF&rdquo; on Android &amp; Desktop)
+            </span>
+            <button
+              onClick={() =>
+                copyText(
+                  'intent-filter',
+                  `<intent-filter android:label="ElimikaPDF Reader">\n  <action android:name="android.intent.action.VIEW" />\n  <action android:name="android.intent.action.SEND" />\n  <category android:name="android.intent.category.DEFAULT" />\n  <category android:name="android.intent.category.BROWSABLE" />\n  <data android:mimeType="application/pdf" />\n</intent-filter>`
+                )
+              }
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-white dark:bg-[#16111F] border border-[#003FE8]/30 text-[11px] font-semibold text-[#003FE8] dark:text-[#60A5FA] cursor-pointer"
+            >
+              {copiedField === 'intent-filter' ? (
+                <Check className="w-3 h-3 text-emerald-600" />
+              ) : (
+                <Copy className="w-3 h-3" />
+              )}
+              <span>
+                {copiedField === 'intent-filter'
+                  ? 'Copied Intent Filter'
+                  : 'Copy Android Intent Filter'}
+              </span>
+            </button>
+          </div>
+          <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
+            <strong>Desktop &amp; Android Share Sheet:</strong> Automatically active via Web App Manifest <code>file_handlers</code> and <code>share_target</code> (selecting <strong>Share &rarr; ElimikaPDF</strong> on any PDF in WhatsApp, Gmail, or Files opens it directly in ElimikaPDF Reader). For custom Android Studio / Bubblewrap builds, adding the <code>&lt;intent-filter&gt;</code> above to <code>AndroidManifest.xml</code> also registers ElimikaPDF in Android&apos;s system <strong>&ldquo;Open with...&rdquo;</strong> chooser.
+          </p>
         </div>
       </div>
 

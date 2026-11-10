@@ -25,7 +25,15 @@ import {
   SettingsView,
   HelpAndSupportView,
 } from './components/SettingsAndHelpView';
-import { AlertTriangle, X } from 'lucide-react';
+import {
+  AlertTriangle,
+  X,
+  Eye,
+  FileEdit,
+  FileOutput,
+  ScanText,
+  Scissors,
+} from 'lucide-react';
 
 export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>('dashboard');
@@ -48,6 +56,10 @@ export default function App() {
 
   // Delete confirmation modal state
   const [docPendingDelete, setDocPendingDelete] =
+    useState<StoredDocument | null>(null);
+
+  // "Open PDF With ElimikaPDF..." chooser modal state
+  const [openWithPromptDoc, setOpenWithPromptDoc] =
     useState<StoredDocument | null>(null);
 
   // Global toast / error notification
@@ -133,8 +145,13 @@ export default function App() {
     if (action === 'scan') {
       initialView = 'scanner';
       setActiveView('scanner');
+    } else if (action === 'pdf-reader') {
+      initialView = 'editor';
+      setEditorReaderMode(true);
+      setActiveView('editor');
     } else if (action === 'pdf-editor') {
       initialView = 'editor';
+      setEditorReaderMode(false);
       setActiveView('editor');
     } else if (action === 'pdf-tools') {
       initialView = 'tools';
@@ -163,7 +180,8 @@ export default function App() {
 
   const handleUploadPdfFiles = async (
     files: FileList | File[],
-    openInEditorAfter = true
+    openInEditorAfter = true,
+    openInReaderMode?: boolean
   ) => {
     const fileArray = Array.from(files);
     let lastAdded: StoredDocument | null = null;
@@ -218,13 +236,20 @@ export default function App() {
     if (lastAdded) {
       await refreshVault();
       setActiveDocument(lastAdded);
-      if (openInEditorAfter) {
-        setEditorReaderMode(false);
+      if (openInReaderMode === true) {
+        setEditorReaderMode(true);
         navigateToView('editor');
+        showToast(
+          `Opened "${lastAdded.name}" in ElimikaPDF Reader (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+        );
+      } else if (openInEditorAfter) {
+        // Show the "Open PDF With ElimikaPDF..." chooser modal so the user sees PDF Reader, Edit PDF, PDF to Word, OCR, etc.
+        setOpenWithPromptDoc(lastAdded);
+      } else {
+        showToast(
+          `Added "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+        );
       }
-      showToast(
-        `Opened "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
-      );
     }
   };
 
@@ -296,6 +321,9 @@ export default function App() {
   const handleOpenTool = (toolId: ToolId) => {
     if (toolId === 'scan-to-pdf') {
       navigateToView('scanner');
+    } else if (toolId === 'read-pdf') {
+      setEditorReaderMode(true);
+      navigateToView('editor');
     } else if (toolId === 'edit-pdf') {
       setEditorReaderMode(false);
       navigateToView('editor');
@@ -473,6 +501,142 @@ export default function App() {
               >
                 Delete Permanently
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* "Open File With ElimikaPDF..." Options Chooser Modal */}
+      {openWithPromptDoc && (
+        <div
+          onClick={() => setOpenWithPromptDoc(null)}
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-4"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl"
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-3 min-w-0">
+                <img
+                  src="/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg"
+                  alt="ElimikaPDF Icon"
+                  className="w-11 h-11 rounded-xl object-cover shadow-xs shrink-0"
+                />
+                <div className="min-w-0">
+                  <h3 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                    Open with ElimikaPDF
+                  </h3>
+                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
+                    {openWithPromptDoc.name} &bull; {openWithPromptDoc.pageCount}{' '}
+                    {openWithPromptDoc.pageCount === 1 ? 'page' : 'pages'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setOpenWithPromptDoc(null)}
+                className="p-1.5 rounded-lg text-[#6E667D] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2 pt-1">
+              <button
+                onClick={() => {
+                  const doc = openWithPromptDoc;
+                  setOpenWithPromptDoc(null);
+                  handleOpenDocumentInEditor(doc, true);
+                }}
+                className="w-full p-3.5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white text-left flex items-center gap-3.5 transition-colors cursor-pointer shadow-xs"
+              >
+                <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+                  <Eye className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm font-bold">ElimikaPDF Reader</span>
+                    <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold">
+                      RECOMMENDED
+                    </span>
+                  </div>
+                  <p className="text-xs opacity-90 mt-0.5">
+                    Read in full-screen Reader Mode with continuous scroll, zoom & print
+                  </p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  const doc = openWithPromptDoc;
+                  setOpenWithPromptDoc(null);
+                  handleOpenDocumentInEditor(doc, false);
+                }}
+                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+              >
+                <div className="w-10 h-10 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center justify-center shrink-0">
+                  <FileEdit className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Edit & Annotate PDF
+                  </span>
+                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                    Edit text, add signatures, highlight, whiteout & remove watermarks
+                  </p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  const doc = openWithPromptDoc;
+                  setOpenWithPromptDoc(null);
+                  handleOpenToolForDocument(doc, 'pdf-to-word');
+                }}
+                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+              >
+                <div className="w-10 h-10 rounded-lg bg-[#2563EB]/10 text-[#2563EB] flex items-center justify-center shrink-0">
+                  <FileOutput className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Convert PDF to Word (.DOCX)
+                  </span>
+                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                    Turn this PDF into an editable Microsoft Word document
+                  </p>
+                </div>
+              </button>
+
+              <div className="grid grid-cols-2 gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    const doc = openWithPromptDoc;
+                    setOpenWithPromptDoc(null);
+                    handleOpenToolForDocument(doc, 'ocr-pdf');
+                  }}
+                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2.5 transition-colors cursor-pointer"
+                >
+                  <ScanText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    OCR Text
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    const doc = openWithPromptDoc;
+                    setOpenWithPromptDoc(null);
+                    handleOpenToolForDocument(doc, 'split-pdf');
+                  }}
+                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2.5 transition-colors cursor-pointer"
+                >
+                  <Scissors className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Split / Extract
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

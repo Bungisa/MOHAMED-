@@ -83,6 +83,13 @@ export default defineConfig(() => {
           ],
           shortcuts: [
             {
+              name: 'PDF Reader',
+              short_name: 'Read PDF',
+              description: 'Open and read PDF documents in full-screen Reader Mode',
+              url: '/?action=pdf-reader',
+              icons: [{src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png'}],
+            },
+            {
               name: 'Scan Document',
               short_name: 'Scan',
               description: 'Capture and auto-crop a new document or receipt',
@@ -113,9 +120,12 @@ export default defineConfig(() => {
           },
           file_handlers: [
             {
-              action: '/?action=pdf-editor',
+              action: '/?action=pdf-reader',
               accept: {
-                'application/pdf': ['.pdf'],
+                'application/pdf': ['.pdf', '.PDF'],
+                'application/x-pdf': ['.pdf'],
+                'application/acrobat': ['.pdf'],
+                'applications/vnd.pdf': ['.pdf'],
               },
             },
             {

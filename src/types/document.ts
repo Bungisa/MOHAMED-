@@ -8,6 +8,7 @@ export type ActiveView =
   | 'help';
 
 export type ToolId =
+  | 'read-pdf'
   | 'scan-to-pdf'
   | 'edit-pdf'
   | 'merge-pdf'

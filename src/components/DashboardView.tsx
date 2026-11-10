@@ -39,7 +39,11 @@ interface DashboardViewProps {
   onOpenTool: (tool: ToolId) => void;
   onOpenToolForDocument?: (doc: StoredDocument, tool: ToolId) => void;
   onOpenDocumentInEditor: (doc: StoredDocument, readerMode?: boolean) => void;
-  onUploadPdfFiles: (files: FileList | File[]) => Promise<void>;
+  onUploadPdfFiles: (
+    files: FileList | File[],
+    openInEditorAfter?: boolean,
+    openInReaderMode?: boolean
+  ) => Promise<void>;
   onImportImagesToScanner: (files: FileList | File[]) => void;
   onToggleStar: (doc: StoredDocument) => Promise<void>;
   onDownloadDocument: (doc: StoredDocument) => void;
@@ -57,9 +61,15 @@ const TOOL_GROUPS: {
   }[];
 }[] = [
   {
-    groupTitle: '01. Capture & Full-Screen Editing',
-    groupSubtitle: 'Scan physical pages or edit, annotate, and remove watermarks',
+    groupTitle: '01. PDF Reader, Capture & Full-Screen Editing',
+    groupSubtitle: 'Read PDFs distraction-free, scan physical pages, or edit & remove watermarks',
     tools: [
+      {
+        id: 'read-pdf',
+        title: 'PDF Reader (Read Mode)',
+        description: 'Full-screen PDF reader, continuous scroll & zoom',
+        icon: Eye,
+      },
       {
         id: 'scan-to-pdf',
         title: 'Scan to PDF',
@@ -159,6 +169,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [isUploading, setIsUploading] = useState(false);
 
   const pdfInputRef = useRef<HTMLInputElement>(null);
+  const pdfReaderInputRef = useRef<HTMLInputElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
 
   const handlePdfUploadChange = async (
@@ -169,7 +180,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       e.target.value = '';
       setIsUploading(true);
       try {
-        await onUploadPdfFiles(selectedFiles);
+        await onUploadPdfFiles(selectedFiles, true, false);
+      } finally {
+        setIsUploading(false);
+      }
+    }
+  };
+
+  const handlePdfReaderUploadChange = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const selectedFiles = Array.from(e.target.files);
+      e.target.value = '';
+      setIsUploading(true);
+      try {
+        await onUploadPdfFiles(selectedFiles, true, true);
       } finally {
         setIsUploading(false);
       }
@@ -201,10 +227,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <input
         ref={pdfInputRef}
         type="file"
-        accept="application/pdf"
+        accept="application/pdf,.pdf"
         multiple
         className="hidden"
         onChange={handlePdfUploadChange}
+      />
+      <input
+        ref={pdfReaderInputRef}
+        type="file"
+        accept="application/pdf,.pdf"
+        multiple
+        className="hidden"
+        onChange={handlePdfReaderUploadChange}
       />
       <input
         ref={imgInputRef}
@@ -220,7 +254,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
           <div className="space-y-1.5 max-w-2xl">
             <p className="text-xs font-medium text-[#6E667D] dark:text-[#A39BB5]">
-              On-Device Document Scanner & PDF Studio
+              On-Device PDF Reader, Document Scanner & PDF Studio
             </p>
             <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] text-balance">
               What would you like to do with your document today?
@@ -249,8 +283,26 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
-        {/* 3 Clear Primary Entry Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+        {/* 4 Clear Primary Entry Cards (including PDF Reader) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+          <button
+            onClick={() => pdfReaderInputRef.current?.click()}
+            disabled={isUploading}
+            className="text-left p-4 sm:p-5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white transition-colors cursor-pointer flex items-start gap-3.5 shadow-xs"
+          >
+            <div className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center shrink-0">
+              <Eye className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold whitespace-nowrap">
+                PDF Reader (Read PDF)
+              </p>
+              <p className="text-xs opacity-90 mt-0.5 leading-snug">
+                Open & read any PDF file in full-screen Reader Mode
+              </p>
+            </div>
+          </button>
+
           <button
             onClick={() => onNavigate('scanner')}
             className="text-left p-4 sm:p-5 rounded-xl bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] transition-colors cursor-pointer flex items-start gap-3.5 shadow-xs"
@@ -278,10 +330,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
             <div className="min-w-0">
               <p className="text-sm font-bold whitespace-nowrap">
-                {isUploading ? 'Opening PDF...' : 'Open & Edit PDF'}
+                {isUploading ? 'Opening PDF...' : 'Open & Choose Action'}
               </p>
               <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5 leading-snug">
-                Upload a PDF to edit text, remove watermarks & compress
+                Pick a PDF to Read, Edit, Convert to Word, or OCR
               </p>
             </div>
           </button>
@@ -394,6 +446,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
                   {/* Direct Contextual Action Strip */}
                   <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
+                    <button
+                      onClick={() => onOpenDocumentInEditor(doc, true)}
+                      title="Open in ElimikaPDF Reader (distraction-free reading)"
+                      className="px-3 py-1.5 rounded-lg bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <Eye className="w-3.5 h-3.5" />
+                      <span>Read</span>
+                    </button>
+
                     <button
                       onClick={() => onOpenDocumentInEditor(doc, false)}
                       className="px-3 py-1.5 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#4A1D5E] hover:text-white dark:hover:bg-[#9D5CE5] dark:hover:text-[#0D0A12] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap"

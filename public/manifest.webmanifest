@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "ElimikaPDF — Document Scanner & PDF Editor",
+  "name": "ElimikaPDF — PDF Reader, Scanner & PDF Editor",
   "short_name": "ElimikaPDF",
-  "description": "Enterprise-grade document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
+  "description": "Fast PDF Reader, document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
   "theme_color": "#003FE8",
   "background_color": "#FAF9FB",
   "display": "standalone",
@@ -26,17 +26,22 @@
   },
   "file_handlers": [
     {
-      "action": "/?action=pdf-editor",
+      "action": "/?action=pdf-reader",
       "accept": {
-        "application/pdf": [".pdf"]
-      }
+        "application/pdf": [".pdf", ".PDF"],
+        "application/x-pdf": [".pdf"],
+        "application/acrobat": [".pdf"],
+        "applications/vnd.pdf": [".pdf"]
+      },
+      "launch_type": "single-client"
     },
     {
       "action": "/?action=pdf-tools",
       "accept": {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
         "application/msword": [".doc"]
-      }
+      },
+      "launch_type": "single-client"
     },
     {
       "action": "/?action=scan",
@@ -44,7 +49,8 @@
         "image/png": [".png"],
         "image/jpeg": [".jpg", ".jpeg"],
         "image/webp": [".webp"]
-      }
+      },
+      "launch_type": "single-client"
     }
   ],
   "share_target": {
@@ -60,7 +66,9 @@
           "name": "SharedFiles",
           "accept": [
             "application/pdf",
+            "application/x-pdf",
             ".pdf",
+            ".PDF",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             ".docx",
             "image/png",
@@ -120,6 +128,13 @@
     }
   ],
   "shortcuts": [
+    {
+      "name": "PDF Reader",
+      "short_name": "Read PDF",
+      "description": "Open and read PDF documents in full-screen Reader Mode",
+      "url": "/?action=pdf-reader",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
     {
       "name": "Scan Document",
       "short_name": "Scan",

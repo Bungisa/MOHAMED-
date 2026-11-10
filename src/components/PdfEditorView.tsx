@@ -5025,13 +5025,33 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
             <div className="flex items-center gap-1.5">
               <span className="text-sm sm:text-base font-medium text-[#14101B] dark:text-[#F4F1F8] tracking-tight whitespace-nowrap">
-                Document Editor
+                {isReaderMode ? 'ElimikaPDF Reader' : 'Document Editor'}
               </span>
               {pages.length > 1 && (
                 <span className="text-[11px] font-mono font-semibold text-[#6E667D] dark:text-[#A39BB5] hidden xs:inline">
                   ({currentPage}/{pages.length})
                 </span>
               )}
+              <button
+                type="button"
+                onClick={() =>
+                  setWorkspaceMode((m) =>
+                    m === 'reader' ? 'content-edit' : 'reader'
+                  )
+                }
+                title={
+                  isReaderMode
+                    ? 'Switch to Document Editor mode'
+                    : 'Switch to distraction-free PDF Reader mode'
+                }
+                className={`px-2 py-0.5 rounded-full text-[10px] font-bold cursor-pointer transition-colors ${
+                  isReaderMode
+                    ? 'bg-[#003FE8] text-white'
+                    : 'bg-[#F2EFF6] dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF]'
+                }`}
+              >
+                {isReaderMode ? 'Switch to Edit' : 'Reader Mode'}
+              </button>
               <button
                 type="button"
                 onClick={() => setShowHelpGuide((v) => !v)}
