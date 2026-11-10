@@ -64,13 +64,19 @@ async function startServer() {
 
         const filename = sanitizeFilename(
           rawFilename,
-          mimeType.includes('jpeg') || mimeType.includes('jpg')
-            ? 'jpg'
-            : mimeType.includes('png')
-              ? 'png'
-              : mimeType.includes('text')
-                ? 'txt'
-                : 'pdf'
+          mimeType.includes('wordprocessingml') ||
+            rawFilename.toLowerCase().endsWith('.docx')
+            ? 'docx'
+            : mimeType.includes('msword') ||
+                rawFilename.toLowerCase().endsWith('.doc')
+              ? 'doc'
+              : mimeType.includes('jpeg') || mimeType.includes('jpg')
+                ? 'jpg'
+                : mimeType.includes('png')
+                  ? 'png'
+                  : mimeType.includes('text')
+                    ? 'txt'
+                    : 'pdf'
         );
 
         const bodyBuffer = Buffer.isBuffer(req.body)

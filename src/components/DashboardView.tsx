@@ -22,6 +22,8 @@ import {
   ShieldCheck,
   ArrowUpRight,
   Share2,
+  FileText,
+  FileOutput,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -109,9 +111,22 @@ const TOOL_GROUPS: {
     ],
   },
   {
-    groupTitle: '03. Convert & Text Recognition (OCR)',
-    groupSubtitle: 'Export pages as pictures or extract English & Swahili text',
+    groupTitle: '03. Word, Convert & Text Recognition (OCR)',
+    groupSubtitle:
+      'Convert between Word (.DOCX) and PDF, export pictures, or extract English & Swahili text',
     tools: [
+      {
+        id: 'pdf-to-word',
+        title: 'PDF to Word (.DOCX)',
+        description: 'Convert PDF pages into editable Word file',
+        icon: FileOutput,
+      },
+      {
+        id: 'word-to-pdf',
+        title: 'Word to PDF',
+        description: 'Convert .DOCX / .DOC / .TXT into A4 PDF',
+        icon: FileText,
+      },
       {
         id: 'pdf-to-img',
         title: 'PDF to Pictures',
@@ -123,12 +138,6 @@ const TOOL_GROUPS: {
         title: 'OCR – Extract Text',
         description: 'Recognize English & Swahili text',
         icon: ScanText,
-      },
-      {
-        id: 'rotate-pdf',
-        title: 'Rotate Pages',
-        description: 'Fix upside-down or sideways pages',
-        icon: RotateCw,
       },
     ],
   },
@@ -404,6 +413,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     >
                       <Scissors className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5]" />
                       <span>Split</span>
+                    </button>
+
+                    <button
+                      onClick={() =>
+                        onOpenToolForDocument
+                          ? onOpenToolForDocument(doc, 'pdf-to-word')
+                          : onOpenTool('pdf-to-word')
+                      }
+                      title="Convert this PDF to an editable Microsoft Word (.DOCX) file"
+                      className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-medium text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap"
+                    >
+                      <FileOutput className="w-3.5 h-3.5 text-[#2563EB]" />
+                      <span>To Word</span>
                     </button>
 
                     <button

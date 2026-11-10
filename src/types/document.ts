@@ -15,6 +15,8 @@ export type ToolId =
   | 'compress-pdf'
   | 'img-to-pdf'
   | 'pdf-to-img'
+  | 'word-to-pdf'
+  | 'pdf-to-word'
   | 'rotate-pdf'
   | 'organize-pdf'
   | 'ocr-pdf'

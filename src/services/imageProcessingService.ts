@@ -12,16 +12,17 @@ export function loadImageElement(src: string): Promise<HTMLImageElement> {
 
 /**
  * Automatically detects the precise 4 outer corners [TL, TR, BR, BL] of an uploaded or captured
- * document image using a 4-stage computer-vision pipeline:
- * 1. Aspect-preserving separable border-safe morphological closing (9x9 window) on RGB & luminance
- *    to erase internal text strokes and printed table borders while preserving narrow outer background strips.
- * 2. Illumination-invariant chromaticity + vignetting-tolerant luminance classification so shadowed
- *    paper corners under uneven indoor lighting remain part of the paper surface while wooden/colored
- *    desks and UI toolbars are cleanly rejected.
- * 3. Center-seeded Flood-Fill Connected Component extraction (without internal gradient barriers that
- *    could snag on printed tables) to isolate the continuous document sheet.
- * 4. 4-Side Outer Boundary Profile extraction + Robust RANSAC Line Fitting & Line-Line Intersection
- *    so all 4 corners snap accurately to the true physical outer corners of the document.
+ * document image using a 5-stage Outside-In computer-vision pipeline:
+ * 1. Wide border-safe morphological closing (15x15 window, R=7) on RGB & luminance to completely
+ *    bridge internal printed table borders (such as exam question columns) and handwriting while
+ *    preserving narrow outer background/desk strips at the frame perimeter.
+ * 2. Wood/Desk Chromaticity & Saturation Rejection: distinguishes neutral paper (even in shadow)
+ *    from warm wooden desks, colored surfaces, and dark backgrounds.
+ * 3. Outside-In Sustained Boundary Ray Casting: scans inward from all 4 outer edges (Left->Right,
+ *    Right->Left, Top->Bottom, Bottom->Top) to lock onto the FIRST true outer edge of the paper sheet,
+ *    ensuring internal table lines never trap or clip outer document margins.
+ * 4. Gradient-Weighted RANSAC Straight Line Fitting with Perspective Tilt Consistency: prevents
+ *    isolated bright spots on a desk corner from skewing a single corner handle.
  */
 export async function detectDocumentCorners(
   imageDataUrl: string
@@ -69,11 +70,11 @@ export async function detectDocumentCorners(
       lum[i] = 0.299 * r + 0.587 * g + 0.114 * b;
     }
 
-    // Separable border-safe morphological closing (radius R = 4 -> 9x9 window).
-    // Erases internal printed table lines and handwriting strokes inside the page while
-    // anchoring out-of-bounds erosion samples to raw border pixels so even a 2-4px strip
-    // of wooden desk or background at the frame edge is preserved.
-    const R = 4;
+    // Separable border-safe morphological closing (radius R = 7 -> 15x15 window).
+    // Completely bridges thick vertical/horizontal table borders and multi-line text inside exam papers
+    // while anchoring out-of-bounds erosion samples to raw border pixels so even a 2px strip of desk
+    // at the image edge is preserved.
+    const R = 7;
     const morphCloseBorderSafe = (src: Float32Array): Float32Array => {
       const tmp = new Float32Array(W * H);
       const dil = new Float32Array(W * H);
@@ -147,11 +148,13 @@ export async function detectDocumentCorners(
     const cG = morphCloseBorderSafe(gCh);
     const cB = morphCloseBorderSafe(bCh);
 
-    // 2. Model the paper surface from the central 50% region
+    // 2. Model the paper surface from the central 50% region (using 70th percentile to ignore any dark stamps)
     const sL: number[] = [];
     const sR: number[] = [];
     const sG: number[] = [];
     const sB: number[] = [];
+    const sWarm: number[] = [];
+    const sSat: number[] = [];
 
     const cx0 = Math.floor(W * 0.25);
     const cx1 = Math.ceil(W * 0.75);
@@ -161,60 +164,113 @@ export async function detectDocumentCorners(
     for (let y = cy0; y <= cy1; y += 2) {
       for (let x = cx0; x <= cx1; x += 2) {
         const i = y * W + x;
+        const r = cR[i];
+        const g = cG[i];
+        const b = cB[i];
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
         sL.push(cLum[i]);
-        sR.push(cR[i]);
-        sG.push(cG[i]);
-        sB.push(cB[i]);
+        sR.push(r);
+        sG.push(g);
+        sB.push(b);
+        sWarm.push(r - b);
+        sSat.push(maxC > 10 ? (maxC - minC) / maxC : 0);
       }
     }
     sL.sort((a, b) => a - b);
     sR.sort((a, b) => a - b);
     sG.sort((a, b) => a - b);
     sB.sort((a, b) => a - b);
+    sWarm.sort((a, b) => a - b);
+    sSat.sort((a, b) => a - b);
 
-    const idx60 = Math.floor(sL.length * 0.6);
-    const pLum = sL[idx60] || 200;
-    const pR = sR[idx60] || 200;
-    const pG = sG[idx60] || 200;
-    const pB = sB[idx60] || 200;
+    const idx70 = Math.floor(sL.length * 0.7);
+    const idx50 = Math.floor(sL.length * 0.5);
+    const pLum = sL[idx70] || 200;
+    const pR = sR[idx70] || 200;
+    const pG = sG[idx70] || 200;
+    const pB = sB[idx70] || 200;
+    const pWarm = sWarm[idx50] || 0;
+    const pSat = sSat[idx50] || 0.04;
 
-    // Illumination-invariant normalized chromaticity (R/sum, G/sum, B/sum)
     const pSum = Math.max(1, pR + pG + pB);
     const pNR = pR / pSum;
     const pNG = pG / pSum;
     const pNB = pB / pSum;
-    const pWarm = pR - pB;
 
-    // Classify pixels into paper vs. background:
-    // - For pure digital white screenshots (pLum > 242), use a tight luminance threshold (pLum - 12)
-    //   so light-grey mobile app toolbars (lum ~228-238) are cleanly separated from the white page.
-    // - For camera photos of physical paper (pLum <= 242), allow natural camera vignetting and corner
-    //   shadow falloff down to min(pLum * 0.56, 130) as long as the normalized chromaticity matches the paper!
+    // Classify pixels into paper vs. wooden desk / background:
+    // - Rejects warm wood grain (where r - b exceeds paper warmth by > 16 or saturation exceeds pSat + 0.11)
+    // - Allows shadowed paper margins (down to 0.52 * pLum) as long as their color remains neutral like paper
     const isPaper = new Uint8Array(W * H);
     const minPaperLum =
       pLum > 242
         ? pLum - 12
         : pLum >= 135
-          ? Math.min(pLum * 0.56, 130)
-          : pLum * 0.65;
+          ? Math.min(pLum * 0.52, 118)
+          : pLum * 0.62;
 
     for (let i = 0; i < W * H; i++) {
       const L = cLum[i];
       const r = cR[i];
       const g = cG[i];
       const b = cB[i];
+      const maxC = Math.max(r, g, b);
+      const minC = Math.min(r, g, b);
+      const sat = maxC > 10 ? (maxC - minC) / maxC : 0;
       const sum = Math.max(1, r + g + b);
       const chromaDist =
         Math.hypot(r / sum - pNR, g / sum - pNG, b / sum - pNB) * 255;
-      const warmDiff = Math.abs(r - b - pWarm);
+      const warmExcess = r - b - pWarm;
 
-      if (L >= minPaperLum && chromaDist < 21 && warmDiff < 25) {
+      // Wood grain on desks is warmer (r > g > b, warmExcess > 15) and more saturated than paper
+      const isWoodLike =
+        (warmExcess > 15 && r > g && g >= b - 4) ||
+        sat > pSat + 0.115 ||
+        Math.abs(warmExcess) > 20;
+
+      if (L >= minPaperLum && chromaDist < 17 && !isWoodLike) {
         isPaper[i] = 1;
       }
     }
 
-    // 3. Center-seeded Flood-Fill Connected Component on `isPaper` (without internal gradient barriers
-    //    so printed table borders inside the page never block the fill from reaching the outer margins)
+    // 3. Fill any remaining small internal holes inside the paper sheet (e.g. thick black header bars or stamps)
+    //    by running a horizontal + vertical span fill across rows/columns whose outer paper span is established,
+    //    then keep the main central connected component.
+    const rowSpanPaper = new Uint8Array(isPaper);
+    for (let y = Math.floor(H * 0.08); y <= Math.ceil(H * 0.92); y++) {
+      const rowOff = y * W;
+      let firstP = -1;
+      let lastP = -1;
+      // Find first sustained paper run from left (at least 5 of 7 pixels are paper)
+      for (let x = 0; x < Math.floor(W * 0.45); x++) {
+        let cnt = 0;
+        for (let k = 0; k < 7 && x + k < W; k++) {
+          cnt += isPaper[rowOff + x + k];
+        }
+        if (cnt >= 5) {
+          firstP = x;
+          break;
+        }
+      }
+      // Find first sustained paper run from right
+      for (let x = W - 1; x >= Math.ceil(W * 0.55); x--) {
+        let cnt = 0;
+        for (let k = 0; k < 7 && x - k >= 0; k++) {
+          cnt += isPaper[rowOff + x - k];
+        }
+        if (cnt >= 5) {
+          lastP = x;
+          break;
+        }
+      }
+      if (firstP !== -1 && lastP !== -1 && lastP - firstP > W * 0.35) {
+        for (let x = firstP; x <= lastP; x++) {
+          rowSpanPaper[rowOff + x] = 1;
+        }
+      }
+    }
+
+    // Keep only pixels connected to the center of the document
     const visited = new Uint8Array(W * H);
     const queue = new Int32Array(W * H);
     let qHead = 0;
@@ -228,7 +284,7 @@ export async function detectDocumentCorners(
     for (let y = sy0; y <= sy1; y++) {
       for (let x = sx0; x <= sx1; x++) {
         const idx = y * W + x;
-        if (isPaper[idx] === 1 && !visited[idx]) {
+        if (rowSpanPaper[idx] === 1 && !visited[idx]) {
           visited[idx] = 1;
           queue[qTail++] = idx;
         }
@@ -240,19 +296,19 @@ export async function detectDocumentCorners(
       const cx = curr % W;
       const cy = (curr - cx) / W;
 
-      if (cy > 0 && isPaper[curr - W] === 1 && !visited[curr - W]) {
+      if (cy > 0 && rowSpanPaper[curr - W] === 1 && !visited[curr - W]) {
         visited[curr - W] = 1;
         queue[qTail++] = curr - W;
       }
-      if (cy < H - 1 && isPaper[curr + W] === 1 && !visited[curr + W]) {
+      if (cy < H - 1 && rowSpanPaper[curr + W] === 1 && !visited[curr + W]) {
         visited[curr + W] = 1;
         queue[qTail++] = curr + W;
       }
-      if (cx > 0 && isPaper[curr - 1] === 1 && !visited[curr - 1]) {
+      if (cx > 0 && rowSpanPaper[curr - 1] === 1 && !visited[curr - 1]) {
         visited[curr - 1] = 1;
         queue[qTail++] = curr - 1;
       }
-      if (cx < W - 1 && isPaper[curr + 1] === 1 && !visited[curr + 1]) {
+      if (cx < W - 1 && rowSpanPaper[curr + 1] === 1 && !visited[curr + 1]) {
         visited[curr + 1] = 1;
         queue[qTail++] = curr + 1;
       }
@@ -262,36 +318,63 @@ export async function detectDocumentCorners(
       return fallback;
     }
 
-    // 4. Extract outer boundary profiles for the 4 sides (Top, Bottom, Left, Right)
+    // 4. Outside-In Sustained Boundary Ray Casting for all 4 sides (Top, Bottom, Left, Right)
+    //    Requires 5 out of 6 consecutive pixels along the inward ray to be visited paper, preventing
+    //    isolated bright specks on the wooden desk from triggering an early false boundary.
     const rawTopPts: { x: number; y: number }[] = [];
     const rawBottomPts: { x: number; y: number }[] = [];
     const rawLeftPts: { x: number; y: number }[] = [];
     const rawRightPts: { x: number; y: number }[] = [];
 
-    for (let x = Math.floor(W * 0.06); x <= Math.ceil(W * 0.94); x += 2) {
-      for (let y = 0; y < H; y++) {
-        if (visited[y * W + x]) {
+    for (let x = Math.floor(W * 0.08); x <= Math.ceil(W * 0.92); x += 2) {
+      for (let y = 0; y < H - 6; y++) {
+        if (
+          visited[y * W + x] &&
+          visited[(y + 1) * W + x] &&
+          visited[(y + 2) * W + x] &&
+          visited[(y + 3) * W + x] &&
+          visited[(y + 4) * W + x]
+        ) {
           rawTopPts.push({ x, y: Math.max(1, y) });
           break;
         }
       }
-      for (let y = H - 1; y >= 0; y--) {
-        if (visited[y * W + x]) {
+      for (let y = H - 1; y >= 6; y--) {
+        if (
+          visited[y * W + x] &&
+          visited[(y - 1) * W + x] &&
+          visited[(y - 2) * W + x] &&
+          visited[(y - 3) * W + x] &&
+          visited[(y - 4) * W + x]
+        ) {
           rawBottomPts.push({ x, y: Math.min(H - 2, y) });
           break;
         }
       }
     }
 
-    for (let y = Math.floor(H * 0.06); y <= Math.ceil(H * 0.94); y += 2) {
-      for (let x = 0; x < W; x++) {
-        if (visited[y * W + x]) {
+    for (let y = Math.floor(H * 0.08); y <= Math.ceil(H * 0.92); y += 2) {
+      const rowOff = y * W;
+      for (let x = 0; x < W - 6; x++) {
+        if (
+          visited[rowOff + x] &&
+          visited[rowOff + x + 1] &&
+          visited[rowOff + x + 2] &&
+          visited[rowOff + x + 3] &&
+          visited[rowOff + x + 4]
+        ) {
           rawLeftPts.push({ x: Math.max(1, x), y });
           break;
         }
       }
-      for (let x = W - 1; x >= 0; x--) {
-        if (visited[y * W + x]) {
+      for (let x = W - 1; x >= 6; x--) {
+        if (
+          visited[rowOff + x] &&
+          visited[rowOff + x - 1] &&
+          visited[rowOff + x - 2] &&
+          visited[rowOff + x - 3] &&
+          visited[rowOff + x - 4]
+        ) {
           rawRightPts.push({ x: Math.min(W - 2, x), y });
           break;
         }
@@ -307,41 +390,83 @@ export async function detectDocumentCorners(
       return fallback;
     }
 
-    // Trim extreme 8% ends of each side profile so adjacent side transitions don't skew the line fit
+    // Trim extreme 10% ends of each side profile so rounded/torn corners don't skew the straight line fit
     const trimProfile = (pts: { x: number; y: number }[]) => {
       if (pts.length <= 10) return pts;
-      const cut = Math.floor(pts.length * 0.08);
+      const cut = Math.floor(pts.length * 0.1);
       return pts.slice(cut, pts.length - cut);
     };
 
-    const topLine = fitRobustEdgeLine(trimProfile(rawTopPts));
-    const rightLine = fitRobustEdgeLine(trimProfile(rawRightPts));
-    const bottomLine = fitRobustEdgeLine(trimProfile(rawBottomPts));
-    const leftLine = fitRobustEdgeLine(trimProfile(rawLeftPts));
+    const topLine = fitRobustEdgeLine(trimProfile(rawTopPts), 'horizontal');
+    const bottomLine = fitRobustEdgeLine(
+      trimProfile(rawBottomPts),
+      'horizontal'
+    );
+    const leftLine = fitRobustEdgeLine(trimProfile(rawLeftPts), 'vertical');
+    const rightLine = fitRobustEdgeLine(trimProfile(rawRightPts), 'vertical');
 
-    const tl = intersectEdgeLines(topLine, leftLine, { x: W * 0.02, y: H * 0.02 });
-    const tr = intersectEdgeLines(topLine, rightLine, { x: W * 0.98, y: H * 0.02 });
-    const br = intersectEdgeLines(bottomLine, rightLine, { x: W * 0.98, y: H * 0.98 });
-    const bl = intersectEdgeLines(bottomLine, leftLine, { x: W * 0.02, y: H * 0.98 });
+    const tl = intersectEdgeLines(topLine, leftLine, {
+      x: W * 0.02,
+      y: H * 0.02,
+    });
+    const tr = intersectEdgeLines(topLine, rightLine, {
+      x: W * 0.98,
+      y: H * 0.02,
+    });
+    const br = intersectEdgeLines(bottomLine, rightLine, {
+      x: W * 0.98,
+      y: H * 0.98,
+    });
+    const bl = intersectEdgeLines(bottomLine, leftLine, {
+      x: W * 0.02,
+      y: H * 0.98,
+    });
 
-    return [
+    const corners: [Point2D, Point2D, Point2D, Point2D] = [
       {
-        x: clamp(tl.x / W, 0.006, 0.994),
-        y: clamp(tl.y / H, 0.006, 0.994),
+        x: clamp(tl.x / W, 0.008, 0.992),
+        y: clamp(tl.y / H, 0.008, 0.992),
       },
       {
-        x: clamp(tr.x / W, 0.006, 0.994),
-        y: clamp(tr.y / H, 0.006, 0.994),
+        x: clamp(tr.x / W, 0.008, 0.992),
+        y: clamp(tr.y / H, 0.008, 0.992),
       },
       {
-        x: clamp(br.x / W, 0.006, 0.994),
-        y: clamp(br.y / H, 0.006, 0.994),
+        x: clamp(br.x / W, 0.008, 0.992),
+        y: clamp(br.y / H, 0.008, 0.992),
       },
       {
-        x: clamp(bl.x / W, 0.006, 0.994),
-        y: clamp(bl.y / H, 0.006, 0.994),
+        x: clamp(bl.x / W, 0.008, 0.992),
+        y: clamp(bl.y / H, 0.008, 0.992),
       },
     ];
+
+    // 5. Perspective Consistency Sanity Check:
+    //    If bottom edge is nearly level (|br.y - bl.y| < 0.045) but top edge has an extreme one-sided
+    //    spike (> 0.065 difference because of bright lighting on one corner of the desk), level the outlier
+    //    corner to match the opposite side's perspective slope.
+    const bottomDy = corners[2].y - corners[3].y;
+    const topDy = corners[1].y - corners[0].y;
+    if (Math.abs(bottomDy) < 0.045 && Math.abs(topDy - bottomDy) > 0.055) {
+      // Keep the safer (further-inward) top corner and align the outlier corner to match bottom slope
+      if (corners[1].y < corners[0].y) {
+        corners[1].y = clamp(corners[0].y + bottomDy, 0.01, 0.45);
+      } else {
+        corners[0].y = clamp(corners[1].y - bottomDy, 0.01, 0.45);
+      }
+    }
+
+    const rightDx = corners[2].x - corners[1].x;
+    const leftDx = corners[3].x - corners[0].x;
+    if (Math.abs(rightDx) < 0.045 && Math.abs(leftDx - rightDx) > 0.055) {
+      if (corners[0].x > corners[3].x) {
+        corners[0].x = clamp(corners[3].x - rightDx, 0.01, 0.45);
+      } else {
+        corners[3].x = clamp(corners[0].x + rightDx, 0.01, 0.45);
+      }
+    }
+
+    return corners;
   } catch {
     return fallback;
   }
@@ -349,14 +474,17 @@ export async function detectDocumentCorners(
 
 /**
  * Fits a straight line (a*x + b*y + c = 0) to a side boundary point set using
- * RANSAC / M-estimator consensus so local corner tears, fingers, or shadow notches
+ * orientation-regularized RANSAC consensus so local corner tears, fingers, or desk glare
  * are ignored and the true straight paper edge is recovered.
  */
 function fitRobustEdgeLine(
-  pts: { x: number; y: number }[]
+  pts: { x: number; y: number }[],
+  orientation: 'horizontal' | 'vertical'
 ): { a: number; b: number; c: number } {
   if (pts.length < 2) {
-    return { a: 0, b: 1, c: 0 };
+    return orientation === 'horizontal'
+      ? { a: 0, b: 1, c: 0 }
+      : { a: 1, b: 0, c: 0 };
   }
 
   let bestScore = -1;
@@ -364,8 +492,8 @@ function fitRobustEdgeLine(
   let bestB = 1;
   let bestC = 0;
 
-  const minSpanIdx = Math.max(2, Math.floor(pts.length * 0.22));
-  const stepJ = Math.max(1, Math.floor(pts.length / 25));
+  const minSpanIdx = Math.max(2, Math.floor(pts.length * 0.25));
+  const stepJ = Math.max(1, Math.floor(pts.length / 28));
 
   for (let i = 0; i < pts.length; i++) {
     for (let j = i + minSpanIdx; j < pts.length; j += stepJ) {
@@ -376,6 +504,20 @@ function fitRobustEdgeLine(
       const len = Math.hypot(dx, dy);
       if (len < 10) continue;
 
+      // Reject candidate lines tilted more than ~24 degrees from their expected axis
+      if (
+        orientation === 'horizontal' &&
+        Math.abs(dy) > Math.abs(dx) * 0.45
+      ) {
+        continue;
+      }
+      if (
+        orientation === 'vertical' &&
+        Math.abs(dx) > Math.abs(dy) * 0.45
+      ) {
+        continue;
+      }
+
       const a = -dy / len;
       const b = dx / len;
       const c = -(a * p1.x + b * p1.y);
@@ -383,13 +525,20 @@ function fitRobustEdgeLine(
       let score = 0;
       for (let k = 0; k < pts.length; k++) {
         const d = Math.abs(a * pts[k].x + b * pts[k].y + c);
-        if (d < 3.0) {
-          score += 3.0 - d;
+        if (d < 2.4) {
+          score += 2.4 - d;
         }
       }
 
-      if (score > bestScore) {
-        bestScore = score;
+      // Slight preference for calmer angles when inlier scores are nearly tied
+      const anglePenalty =
+        orientation === 'horizontal'
+          ? Math.abs(dy / Math.max(1, Math.abs(dx))) * 1.5
+          : Math.abs(dx / Math.max(1, Math.abs(dy))) * 1.5;
+      const finalScore = score - anglePenalty;
+
+      if (finalScore > bestScore) {
+        bestScore = finalScore;
         bestA = a;
         bestB = b;
         bestC = c;
@@ -398,15 +547,16 @@ function fitRobustEdgeLine(
   }
 
   if (bestScore < 0) {
-    const p1 = pts[0];
-    const p2 = pts[pts.length - 1];
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = Math.max(1e-6, Math.hypot(dx, dy));
-    const a = -dy / len;
-    const b = dx / len;
-    const c = -(a * p1.x + b * p1.y);
-    return { a, b, c };
+    // Fallback to median coordinate along axis
+    if (orientation === 'horizontal') {
+      const sortedY = pts.map((p) => p.y).sort((x, y) => x - y);
+      const medY = sortedY[Math.floor(sortedY.length / 2)];
+      return { a: 0, b: 1, c: -medY };
+    } else {
+      const sortedX = pts.map((p) => p.x).sort((x, y) => x - y);
+      const medX = sortedX[Math.floor(sortedX.length / 2)];
+      return { a: 1, b: 0, c: -medX };
+    }
   }
 
   return { a: bestA, b: bestB, c: bestC };

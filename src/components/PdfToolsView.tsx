@@ -26,6 +26,9 @@ import {
   Italic,
   Move,
   Share2,
+  FileText,
+  FileOutput,
+  Sparkles,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -46,6 +49,17 @@ import {
   PictureTextBoxOverlay,
   compositeTextBoxesOntoImageDataUrl,
 } from '../services/pdfService';
+import {
+  parseUploadedWordFile,
+  plainTextToWordBlocks,
+  generatePdfFromWordBlocks,
+  extractPdfPagesForWord,
+  buildDocxFromPdfPages,
+  DOCX_MIME_TYPE,
+  WordContentBlock,
+  PdfPageWordContent,
+  PdfToWordMode,
+} from '../services/wordConversionService';
 import { formatBytes } from '../services/storageService';
 
 interface PdfToolsViewProps {
@@ -81,6 +95,8 @@ const TOOL_CATEGORIES: {
     category: 'Size & Format',
     items: [
       { id: 'compress-pdf', label: 'Compress PDF', icon: Minimize2 },
+      { id: 'pdf-to-word', label: 'PDF to Word', icon: FileOutput },
+      { id: 'word-to-pdf', label: 'Word to PDF', icon: FileText },
       { id: 'pdf-to-img', label: 'PDF to Pictures', icon: Images },
       { id: 'img-to-pdf', label: 'Photos to PDF', icon: FileImage },
     ],
@@ -1059,6 +1075,296 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     }
   };
 
+  // 9. WORD TO PDF (.DOCX / .DOC / .RTF / .TXT -> .PDF) STATE & HANDLERS
+  const [wordFileName, setWordFileName] = useState<string>(
+    'Business_Proposal_2026'
+  );
+  const [wordBlocks, setWordBlocks] = useState<WordContentBlock[]>([]);
+  const [wordPlainText, setWordPlainText] = useState<string>('');
+  const [wordTextEdited, setWordTextEdited] = useState<boolean>(false);
+  const [wordPageSize, setWordPageSize] = useState<'A4' | 'Letter' | 'Legal'>(
+    'A4'
+  );
+  const [wordFontFamily, setWordFontFamily] = useState<
+    'helvetica' | 'times' | 'courier'
+  >('helvetica');
+  const [wordBaseFontSize, setWordBaseFontSize] = useState<number>(11.5);
+  const [wordAddPageNumbers, setWordAddPageNumbers] = useState<boolean>(true);
+  const [convertedWordPdfResult, setConvertedWordPdfResult] = useState<{
+    bytes: Uint8Array;
+    name: string;
+    pageCount: number;
+    doc: StoredDocument;
+  } | null>(null);
+
+  const handleUploadWordDocument = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setIsBusy(true);
+    setFeedback(null);
+    setConvertedWordPdfResult(null);
+    try {
+      const parsed = await parseUploadedWordFile(file);
+      const baseName = file.name.replace(/\.(docx|doc|rtf|txt)$/i, '');
+      setWordFileName(baseName || 'Converted_Word_Document');
+      setWordBlocks(parsed.blocks);
+      setWordPlainText(parsed.plainText);
+      setWordTextEdited(false);
+
+      // Immediately generate the PDF preview and save to Local Vault so it's ready right away
+      const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
+        parsed.blocks,
+        {
+          pageSize: wordPageSize,
+          fontFamily: wordFontFamily,
+          baseFontSize: wordBaseFontSize,
+          lineSpacing: 1.4,
+          addPageNumbers: wordAddPageNumbers,
+        }
+      );
+      const outName = `${baseName || 'Converted_Word'}.pdf`;
+      const newDoc: StoredDocument = {
+        id: `doc-word2pdf-${Date.now()}`,
+        name: outName,
+        category: 'Reports',
+        starred: false,
+        sizeBytes: pdfBytes.byteLength,
+        pageCount,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: pdfBytes,
+      };
+      await onSaveNewDocument(newDoc);
+      setConvertedWordPdfResult({
+        bytes: pdfBytes,
+        name: outName,
+        pageCount,
+        doc: newDoc,
+      });
+      setFeedback(
+        `Converted "${file.name}" into "${outName}" (${pageCount} ${pageCount === 1 ? 'page' : 'pages'}, ${formatBytes(pdfBytes.byteLength)}) and saved to My Files.`
+      );
+    } catch (err) {
+      console.error('Error converting Word file:', err);
+      setFeedback(
+        'Could not parse this Word file. Please upload a valid .docx, .doc, .rtf, or .txt document.'
+      );
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleLoadSampleWordDoc = () => {
+    const sampleText = `# PROJECT SERVICE AGREEMENT & INVOICE SUMMARY
+
+## 1. Executive Overview
+This Word-to-PDF document demonstrates instant on-device conversion of Microsoft Word (.DOCX) headings, paragraphs, bulleted lists, and formatted content into a clean, print-ready A4 PDF document.
+
+## 2. Key Deliverables & Scope
+* High-accuracy document scanning with Outside-In paper boundary detection
+* Full-screen PDF editing with movable text boxes and one-swipe watermark removal
+* Bidirectional Microsoft Word (.DOCX) to PDF and PDF to Word conversion
+* Bilingual Optical Character Recognition (OCR) supporting English and Kiswahili
+
+## 3. Schedule & Sign-Off
+Prepared by: ScanPro Studio Document Engineering
+Date: ${new Date().toISOString().slice(0, 10)}
+Status: Approved for Production Distribution`;
+
+    setWordFileName('Service_Agreement_2026');
+    setWordPlainText(sampleText);
+    setWordBlocks(plainTextToWordBlocks(sampleText));
+    setWordTextEdited(false);
+    setConvertedWordPdfResult(null);
+  };
+
+  const handleBuildPdfFromWord = async (
+    action: 'save-only' | 'download' | 'share' | 'open-editor'
+  ) => {
+    const blocksToUse =
+      wordTextEdited || wordBlocks.length === 0
+        ? plainTextToWordBlocks(wordPlainText || 'Word Document')
+        : wordBlocks;
+
+    if (blocksToUse.length === 0) return;
+    setIsBusy(true);
+    try {
+      const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
+        blocksToUse,
+        {
+          pageSize: wordPageSize,
+          fontFamily: wordFontFamily,
+          baseFontSize: wordBaseFontSize,
+          lineSpacing: 1.4,
+          addPageNumbers: wordAddPageNumbers,
+        }
+      );
+      const cleanName = wordFileName.trim().toLowerCase().endsWith('.pdf')
+        ? wordFileName.trim()
+        : `${wordFileName.trim() || 'Converted_Word'}.pdf`;
+
+      const newDoc: StoredDocument = {
+        id: convertedWordPdfResult?.doc.id || `doc-word2pdf-${Date.now()}`,
+        name: cleanName,
+        category: 'Reports',
+        starred: false,
+        sizeBytes: pdfBytes.byteLength,
+        pageCount,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: pdfBytes,
+      };
+      await onSaveNewDocument(newDoc);
+      setConvertedWordPdfResult({
+        bytes: pdfBytes,
+        name: cleanName,
+        pageCount,
+        doc: newDoc,
+      });
+
+      if (action === 'download') {
+        downloadBytesAsFile(pdfBytes, cleanName, 'application/pdf');
+        setFeedback(
+          `Converted & downloaded "${cleanName}" (${pageCount} pages, ${formatBytes(pdfBytes.byteLength)}). Saved in My Files.`
+        );
+      } else if (action === 'share') {
+        await shareOrDownloadBytesAsFile(pdfBytes, cleanName, 'application/pdf');
+        setFeedback(`Shared "${cleanName}" and saved in My Files.`);
+      } else if (action === 'open-editor' && onOpenInEditor) {
+        onOpenInEditor(newDoc);
+      } else {
+        setFeedback(
+          `Saved "${cleanName}" (${pageCount} pages, ${formatBytes(pdfBytes.byteLength)}) to My Files.`
+        );
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  // 10. PDF TO WORD (.PDF -> .DOCX) STATE & HANDLERS
+  const [pdfToWordMode, setPdfToWordMode] =
+    useState<PdfToWordMode>('editable');
+  const [pdfToWordPages, setPdfToWordPages] = useState<PdfPageWordContent[]>(
+    []
+  );
+  const [pdfToWordDocxResult, setPdfToWordDocxResult] = useState<{
+    bytes: Uint8Array;
+    name: string;
+    pageCount: number;
+  } | null>(null);
+  const [pdfToWordProgress, setPdfToWordProgress] = useState<string | null>(
+    null
+  );
+  const [autoOcrScannedPages, setAutoOcrScannedPages] = useState<boolean>(true);
+
+  // Reset PDF to Word state when switching documents
+  useEffect(() => {
+    setPdfToWordPages([]);
+    setPdfToWordDocxResult(null);
+    setPdfToWordProgress(null);
+  }, [selectedDoc?.id]);
+
+  const handleExtractAndConvertPdfToWord = async (
+    downloadImmediately = true
+  ) => {
+    if (!selectedDoc) return;
+    setIsBusy(true);
+    setFeedback(null);
+    setPdfToWordProgress('Extracting pages & text structure from PDF...');
+    try {
+      let extractedPages = pdfToWordPages;
+      if (extractedPages.length === 0) {
+        extractedPages = await extractPdfPagesForWord(
+          selectedDoc.pdfData,
+          (curr, total) => {
+            setPdfToWordProgress(`Analyzing PDF page ${curr} of ${total}...`);
+          }
+        );
+
+        // If any page has almost no native text (scanned image PDF) and autoOcrScannedPages is enabled, run OCR on up to 5 scanned pages
+        const scannedIndices = extractedPages
+          .map((p, i) =>
+            p.paragraphs.reduce((acc, pr) => acc + pr.text.length, 0) < 12 &&
+            p.imageDataUrl
+              ? i
+              : -1
+          )
+          .filter((i) => i !== -1);
+
+        if (autoOcrScannedPages && scannedIndices.length > 0) {
+          const pagesToOcr = scannedIndices.slice(0, 5);
+          const worker = await createWorker('eng');
+          try {
+            for (let k = 0; k < pagesToOcr.length; k++) {
+              const pIdx = pagesToOcr[k];
+              const pg = extractedPages[pIdx];
+              if (!pg.imageDataUrl) continue;
+              setPdfToWordProgress(
+                `Running OCR on scanned page ${pg.pageNumber} (${k + 1}/${pagesToOcr.length})...`
+              );
+              const {
+                data: { text },
+              } = await worker.recognize(pg.imageDataUrl);
+              if (text && text.trim()) {
+                const lines = text
+                  .replace(/\r\n/g, '\n')
+                  .split(/\n{2,}/)
+                  .map((s) => s.replace(/\s+/g, ' ').trim())
+                  .filter(Boolean);
+                pg.paragraphs = lines.map((line) => ({
+                  text: line,
+                  isHeading:
+                    line.length < 60 &&
+                    line === line.toUpperCase() &&
+                    /[A-Z]/.test(line),
+                  fontSize: 11.5,
+                }));
+              }
+            }
+          } finally {
+            await worker.terminate();
+          }
+        }
+
+        setPdfToWordPages(extractedPages);
+      }
+
+      setPdfToWordProgress('Building Microsoft Word (.DOCX) file...');
+      const baseTitle = selectedDoc.name.replace(/\.pdf$/i, '');
+      const docxBytes = await buildDocxFromPdfPages(
+        extractedPages,
+        pdfToWordMode,
+        baseTitle
+      );
+      const docxFilename = `${baseTitle}.docx`;
+      setPdfToWordDocxResult({
+        bytes: docxBytes,
+        name: docxFilename,
+        pageCount: extractedPages.length,
+      });
+
+      if (downloadImmediately) {
+        downloadBytesAsFile(docxBytes, docxFilename, DOCX_MIME_TYPE);
+      }
+
+      setFeedback(
+        `Converted "${selectedDoc.name}" into Microsoft Word "${docxFilename}" (${formatBytes(docxBytes.byteLength)}).`
+      );
+    } catch (err) {
+      console.error('Error converting PDF to Word:', err);
+      setFeedback('Failed to convert PDF to Word (.DOCX).');
+    } finally {
+      setPdfToWordProgress(null);
+      setIsBusy(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Header, Active Document Bar & Grouped Tool Switcher */}
@@ -1066,7 +1372,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
           <div>
             <h1 className="text-xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-              PDF Tools & OCR Workbench
+              PDF Tools, Word Converter & OCR Workbench
             </h1>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
               Select a tool below. Every action runs locally on your device with instant download.
@@ -1074,7 +1380,9 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
           </div>
 
           {/* Sticky Active File Context Bar (for single-doc tools) */}
-          {activeTool !== 'merge-pdf' && activeTool !== 'img-to-pdf' && (
+          {activeTool !== 'merge-pdf' &&
+            activeTool !== 'img-to-pdf' &&
+            activeTool !== 'word-to-pdf' && (
             <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-2">
               <span className="text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] pl-1.5 whitespace-nowrap">
                 Active PDF:
@@ -2667,6 +2975,469 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
                 <span>Apply Protection & Download Stamped PDF</span>
               </button>
             </div>
+          </div>
+        )}
+
+        {/* 9. WORD TO PDF (.DOCX / .DOC / .RTF / .TXT -> .PDF) */}
+        {activeTool === 'word-to-pdf' && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Word to PDF Converter (.DOCX, .DOC, .RTF, .TXT → .PDF)
+                </h2>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                  Upload a Microsoft Word document from your phone or computer—or paste/edit text below—and convert it into a formatted multi-page PDF.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 self-start">
+                <label className="px-4 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs">
+                  <Upload className="w-4 h-4" />
+                  <span>Upload Word File (.DOCX / .DOC)</span>
+                  <input
+                    type="file"
+                    accept=".docx,.doc,.rtf,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword,text/plain,application/rtf"
+                    className="hidden"
+                    onChange={handleUploadWordDocument}
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={handleLoadSampleWordDoc}
+                  className="px-3.5 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                  <span>Load Sample Word Doc</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Formatting & Page Layout Controls */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] mb-1">
+                  Output PDF Filename
+                </label>
+                <input
+                  type="text"
+                  value={wordFileName}
+                  onChange={(e) => setWordFileName(e.target.value)}
+                  placeholder="Document_Name"
+                  className="w-full px-3 py-1.5 text-xs font-semibold rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] mb-1">
+                  PDF Page Size
+                </label>
+                <div className="flex items-center gap-1">
+                  {(['A4', 'Letter', 'Legal'] as const).map((sz) => (
+                    <button
+                      key={sz}
+                      type="button"
+                      onClick={() => setWordPageSize(sz)}
+                      className={`flex-1 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer ${
+                        wordPageSize === sz
+                          ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] border-[#4A1D5E]'
+                          : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33]'
+                      }`}
+                    >
+                      {sz}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] mb-1">
+                  Typography Font
+                </label>
+                <select
+                  value={wordFontFamily}
+                  onChange={(e) =>
+                    setWordFontFamily(
+                      e.target.value as 'helvetica' | 'times' | 'courier'
+                    )
+                  }
+                  className="w-full px-3 py-1.5 text-xs font-semibold rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]"
+                >
+                  <option value="helvetica">Helvetica / Sans-Serif</option>
+                  <option value="times">Times New Roman / Serif</option>
+                  <option value="courier">Courier / Monospace</option>
+                </select>
+              </div>
+
+              <div className="flex items-end justify-between gap-2">
+                <div className="flex-1">
+                  <label className="block text-[11px] font-semibold text-[#6E667D] dark:text-[#A39BB5] mb-1">
+                    Font Size ({wordBaseFontSize}pt)
+                  </label>
+                  <input
+                    type="range"
+                    min={9.5}
+                    max={15}
+                    step={0.5}
+                    value={wordBaseFontSize}
+                    onChange={(e) =>
+                      setWordBaseFontSize(Number(e.target.value))
+                    }
+                    className="w-full accent-[#4A1D5E] cursor-pointer"
+                  />
+                </div>
+                <label className="flex items-center gap-1.5 text-xs font-semibold pb-1 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={wordAddPageNumbers}
+                    onChange={(e) => setWordAddPageNumbers(e.target.checked)}
+                    className="rounded accent-[#4A1D5E]"
+                  />
+                  <span>Page #</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Ready-to-Download Result Card when converted */}
+            {convertedWordPdfResult && (
+              <div className="p-4 rounded-xl bg-[#15803D]/10 border-2 border-[#15803D]/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    ✓ PDF Ready & Saved in My Files: {convertedWordPdfResult.name}
+                  </p>
+                  <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono mt-0.5">
+                    {convertedWordPdfResult.pageCount}{' '}
+                    {convertedWordPdfResult.pageCount === 1 ? 'page' : 'pages'}{' '}
+                    · {formatBytes(convertedWordPdfResult.bytes.byteLength)}
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadBytesAsFile(
+                        convertedWordPdfResult.bytes,
+                        convertedWordPdfResult.name,
+                        'application/pdf'
+                      )
+                    }
+                    className="px-4 py-2 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download PDF</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      shareOrDownloadBytesAsFile(
+                        convertedWordPdfResult.bytes,
+                        convertedWordPdfResult.name,
+                        'application/pdf'
+                      )
+                    }
+                    className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-[#2563EB]" />
+                    <span>Share PDF</span>
+                  </button>
+
+                  {onOpenInEditor && (
+                    <button
+                      type="button"
+                      onClick={() => onOpenInEditor(convertedWordPdfResult.doc)}
+                      className="px-3.5 py-2 rounded-lg bg-[#4A1D5E] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      <span>Open in PDF Editor</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Editable Word Content Preview & Composer */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Word Content Preview & Live Editor (Use # for Headings, * for Bullets)
+                </label>
+                {wordBlocks.some((b) => b.type === 'table' || b.type === 'image') &&
+                  !wordTextEdited && (
+                    <span className="text-[11px] font-semibold text-[#2563EB]">
+                      ✓ Preserving extracted Word tables & embedded images
+                    </span>
+                  )}
+              </div>
+              <textarea
+                rows={11}
+                value={wordPlainText}
+                onChange={(e) => {
+                  setWordPlainText(e.target.value);
+                  setWordTextEdited(true);
+                }}
+                placeholder="Upload a .DOCX / .DOC file above, click 'Load Sample Word Doc', or type/paste your document content here to convert into a PDF..."
+                className="w-full p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs leading-relaxed text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
+              />
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => handleBuildPdfFromWord('download')}
+                disabled={
+                  isBusy ||
+                  (!wordPlainText.trim() && wordBlocks.length === 0)
+                }
+                className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-40"
+              >
+                <Download className="w-4 h-4" />
+                <span>
+                  {isBusy
+                    ? 'Generating PDF...'
+                    : 'Convert Word to PDF & Download'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleBuildPdfFromWord('open-editor')}
+                disabled={
+                  isBusy ||
+                  (!wordPlainText.trim() && wordBlocks.length === 0)
+                }
+                className="px-4 py-2.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-40"
+              >
+                <FileText className="w-4 h-4" />
+                <span>Convert & Open in PDF Editor</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleBuildPdfFromWord('share')}
+                disabled={
+                  isBusy ||
+                  (!wordPlainText.trim() && wordBlocks.length === 0)
+                }
+                className="px-4 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-2 cursor-pointer disabled:opacity-40"
+              >
+                <Share2 className="w-4 h-4 text-[#2563EB]" />
+                <span>Share PDF</span>
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 10. PDF TO WORD (.PDF -> .DOCX) */}
+        {activeTool === 'pdf-to-word' && selectedDoc && (
+          <div className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  PDF to Word Converter (.PDF → Editable .DOCX)
+                </h2>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                  Convert <strong>{selectedDoc.name}</strong> ({selectedDoc.pageCount}{' '}
+                  {selectedDoc.pageCount === 1 ? 'page' : 'pages'}) into a standard Microsoft Word <code>.docx</code> document that opens in Word, Google Docs, and WPS Office.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => handleExtractAndConvertPdfToWord(true)}
+                  disabled={isBusy}
+                  className="px-5 py-2.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <FileOutput className="w-4 h-4" />
+                  <span>
+                    {isBusy
+                      ? 'Converting to Word...'
+                      : 'Convert PDF to Word (.DOCX) & Download'}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* 3 Conversion Mode Cards + Scanned PDF Auto-OCR Switch */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {(
+                [
+                  {
+                    id: 'editable',
+                    title: '1. Editable Text & Headings (.DOCX)',
+                    desc: 'Extracts paragraphs, headings, and lists for easy text editing in Word. Includes page snapshots only if a page has no text.',
+                  },
+                  {
+                    id: 'hybrid',
+                    title: '2. Editable Text + Page Snapshots',
+                    desc: 'Includes both editable Word paragraphs AND the high-resolution page picture for each page (great for exams & tables).',
+                  },
+                  {
+                    id: 'visual',
+                    title: '3. Exact Visual Layout (.DOCX)',
+                    desc: 'Embeds each full-page snapshot directly into Word so complex layouts, stamps, and handwriting look 100% identical.',
+                  },
+                ] as const
+              ).map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => setPdfToWordMode(m.id)}
+                  className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
+                    pdfToWordMode === m.id
+                      ? 'border-[#2563EB] bg-[#2563EB]/8 dark:bg-[#2563EB]/20'
+                      : 'border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                  }`}
+                >
+                  <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    {m.title}
+                  </p>
+                  <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-1 leading-relaxed">
+                    {m.desc}
+                  </p>
+                </button>
+              ))}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+              <label className="flex items-center gap-2.5 text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={autoOcrScannedPages}
+                  onChange={(e) => setAutoOcrScannedPages(e.target.checked)}
+                  className="rounded accent-[#2563EB] w-4 h-4"
+                />
+                <span>
+                  Auto-OCR Scanned Image Pages (recognizes text on scanned photos automatically)
+                </span>
+              </label>
+
+              {pdfToWordProgress && (
+                <span className="text-xs font-mono font-bold text-[#2563EB] animate-pulse">
+                  {pdfToWordProgress}
+                </span>
+              )}
+            </div>
+
+            {/* Ready-to-Download .DOCX Card */}
+            {pdfToWordDocxResult && (
+              <div className="p-4 rounded-xl bg-[#15803D]/10 border-2 border-[#15803D]/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    ✓ Microsoft Word File Ready: {pdfToWordDocxResult.name}
+                  </p>
+                  <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono mt-0.5">
+                    {pdfToWordDocxResult.pageCount}{' '}
+                    {pdfToWordDocxResult.pageCount === 1 ? 'page' : 'pages'} ·{' '}
+                    {formatBytes(pdfToWordDocxResult.bytes.byteLength)} ·
+                    Standard OpenXML (.DOCX)
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      downloadBytesAsFile(
+                        pdfToWordDocxResult.bytes,
+                        pdfToWordDocxResult.name,
+                        DOCX_MIME_TYPE
+                      )
+                    }
+                    className="px-4 py-2 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Download .DOCX</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      shareOrDownloadBytesAsFile(
+                        pdfToWordDocxResult.bytes,
+                        pdfToWordDocxResult.name,
+                        DOCX_MIME_TYPE
+                      )
+                    }
+                    className="px-3.5 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Share2 className="w-3.5 h-3.5 text-[#2563EB]" />
+                    <span>Share .DOCX</span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Editable Extracted Word Paragraphs per Page */}
+            {pdfToWordPages.length > 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Extracted Word Text Preview (You can edit any text below before re-downloading .DOCX)
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => handleExtractAndConvertPdfToWord(true)}
+                    disabled={isBusy}
+                    className="px-3.5 py-1.5 rounded-lg bg-[#2563EB] text-white text-xs font-bold cursor-pointer"
+                  >
+                    Update & Download .DOCX
+                  </button>
+                </div>
+
+                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                  {pdfToWordPages.map((pg, pIdx) => {
+                    const joinedText = pg.paragraphs
+                      .map((p) => p.text)
+                      .join('\n\n');
+                    return (
+                      <div
+                        key={pg.pageNumber}
+                        className="p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-[#4A1D5E] dark:text-[#D5B3FF]">
+                            Page {pg.pageNumber}
+                          </span>
+                          <span className="text-[11px] font-mono text-[#6E667D]">
+                            {pg.paragraphs.length} paragraph block(s)
+                          </span>
+                        </div>
+                        <textarea
+                          rows={4}
+                          value={joinedText}
+                          onChange={(e) => {
+                            const nextVal = e.target.value;
+                            setPdfToWordPages((prev) =>
+                              prev.map((item, idx) =>
+                                idx === pIdx
+                                  ? {
+                                      ...item,
+                                      paragraphs: nextVal
+                                        .split(/\n{2,}/)
+                                        .map((t) => ({
+                                          text: t.trim(),
+                                          isHeading: false,
+                                          fontSize: 11.5,
+                                        }))
+                                        .filter((p) => p.text.length > 0),
+                                    }
+                                  : item
+                              )
+                            );
+                          }}
+                          placeholder="No selectable text found on this page — page snapshot image will be embedded in the Word document."
+                          className="w-full p-2.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs leading-relaxed text-[#14101B] dark:text-[#F4F1F8]"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>

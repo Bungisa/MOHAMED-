@@ -1107,13 +1107,18 @@ export function sanitizeDownloadFilename(
   mimeType = 'application/pdf'
 ): string {
   const defaultExt =
-    mimeType.includes('jpeg') || mimeType.includes('jpg')
-      ? 'jpg'
-      : mimeType.includes('png')
-        ? 'png'
-        : mimeType.includes('text')
-          ? 'txt'
-          : 'pdf';
+    mimeType.includes('wordprocessingml') ||
+    filename.toLowerCase().endsWith('.docx')
+      ? 'docx'
+      : mimeType.includes('msword') || filename.toLowerCase().endsWith('.doc')
+        ? 'doc'
+        : mimeType.includes('jpeg') || mimeType.includes('jpg')
+          ? 'jpg'
+          : mimeType.includes('png')
+            ? 'png'
+            : mimeType.includes('text')
+              ? 'txt'
+              : 'pdf';
 
   const trimmed = (filename || `Document.${defaultExt}`).trim();
   const lastDot = trimmed.lastIndexOf('.');

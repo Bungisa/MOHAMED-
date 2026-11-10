@@ -805,7 +805,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex flex-wrap items-center gap-1.5">
                   <button
                     onClick={handleAutoDetectCurrentPage}
                     disabled={isProcessing}
@@ -813,6 +813,94 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   >
                     <Maximize2 className="w-3.5 h-3.5" />
                     <span>Auto-Detect Precise Corners</span>
+                  </button>
+                  <button
+                    onClick={() =>
+                      setPages((prev) =>
+                        prev.map((p, idx) => {
+                          if (idx !== activePageIndex) return p;
+                          const cx =
+                            (p.corners[0].x +
+                              p.corners[1].x +
+                              p.corners[2].x +
+                              p.corners[3].x) /
+                            4;
+                          const cy =
+                            (p.corners[0].y +
+                              p.corners[1].y +
+                              p.corners[2].y +
+                              p.corners[3].y) /
+                            4;
+                          const expandPt = (pt: Point2D): Point2D => ({
+                            x: Math.max(
+                              0.005,
+                              Math.min(
+                                0.995,
+                                pt.x + (pt.x < cx ? -0.04 : 0.04)
+                              )
+                            ),
+                            y: Math.max(
+                              0.005,
+                              Math.min(
+                                0.995,
+                                pt.y + (pt.y < cy ? -0.04 : 0.04)
+                              )
+                            ),
+                          });
+                          return {
+                            ...p,
+                            corners: [
+                              expandPt(p.corners[0]),
+                              expandPt(p.corners[1]),
+                              expandPt(p.corners[2]),
+                              expandPt(p.corners[3]),
+                            ],
+                          };
+                        })
+                      )
+                    }
+                    title="Expand all 4 edges outward by 4% so no outer margins or question numbers are clipped"
+                    className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                  >
+                    Expand +4%
+                  </button>
+                  <button
+                    onClick={() =>
+                      setPages((prev) =>
+                        prev.map((p, idx) => {
+                          if (idx !== activePageIndex) return p;
+                          const minX = Math.max(
+                            0.005,
+                            Math.min(p.corners[0].x, p.corners[3].x)
+                          );
+                          const maxX = Math.min(
+                            0.995,
+                            Math.max(p.corners[1].x, p.corners[2].x)
+                          );
+                          const minY = Math.max(
+                            0.005,
+                            Math.min(p.corners[0].y, p.corners[1].y)
+                          );
+                          const maxY = Math.min(
+                            0.995,
+                            Math.max(p.corners[2].y, p.corners[3].y)
+                          );
+                          return {
+                            ...p,
+                            corners: [
+                              { x: minX, y: minY },
+                              { x: maxX, y: minY },
+                              { x: maxX, y: maxY },
+                              { x: minX, y: maxY },
+                            ],
+                          };
+                        })
+                      )
+                    }
+                    title="Square and level all 4 edges into a clean 90° rectangle"
+                    className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                  >
+                    Level 90°
                   </button>
                   <button
                     onClick={() =>
@@ -832,7 +920,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                         )
                       )
                     }
-                    className="px-3 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-medium text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] cursor-pointer"
+                    className="px-2.5 py-1.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-medium text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] cursor-pointer"
                   >
                     Full Frame
                   </button>
