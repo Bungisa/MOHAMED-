@@ -136,9 +136,20 @@ async function startServer() {
   app.head('/api/downloads/:id', serveDownload);
   app.get('/api/downloads/:id', serveDownload);
 
+  // Serve Digital Asset Links for Google Play Store Trusted Web Activity (TWA) verification
+  app.get('/.well-known/assetlinks.json', (_req, res) => {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.sendFile(path.join(__dirname, 'public', '.well-known', 'assetlinks.json'));
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+        watch: null,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

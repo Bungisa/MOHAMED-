@@ -127,8 +127,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const action = params.get('action');
+    let initialView: ActiveView = 'dashboard';
+    if (action === 'scan') {
+      initialView = 'scanner';
+      setActiveView('scanner');
+    } else if (action === 'pdf-editor') {
+      initialView = 'editor';
+      setActiveView('editor');
+    } else if (action === 'pdf-tools') {
+      initialView = 'tools';
+      setActiveTool('word-to-pdf');
+      setActiveView('tools');
+    }
+
     try {
-      window.history.replaceState({ view: 'dashboard' }, '', '#dashboard');
+      window.history.replaceState({ view: initialView }, '', `#${initialView}`);
     } catch {
       // Ignore in restricted iframe contexts
     }

@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { ActiveView, ThemeMode } from '../types/document';
 import { formatBytes } from '../services/storageService';
+import { PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 
 interface LayoutProps {
   activeView: ActiveView;
@@ -213,6 +214,12 @@ export const Layout: React.FC<LayoutProps> = ({
               On-device
             </span>
           </div>
+          <div className="pt-1">
+            <PWAInstallButton
+              variant="sidebar"
+              onOpenPlayStoreSettings={() => onNavigate('settings')}
+            />
+          </div>
         </div>
       </aside>
 
@@ -253,8 +260,13 @@ export const Layout: React.FC<LayoutProps> = ({
               ))}
             </nav>
 
-            {/* Zone 3: Theme, Settings & Primary Action */}
+            {/* Zone 3: Offline Status, Install App, Theme, Settings & Primary Action */}
             <div className="flex items-center gap-2 sm:gap-2.5 shrink-0">
+              <OfflineIndicator />
+              <PWAInstallButton
+                variant="header"
+                onOpenPlayStoreSettings={() => onNavigate('settings')}
+              />
               <button
                 onClick={cycleTheme}
                 title={`Theme: ${theme} (click to switch)`}

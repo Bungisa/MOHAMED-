@@ -12,9 +12,15 @@ import {
   ScanText,
   Layers,
   CheckCircle2,
+  Smartphone,
+  Copy,
+  Check,
+  Download,
+  Terminal,
 } from 'lucide-react';
 import { AppPreferences, ScanFilterType, ThemeMode } from '../types/document';
 import { formatBytes } from '../services/storageService';
+import { PWAInstallButton } from './PWAInstallPrompt';
 
 interface SettingsViewProps {
   preferences: AppPreferences;
@@ -35,6 +41,48 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
+  const [androidPackageId, setAndroidPackageId] = useState('app.scanpro.studio');
+  const [sha256Fingerprint, setSha256Fingerprint] = useState(
+    'FA:C6:17:45:DC:09:03:78:6F:B9:ED:E6:2A:96:2B:39:9F:73:48:F0:BB:6F:89:9B:83:32:66:75:91:03:3B:9C'
+  );
+  const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  const assetLinksJson = JSON.stringify(
+    [
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: androidPackageId.trim() || 'app.scanpro.studio',
+          sha256_cert_fingerprints: [sha256Fingerprint.trim()],
+        },
+      },
+    ],
+    null,
+    2
+  );
+
+  const bubblewrapCmd = `npx @bubblewrap/cli init --manifest=${
+    typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com'
+  }/manifest.webmanifest && npx @bubblewrap/cli build`;
+
+  const copyText = (key: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedField(key);
+    setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const downloadAssetLinks = () => {
+    const blob = new Blob([assetLinksJson], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'assetlinks.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
 
   const updatePref = <K extends keyof AppPreferences>(
     key: K,
@@ -50,10 +98,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-6 space-y-2">
         <h1 className="text-xl font-bold tracking-tight">
-          Application Settings & Privacy Controls
+          Application Settings, PWA & Google Play Store Center
         </h1>
         <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-          Customize appearance, default document scanner profiles, OCR languages, and local IndexedDB vault storage.
+          Customize appearance, default document scanner profiles, Google Play Store (TWA / PWABuilder) packaging, and local IndexedDB vault storage.
         </p>
         {savedNotice && (
           <p className="text-xs font-semibold text-[#15803D] dark:text-[#4ADE80] flex items-center gap-1.5 pt-1">
@@ -61,6 +109,143 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             <span>{savedNotice}</span>
           </p>
         )}
+      </div>
+
+      {/* Google Play Store (TWA / PWABuilder) & PWA Packaging Center */}
+      <div className="bg-white dark:bg-[#16111F] border-2 border-[#4A1D5E]/25 dark:border-[#9D5CE5]/35 rounded-xl p-6 space-y-5 shadow-xs">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2">
+              <span className="p-2 rounded-lg bg-[#4A1D5E] text-white">
+                <Smartphone className="w-4 h-4 text-emerald-300" />
+              </span>
+              <div>
+                <h2 className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Google Play Store & PWA Packaging Center
+                </h2>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                  Ready for Android App Bundle (<code>.aab</code>) export via PWABuilder or Bubblewrap Trusted Web Activity (TWA)
+                </p>
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <PWAInstallButton variant="card" />
+          </div>
+        </div>
+
+        {/* PWA Compliance Checklist Badges */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          {[
+            { label: 'Web App Manifest', detail: 'Standalone + Shortcuts' },
+            { label: 'Maskable & Any Icons', detail: '192px, 512px & Safe Zone' },
+            { label: 'Offline Service Worker', detail: 'Workbox Precache Active' },
+            { label: 'Digital Asset Links', detail: '/.well-known/assetlinks.json' },
+          ].map((item) => (
+            <div
+              key={item.label}
+              className="p-3 rounded-lg bg-emerald-50/70 dark:bg-emerald-950/25 border border-emerald-200 dark:border-emerald-800/50 space-y-0.5"
+            >
+              <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>{item.label}</span>
+              </div>
+              <p className="text-[11px] text-emerald-700/80 dark:text-emerald-400/80 font-mono">
+                {item.detail}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Android TWA Configuration & Digital Asset Links Generator */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold mb-1">
+                Android Application ID (Package Name)
+              </label>
+              <input
+                type="text"
+                value={androidPackageId}
+                onChange={(e) => setAndroidPackageId(e.target.value)}
+                placeholder="app.scanpro.studio"
+                className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold mb-1">
+                Play App Signing SHA-256 Certificate Fingerprint
+              </label>
+              <input
+                type="text"
+                value={sha256Fingerprint}
+                onChange={(e) => setSha256Fingerprint(e.target.value)}
+                placeholder="FA:C6:17:45:..."
+                className="w-full px-3 py-2 text-xs font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
+              />
+              <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-1">
+                Found in Google Play Console &rarr; Setup &rarr; App signing. Verifies fullscreen TWA mode without browser URL bar.
+              </p>
+            </div>
+
+            <div className="p-3 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold flex items-center gap-1.5">
+                  <Terminal className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                  <span>Bubblewrap CLI (Build .aab / .apk)</span>
+                </span>
+                <button
+                  onClick={() => copyText('bubblewrap', bubblewrapCmd)}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] hover:underline cursor-pointer"
+                >
+                  {copiedField === 'bubblewrap' ? (
+                    <Check className="w-3 h-3" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  <span>{copiedField === 'bubblewrap' ? 'Copied' : 'Copy Command'}</span>
+                </button>
+              </div>
+              <pre className="text-[11px] font-mono text-[#6E667D] dark:text-[#A39BB5] overflow-x-auto whitespace-pre-wrap break-all">
+                {bubblewrapCmd}
+              </pre>
+            </div>
+          </div>
+
+          <div className="flex flex-col justify-between p-3.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold font-mono text-[#4A1D5E] dark:text-[#D5B3FF]">
+                /.well-known/assetlinks.json
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => copyText('assetlinks', assetLinksJson)}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-semibold cursor-pointer"
+                >
+                  {copiedField === 'assetlinks' ? (
+                    <Check className="w-3 h-3 text-emerald-600" />
+                  ) : (
+                    <Copy className="w-3 h-3" />
+                  )}
+                  <span>{copiedField === 'assetlinks' ? 'Copied' : 'Copy JSON'}</span>
+                </button>
+                <button
+                  onClick={downloadAssetLinks}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded bg-[#4A1D5E] text-white text-[11px] font-semibold cursor-pointer"
+                >
+                  <Download className="w-3 h-3" />
+                  <span>Download</span>
+                </button>
+              </div>
+            </div>
+            <pre className="text-[11px] font-mono text-[#14101B] dark:text-[#F4F1F8] bg-white dark:bg-[#16111F] p-2.5 rounded border border-[#E4DFEC] dark:border-[#261F33] overflow-x-auto flex-1">
+              {assetLinksJson}
+            </pre>
+            <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5]">
+              You can also package ScanPro Studio in 1 click at <strong>pwabuilder.com</strong> by pasting your deployed app URL and selecting <strong>Package for Store &rarr; Google Play</strong>.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Theme & Appearance */}
