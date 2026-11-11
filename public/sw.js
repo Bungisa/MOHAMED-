@@ -1,4 +1,4 @@
-const CACHE_NAME = 'elimikapdf-v5';
+const CACHE_NAME = 'elimikapdf-v6';
 const SHARED_CACHE_NAME = 'elimikapdf-shared-files-v1';
 const PRECACHE_URLS = [
   '/',
@@ -70,7 +70,7 @@ self.addEventListener('fetch', (event) => {
         } catch {
           // Ignore form parse errors and proceed to app
         }
-        return Response.redirect('/?shared=1', 303);
+        return Response.redirect('/?shared=1&action=pdf-reader', 303);
       })()
     );
     return;

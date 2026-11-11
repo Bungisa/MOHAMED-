@@ -103,7 +103,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 }) => {
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
-  const [androidPackageId, setAndroidPackageId] = useState('app.elimikapdf.studio');
+  const [androidPackageId, setAndroidPackageId] = useState('com.elimikapdf.www.twa');
   const [sha256Fingerprint, setSha256Fingerprint] = useState(
     '96:17:08:76:99:76:3A:CF:57:2D:84:4B:F9:38:69:39:A7:22:8A:1D:AC:BC:46:66:40:44:E9:7C:DB:42:2F:6A'
   );
@@ -130,7 +130,29 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
         relation: ['delegate_permission/common.handle_all_urls'],
         target: {
           namespace: 'android_app',
-          package_name: androidPackageId.trim() || 'app.elimikapdf.studio',
+          package_name: androidPackageId.trim() || 'com.elimikapdf.www.twa',
+          sha256_cert_fingerprints: [
+            sha256Fingerprint.trim(),
+            '6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF',
+          ],
+        },
+      },
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: 'com.elimikapdf.twa',
+          sha256_cert_fingerprints: [
+            sha256Fingerprint.trim(),
+            '6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF',
+          ],
+        },
+      },
+      {
+        relation: ['delegate_permission/common.handle_all_urls'],
+        target: {
+          namespace: 'android_app',
+          package_name: 'app.elimikapdf.studio',
           sha256_cert_fingerprints: [
             sha256Fingerprint.trim(),
             '6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF',
