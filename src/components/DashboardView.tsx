@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Camera,
-  FileUp,
   Search,
   Merge,
   Scissors,
@@ -20,6 +19,11 @@ import {
   Eye,
   Download,
   Sparkles,
+  Check,
+  CheckSquare,
+  Square,
+  X,
+  Loader2,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -45,6 +49,19 @@ interface DashboardViewProps {
   onToggleStar: (doc: StoredDocument) => Promise<void>;
   onDownloadDocument: (doc: StoredDocument) => void;
   onRequestDeleteDocument: (doc: StoredDocument) => void;
+  onRequestBatchDeleteDocuments?: (docs: StoredDocument[]) => void;
+  onBatchMergeDocuments?: (
+    docs: StoredDocument[],
+    mode: 'instant' | 'studio'
+  ) => Promise<void>;
+  onBatchCompressDocuments?: (docs: StoredDocument[]) => Promise<void>;
+  onBatchRemoveWatermarkDocuments?: (docs: StoredDocument[]) => Promise<void>;
+  onBatchStarDocuments?: (
+    docs: StoredDocument[],
+    starred: boolean
+  ) => Promise<void>;
+  onBatchShareDocuments?: (docs: StoredDocument[]) => Promise<void>;
+  onBatchDownloadDocuments?: (docs: StoredDocument[]) => void;
 }
 
 const QUICK_TOOLS: {
@@ -135,12 +152,28 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onToggleStar,
   onDownloadDocument,
   onRequestDeleteDocument,
+  onRequestBatchDeleteDocuments,
+  onBatchMergeDocuments,
+  onBatchCompressDocuments,
+  onBatchRemoveWatermarkDocuments,
+  onBatchStarDocuments,
+  onBatchShareDocuments,
+  onBatchDownloadDocuments,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [fileFilter, setFileFilter] = useState<'all' | 'starred'>('all');
   const [isUploading, setIsUploading] = useState(false);
   const [openMenuDocId, setOpenMenuDocId] = useState<string | null>(null);
   const [thumbnailsMap, setThumbnailsMap] = useState<Record<string, string>>({});
+
+  // Long-press multi-selection state
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
+  const [batchBusyLabel, setBatchBusyLabel] = useState<string | null>(null);
+
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressTriggeredRef = useRef(false);
+  const pointerStartPosRef = useRef<{ x: number; y: number } | null>(null);
 
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const imgInputRef = useRef<HTMLInputElement>(null);
@@ -234,6 +267,105 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     );
   });
 
+  // Clean up selected IDs if documents were deleted
+  useEffect(() => {
+    const validIds = new Set(documents.map((d) => d.id));
+    setSelectedDocIds((prev) => {
+      const next = prev.filter((id) => validIds.has(id));
+      if (next.length === 0 && isSelectionMode && prev.length > 0) {
+        setIsSelectionMode(false);
+      }
+      return next;
+    });
+  }, [documents, isSelectionMode]);
+
+  const clearLongPressTimer = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleCardPointerDown = (
+    e: React.PointerEvent<HTMLDivElement>,
+    docId: string
+  ) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    pointerStartPosRef.current = { x: e.clientX, y: e.clientY };
+    longPressTriggeredRef.current = false;
+    clearLongPressTimer();
+    longPressTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      setOpenMenuDocId(null);
+      if (typeof navigator !== 'undefined' && navigator.vibrate) {
+        try {
+          navigator.vibrate(35);
+        } catch {
+          // ignore vibrate error
+        }
+      }
+      setIsSelectionMode(true);
+      setSelectedDocIds((prev) =>
+        prev.includes(docId) ? prev : [...prev, docId]
+      );
+    }, 420);
+  };
+
+  const handleCardPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!pointerStartPosRef.current) return;
+    const dx = Math.abs(e.clientX - pointerStartPosRef.current.x);
+    const dy = Math.abs(e.clientY - pointerStartPosRef.current.y);
+    if (dx > 10 || dy > 10) {
+      clearLongPressTimer();
+    }
+  };
+
+  const handleCardPointerUpOrCancel = () => {
+    clearLongPressTimer();
+    pointerStartPosRef.current = null;
+  };
+
+  const toggleDocSelection = (docId: string) => {
+    setSelectedDocIds((prev) => {
+      const exists = prev.includes(docId);
+      const next = exists ? prev.filter((id) => id !== docId) : [...prev, docId];
+      return next;
+    });
+  };
+
+  const handleSelectAllFiltered = () => {
+    const allFilteredIds = filteredDocs.map((d) => d.id);
+    const allSelected =
+      allFilteredIds.length > 0 &&
+      allFilteredIds.every((id) => selectedDocIds.includes(id));
+    if (allSelected) {
+      setSelectedDocIds([]);
+    } else {
+      setSelectedDocIds(allFilteredIds);
+    }
+  };
+
+  const exitSelectionMode = () => {
+    setIsSelectionMode(false);
+    setSelectedDocIds([]);
+  };
+
+  const selectedDocuments = selectedDocIds
+    .map((id) => documents.find((d) => d.id === id))
+    .filter((d): d is StoredDocument => Boolean(d));
+
+  const totalSelectedPages = selectedDocuments.reduce(
+    (sum, d) => sum + d.pageCount,
+    0
+  );
+  const totalSelectedBytes = selectedDocuments.reduce(
+    (sum, d) => sum + d.sizeBytes,
+    0
+  );
+  const allFilteredSelected =
+    filteredDocs.length > 0 &&
+    filteredDocs.every((d) => selectedDocIds.includes(d.id));
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 space-y-6">
       {/* Hidden File Inputs (Accept PDF, Word .docx/.doc, Text .txt/.rtf, and Images) */}
@@ -254,47 +386,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onChange={handleImageUploadChange}
       />
 
-      {/* Section 1: Unified Top Action Cards (2 Primary Cards) */}
-      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Card 1 (Royal Blue): Open / Edit PDF */}
-        <button
-          onClick={() => pdfInputRef.current?.click()}
-          disabled={isUploading}
-          className="text-left p-5 sm:p-6 rounded-2xl bg-[#003FE8] hover:bg-[#0033BA] text-white transition-all cursor-pointer flex items-center gap-4 shadow-sm"
-        >
-          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">
-            <FileUp className="w-6 h-6 sm:w-7 sm:h-7" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base sm:text-lg font-bold tracking-tight">
-              {isUploading ? 'Opening Document...' : 'Open / Edit PDF'}
-            </h2>
-            <p className="text-xs sm:text-sm text-white/85 mt-0.5 leading-snug">
-              Read, annotate, sign, or watermark any document
-            </p>
-          </div>
-        </button>
-
-        {/* Card 2 (Deep Purple): Scan Document */}
-        <button
-          onClick={() => onNavigate('scanner')}
-          className="text-left p-5 sm:p-6 rounded-2xl bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#7E3AF2] dark:hover:bg-[#6C2BD9] text-white transition-all cursor-pointer flex items-center gap-4 shadow-sm"
-        >
-          <div className="w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-white/15 flex items-center justify-center shrink-0">
-            <Camera className="w-6 h-6 sm:w-7 sm:h-7" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base sm:text-lg font-bold tracking-tight">
-              Scan Document
-            </h2>
-            <p className="text-xs sm:text-sm text-white/85 mt-0.5 leading-snug">
-              Use your camera to scan paper exams into crisp PDFs
-            </p>
-          </div>
-        </button>
-      </section>
-
-      {/* Section 2: Quick PDF & Word Tools (Single Horizontal Row of 8 Core Tools) */}
+      {/* Quick PDF & Word Tools (Single Horizontal Row of 8 Core Tools) */}
       <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-4 sm:p-5 space-y-3.5">
         <div className="flex items-center justify-between">
           <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
@@ -382,6 +474,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
 
+        {/* Sticky Multi-Select Header Bar (Appears on Long-Press) */}
+        {isSelectionMode && (
+          <div className="sticky top-16 z-30 rounded-2xl bg-[#003FE8] text-white p-3 sm:px-4 shadow-lg flex flex-wrap items-center justify-between gap-2 animate-in fade-in slide-in-from-top-2 duration-150">
+            <div className="flex items-center gap-2.5 min-w-0">
+              <button
+                type="button"
+                onClick={exitSelectionMode}
+                title="Cancel selection"
+                className="w-8 h-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center shrink-0 cursor-pointer transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+              <div className="min-w-0">
+                <p className="text-xs sm:text-sm font-bold leading-tight">
+                  {selectedDocuments.length}{' '}
+                  {selectedDocuments.length === 1 ? 'File' : 'Files'} Selected
+                </p>
+                <p className="text-[11px] text-white/80 truncate">
+                  {selectedDocuments.length > 0
+                    ? `${totalSelectedPages} pages • ${formatBytes(totalSelectedBytes)} • Tap files to select/deselect`
+                    : 'Tap files below or tap Select All'}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="px-3 py-1.5 rounded-xl bg-white text-[#003FE8] hover:bg-blue-50 text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition-colors"
+              >
+                {allFilteredSelected ? (
+                  <>
+                    <CheckSquare className="w-4 h-4" />
+                    <span>Deselect All</span>
+                  </>
+                ) : (
+                  <>
+                    <Square className="w-4 h-4" />
+                    <span>Select All ({filteredDocs.length})</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
         {filteredDocs.length === 0 ? (
           <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-8 text-center space-y-2">
             <FolderOpen className="w-7 h-7 text-[#6E667D] dark:text-[#A39BB5] mx-auto" />
@@ -404,20 +543,74 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               const isMenuOpen = openMenuDocId === doc.id;
               const showPdfBadge =
                 doc.category !== 'Scans' && idx % 3 === 1;
+              const isSelected = selectedDocIds.includes(doc.id);
+              const selectionOrder = selectedDocIds.indexOf(doc.id) + 1;
 
               return (
                 <div
                   key={doc.id}
-                  onClick={() => onOpenDocumentInEditor(doc, false)}
-                  className="relative rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:border-[#0088FF]/50 p-3 shadow-2xs flex items-center gap-3.5 transition-all cursor-pointer"
+                  onPointerDown={(e) => handleCardPointerDown(e, doc.id)}
+                  onPointerMove={handleCardPointerMove}
+                  onPointerUp={handleCardPointerUpOrCancel}
+                  onPointerCancel={handleCardPointerUpOrCancel}
+                  onPointerLeave={handleCardPointerUpOrCancel}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setOpenMenuDocId(null);
+                    setIsSelectionMode(true);
+                    setSelectedDocIds((prev) =>
+                      prev.includes(doc.id) ? prev : [...prev, doc.id]
+                    );
+                  }}
+                  onClick={() => {
+                    if (longPressTriggeredRef.current) {
+                      longPressTriggeredRef.current = false;
+                      return;
+                    }
+                    if (isSelectionMode) {
+                      toggleDocSelection(doc.id);
+                    } else {
+                      onOpenDocumentInEditor(doc, false);
+                    }
+                  }}
+                  className={`relative rounded-xl border p-3 shadow-2xs flex items-center gap-3.5 transition-all cursor-pointer select-none ${
+                    isSelected
+                      ? 'bg-[#0088FF]/8 dark:bg-[#0088FF]/15 border-[#0088FF] ring-1 ring-[#0088FF]'
+                      : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33] hover:border-[#0088FF]/50'
+                  }`}
                 >
+                  {/* Selection Checkbox Indicator when in Selection Mode */}
+                  {isSelectionMode && (
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleDocSelection(doc.id);
+                      }}
+                      className={`w-6 h-6 rounded-lg flex items-center justify-center shrink-0 transition-colors ${
+                        isSelected
+                          ? 'bg-[#0088FF] text-white shadow-xs'
+                          : 'border-2 border-[#7B8394] dark:border-[#A39BB5] bg-white dark:bg-[#16111F]'
+                      }`}
+                    >
+                      {isSelected &&
+                        (selectedDocIds.length > 1 ? (
+                          <span className="text-[11px] font-extrabold tabular-nums">
+                            {selectionOrder}
+                          </span>
+                        ) : (
+                          <Check className="w-4 h-4 stroke-[3]" />
+                        ))}
+                    </div>
+                  )}
+
                   {/* Left: Document Page 1 Miniature Thumbnail inside soft gray rounded frame */}
                   <div className="w-16 h-14 sm:w-20 sm:h-16 rounded-lg bg-[#F1F2F6] dark:bg-[#261F33] p-1 flex items-center justify-center shrink-0 overflow-hidden border border-[#E4DFEC]/70 dark:border-[#342A45]">
                     {thumbSrc ? (
                       <img
                         src={thumbSrc}
                         alt={doc.name}
-                        className="w-full h-full object-cover object-top rounded-[4px] bg-white shadow-2xs"
+                        draggable={false}
+                        className="w-full h-full object-cover object-top rounded-[4px] bg-white shadow-2xs pointer-events-none"
                       />
                     ) : (
                       <div className="w-full h-full rounded-[4px] bg-white dark:bg-[#1A1425] flex flex-col items-center justify-center p-1">
@@ -470,31 +663,47 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   </div>
 
                   {/* Right: Three-Dots Action Button (•••) */}
-                  <div
-                    className="flex items-center gap-1 shrink-0"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenMenuDocId((prev) =>
-                          prev === doc.id ? null : doc.id
-                        )
-                      }
-                      title="Document options"
-                      aria-label="Document options"
-                      className="w-9 h-9 rounded-full flex items-center justify-center text-[#5E6675] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                  {!isSelectionMode && (
+                    <div
+                      className="flex items-center gap-1 shrink-0"
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <MoreHorizontal className="w-5 h-5" />
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOpenMenuDocId((prev) =>
+                            prev === doc.id ? null : doc.id
+                          )
+                        }
+                        title="Document options"
+                        aria-label="Document options"
+                        className="w-9 h-9 rounded-full flex items-center justify-center text-[#5E6675] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <MoreHorizontal className="w-5 h-5" />
+                      </button>
+                    </div>
+                  )}
 
                   {/* Dropdown Action Menu when ••• is clicked */}
-                  {isMenuOpen && (
+                  {isMenuOpen && !isSelectionMode && (
                     <div
+                      onPointerDown={(e) => e.stopPropagation()}
                       onClick={(e) => e.stopPropagation()}
                       className="absolute right-3 top-12 w-52 rounded-xl bg-white dark:bg-[#1E172B] border border-[#E4DFEC] dark:border-[#342A45] shadow-xl py-1.5 z-30 text-xs"
                     >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuDocId(null);
+                          setIsSelectionMode(true);
+                          setSelectedDocIds([doc.id]);
+                        }}
+                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#003FE8] dark:text-[#60A5FA] cursor-pointer"
+                      >
+                        <CheckSquare className="w-4 h-4" />
+                        <span>Select / Multi-Select</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
@@ -616,28 +825,205 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         )}
       </section>
 
-      {/* Floating Bottom-Right Dual-Action Blue Pill Button matching image_597cb37c.png: [ 📷 | + ] */}
-      <div className="fixed bottom-6 right-6 z-40 rounded-full bg-[#0088FF] text-white shadow-xl flex items-center overflow-hidden border border-white/15">
-        <button
-          type="button"
-          onClick={() => onNavigate('scanner')}
-          title="Scan with Full-Screen Camera"
-          aria-label="Scan Document with Camera"
-          className="h-13 pl-5 pr-4 hover:bg-[#0077E6] active:bg-[#0066CC] transition-colors flex items-center justify-center cursor-pointer"
-        >
-          <Camera className="w-6 h-6 text-white" />
-        </button>
-        <div className="w-px h-6 bg-white/40 shrink-0" />
-        <button
-          type="button"
-          onClick={() => pdfInputRef.current?.click()}
-          title="Import or Open PDF / Document"
-          aria-label="Import Document"
-          className="h-13 pl-4 pr-5 hover:bg-[#0077E6] active:bg-[#0066CC] transition-colors flex items-center justify-center cursor-pointer"
-        >
-          <Plus className="w-6 h-6 text-white stroke-[2.5]" />
-        </button>
-      </div>
+      {/* Bottom Floating Batch Multi-PDF Action Bar when in Selection Mode */}
+      {isSelectionMode ? (
+        <div className="fixed bottom-4 inset-x-3 sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-full sm:max-w-3xl z-40 rounded-2xl bg-[#14101B]/95 dark:bg-[#1E172B]/98 backdrop-blur-md text-white border border-white/15 shadow-2xl p-3 space-y-2.5 animate-in slide-in-from-bottom-4 duration-150">
+          {batchBusyLabel && (
+            <div className="flex items-center justify-center gap-2 py-1 text-xs font-semibold text-blue-300">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>{batchBusyLabel}</span>
+            </div>
+          )}
+
+          <div className="grid grid-cols-4 sm:grid-cols-7 gap-1.5 sm:gap-2">
+            {/* 1. Instant Merge PDFs (2+ files) */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 2 || Boolean(batchBusyLabel)}
+              onClick={async () => {
+                if (!onBatchMergeDocuments || selectedDocuments.length < 2)
+                  return;
+                setBatchBusyLabel(
+                  `Merging ${selectedDocuments.length} PDFs...`
+                );
+                try {
+                  await onBatchMergeDocuments(selectedDocuments, 'instant');
+                  exitSelectionMode();
+                } finally {
+                  setBatchBusyLabel(null);
+                }
+              }}
+              title="Combine selected PDFs into one PDF immediately"
+              className="p-2 rounded-xl bg-[#0088FF] hover:bg-[#0077E6] disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <Merge className="w-4 h-4" />
+              <span className="text-[10px] font-bold leading-tight text-center">
+                Merge Now
+              </span>
+            </button>
+
+            {/* 2. Open in Merge Studio (Reorder & Merge) */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 2 || Boolean(batchBusyLabel)}
+              onClick={async () => {
+                if (!onBatchMergeDocuments || selectedDocuments.length < 2)
+                  return;
+                await onBatchMergeDocuments(selectedDocuments, 'studio');
+                exitSelectionMode();
+              }}
+              title="Open selected PDFs in Merge Studio to reorder before merging"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <LayoutGrid className="w-4 h-4 text-sky-300" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Merge Studio
+              </span>
+            </button>
+
+            {/* 3. Compress Selected PDFs */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={async () => {
+                if (!onBatchCompressDocuments || selectedDocuments.length < 1)
+                  return;
+                setBatchBusyLabel(
+                  `Compressing ${selectedDocuments.length} PDF(s)...`
+                );
+                try {
+                  await onBatchCompressDocuments(selectedDocuments);
+                  exitSelectionMode();
+                } finally {
+                  setBatchBusyLabel(null);
+                }
+              }}
+              title="Compress all selected PDFs"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <Minimize2 className="w-4 h-4 text-emerald-400" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Compress
+              </span>
+            </button>
+
+            {/* 4. Remove Watermarks from Selected PDFs */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={async () => {
+                if (
+                  !onBatchRemoveWatermarkDocuments ||
+                  selectedDocuments.length < 1
+                )
+                  return;
+                setBatchBusyLabel(
+                  `Removing watermarks from ${selectedDocuments.length} PDF(s)...`
+                );
+                try {
+                  await onBatchRemoveWatermarkDocuments(selectedDocuments);
+                  exitSelectionMode();
+                } finally {
+                  setBatchBusyLabel(null);
+                }
+              }}
+              title="Clean watermarks from all selected PDFs"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <Sparkles className="w-4 h-4 text-amber-300" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Clean Mark
+              </span>
+            </button>
+
+            {/* 5. Share Selected PDFs */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={async () => {
+                if (!onBatchShareDocuments || selectedDocuments.length < 1)
+                  return;
+                await onBatchShareDocuments(selectedDocuments);
+              }}
+              title="Share all selected PDFs"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <Share2 className="w-4 h-4 text-blue-300" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Share ({selectedDocuments.length})
+              </span>
+            </button>
+
+            {/* 6. Download Selected PDFs */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={() => {
+                if (onBatchDownloadDocuments && selectedDocuments.length > 0) {
+                  onBatchDownloadDocuments(selectedDocuments);
+                  exitSelectionMode();
+                }
+              }}
+              title="Download all selected PDFs"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <Download className="w-4 h-4 text-green-300" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Download
+              </span>
+            </button>
+
+            {/* 7. Delete Selected PDFs */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={() => {
+                if (
+                  onRequestBatchDeleteDocuments &&
+                  selectedDocuments.length > 0
+                ) {
+                  onRequestBatchDeleteDocuments(selectedDocuments);
+                  exitSelectionMode();
+                } else if (selectedDocuments.length === 1) {
+                  onRequestDeleteDocument(selectedDocuments[0]);
+                  exitSelectionMode();
+                }
+              }}
+              title="Delete all selected PDFs"
+              className="p-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all col-span-2 sm:col-span-1"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span className="text-[10px] font-bold leading-tight text-center">
+                Delete ({selectedDocuments.length})
+              </span>
+            </button>
+          </div>
+        </div>
+      ) : (
+        /* Floating Bottom-Right Dual-Action Blue Pill Button matching image_597cb37c.png: [ 📷 | + ] */
+        <div className="fixed bottom-6 right-6 z-40 rounded-full bg-[#0088FF] text-white shadow-xl flex items-center overflow-hidden border border-white/15">
+          <button
+            type="button"
+            onClick={() => onNavigate('scanner')}
+            title="Scan with Full-Screen Camera"
+            aria-label="Scan Document with Camera"
+            className="h-13 pl-5 pr-4 hover:bg-[#0077E6] active:bg-[#0066CC] transition-colors flex items-center justify-center cursor-pointer"
+          >
+            <Camera className="w-6 h-6 text-white" />
+          </button>
+          <div className="w-px h-6 bg-white/40 shrink-0" />
+          <button
+            type="button"
+            onClick={() => pdfInputRef.current?.click()}
+            disabled={isUploading}
+            title="Import or Open PDF / Document"
+            aria-label="Import Document"
+            className="h-13 pl-4 pr-5 hover:bg-[#0077E6] active:bg-[#0066CC] disabled:opacity-60 transition-colors flex items-center justify-center cursor-pointer"
+          >
+            <Plus className="w-6 h-6 text-white stroke-[2.5]" />
+          </button>
+        </div>
+      )}
     </div>
   );
 };

@@ -73,6 +73,7 @@ import { formatBytes } from '../services/storageService';
 interface PdfToolsViewProps {
   initialTool?: ToolId;
   activeDocumentId?: string;
+  initialMergeDocIds?: string[];
   documents: StoredDocument[];
   onSaveNewDocument: (doc: StoredDocument) => Promise<void>;
   onUpdateDocument: (doc: StoredDocument) => Promise<void>;
@@ -122,6 +123,7 @@ const TOOL_CATEGORIES: {
 export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   initialTool = 'merge-pdf',
   activeDocumentId,
+  initialMergeDocIds,
   documents,
   onSaveNewDocument,
   onUpdateDocument,
@@ -175,6 +177,22 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   >([]);
 
   useEffect(() => {
+    if (initialMergeDocIds && initialMergeDocIds.length > 0) {
+      const selectedForMerge = initialMergeDocIds
+        .map((id) => documents.find((d) => d.id === id))
+        .filter((d): d is StoredDocument => Boolean(d));
+      if (selectedForMerge.length > 0) {
+        setMergeList(
+          selectedForMerge.map((d) => ({
+            id: `${d.id}-${Math.random()}`,
+            name: d.name,
+            bytes: d.pdfData,
+            pages: d.pageCount,
+          }))
+        );
+        return;
+      }
+    }
     if (mergeList.length === 0 && documents.length >= 2) {
       setMergeList(
         documents.slice(0, 2).map((d) => ({
@@ -185,7 +203,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         }))
       );
     }
-  }, [documents, mergeList.length]);
+  }, [documents, initialMergeDocIds, mergeList.length]);
 
   const handleAddDocToMerge = (doc: StoredDocument) => {
     setMergeList((prev) => [

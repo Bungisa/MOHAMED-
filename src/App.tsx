@@ -18,7 +18,11 @@ import {
   getPdfPageCount,
   downloadBytesAsFile,
   createPdfFromImages,
+  mergePdfs,
+  compressPdfDocument,
+  removeWatermarksFromPdf,
 } from './services/pdfService';
+import { formatBytes } from './services/storageService';
 import {
   parseUploadedWordFile,
   generatePdfFromWordBlocks,
@@ -74,9 +78,15 @@ export default function App() {
     FileList | File[] | null
   >(null);
 
-  // Delete confirmation modal state
+  // Delete confirmation modal state (single or multiple selected documents)
   const [docPendingDelete, setDocPendingDelete] =
     useState<StoredDocument | null>(null);
+  const [docsPendingBatchDelete, setDocsPendingBatchDelete] = useState<
+    StoredDocument[] | null
+  >(null);
+  const [initialMergeDocIds, setInitialMergeDocIds] = useState<
+    string[] | undefined
+  >(undefined);
 
   // "Open PDF With ElimikaPDF..." chooser modal state
   const [openWithPromptDoc, setOpenWithPromptDoc] =
@@ -789,6 +799,156 @@ export default function App() {
     showToast(`Deleted "${deletedName}" from Local Vault.`);
   };
 
+  const handleConfirmBatchDeleteDocuments = async () => {
+    if (!docsPendingBatchDelete || docsPendingBatchDelete.length === 0) return;
+    const count = docsPendingBatchDelete.length;
+    const deletedIds = new Set(docsPendingBatchDelete.map((d) => d.id));
+    for (const doc of docsPendingBatchDelete) {
+      await storageService.deleteDocument(doc.id);
+    }
+    setDocsPendingBatchDelete(null);
+    const remaining = await storageService.getAllDocuments();
+    setDocuments(remaining);
+    if (activeDocument && deletedIds.has(activeDocument.id)) {
+      setActiveDocument(remaining[0] || null);
+    }
+    showToast(
+      `Deleted ${count} selected ${count === 1 ? 'document' : 'documents'} from Local Vault.`
+    );
+  };
+
+  const handleBatchMergeDocuments = async (
+    selectedDocs: StoredDocument[],
+    mode: 'instant' | 'studio'
+  ) => {
+    if (selectedDocs.length < 2) {
+      showToast('Select at least 2 PDF files to merge.', 'error');
+      return;
+    }
+    if (mode === 'studio') {
+      setInitialMergeDocIds(selectedDocs.map((d) => d.id));
+      setActiveTool('merge-pdf');
+      navigateToView('tools');
+      return;
+    }
+
+    try {
+      const mergedBytes = await mergePdfs(selectedDocs.map((d) => d.pdfData));
+      const totalPages = selectedDocs.reduce((sum, d) => sum + d.pageCount, 0);
+      const outName = `Merged_${selectedDocs.length}_Files_${new Date().toISOString().slice(0, 10)}.pdf`;
+      const newDoc: StoredDocument = {
+        id: `doc-merged-${Date.now()}`,
+        name: outName,
+        category: 'Other',
+        starred: false,
+        sizeBytes: mergedBytes.byteLength,
+        pageCount: totalPages,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: mergedBytes,
+      };
+      await storageService.saveDocument(newDoc);
+      await refreshVault();
+      setActiveDocument(newDoc);
+      showToast(
+        `Merged ${selectedDocs.length} PDFs into "${outName}" (${totalPages} pages, ${formatBytes(mergedBytes.byteLength)}).`
+      );
+    } catch {
+      showToast('Failed to merge the selected PDF files.', 'error');
+    }
+  };
+
+  const handleBatchCompressDocuments = async (selectedDocs: StoredDocument[]) => {
+    if (selectedDocs.length === 0) return;
+    let totalBefore = 0;
+    let totalAfter = 0;
+    for (const doc of selectedDocs) {
+      totalBefore += doc.sizeBytes;
+      try {
+        const compressed = await compressPdfDocument(doc.pdfData, 'medium');
+        totalAfter += compressed.byteLength;
+        await storageService.saveDocument({
+          ...doc,
+          pdfData: compressed,
+          sizeBytes: compressed.byteLength,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch {
+        totalAfter += doc.sizeBytes;
+      }
+    }
+    await refreshVault();
+    showToast(
+      `Compressed ${selectedDocs.length} PDF(s) (${formatBytes(totalBefore)} → ${formatBytes(totalAfter)}).`
+    );
+  };
+
+  const handleBatchRemoveWatermarkDocuments = async (
+    selectedDocs: StoredDocument[]
+  ) => {
+    if (selectedDocs.length === 0) return;
+    let cleanedCount = 0;
+    for (const doc of selectedDocs) {
+      try {
+        const cleanedBytes = await removeWatermarksFromPdf(doc.pdfData, {
+          preserveColor: true,
+          strength: 62,
+          removeSolidBanners: true,
+        });
+        await storageService.saveDocument({
+          ...doc,
+          pdfData: cleanedBytes,
+          sizeBytes: cleanedBytes.byteLength,
+          updatedAt: new Date().toISOString(),
+        });
+        cleanedCount++;
+      } catch {
+        // continue with remaining docs
+      }
+    }
+    await refreshVault();
+    showToast(`Cleaned watermarks from ${cleanedCount} selected PDF(s).`);
+  };
+
+  const handleBatchShareDocuments = async (selectedDocs: StoredDocument[]) => {
+    if (selectedDocs.length === 0) return;
+    const files = selectedDocs.map(
+      (doc) =>
+        new File([new Uint8Array(doc.pdfData)], doc.name, {
+          type: 'application/pdf',
+        })
+    );
+    const nav = navigator as Navigator & {
+      canShare?: (data?: ShareData) => boolean;
+    };
+    if (
+      typeof nav.share === 'function' &&
+      (!nav.canShare || nav.canShare({ files }))
+    ) {
+      try {
+        await nav.share({
+          title: `${selectedDocs.length} PDF Documents`,
+          text: `Sharing ${selectedDocs.length} PDF files from ElimikaPDF`,
+          files,
+        });
+        return;
+      } catch {
+        // fall back to download
+      }
+    }
+    selectedDocs.forEach((doc) => downloadBytesAsFile(doc.pdfData, doc.name));
+  };
+
+  const handleBatchDownloadDocuments = (selectedDocs: StoredDocument[]) => {
+    selectedDocs.forEach((doc, idx) => {
+      setTimeout(() => {
+        downloadBytesAsFile(doc.pdfData, doc.name);
+      }, idx * 180);
+    });
+    showToast(`Downloading ${selectedDocs.length} selected PDF(s)...`);
+  };
+
   const totalStorageBytes = documents.reduce((acc, d) => acc + d.sizeBytes, 0);
 
   return (
@@ -875,6 +1035,51 @@ export default function App() {
                 className="px-4 py-2 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-bold cursor-pointer"
               >
                 Delete Permanently
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirmation Modal for Batch Document Deletion */}
+      {docsPendingBatchDelete && docsPendingBatchDelete.length > 0 && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl max-w-md w-full p-6 space-y-4 shadow-xl">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-[#DC2626]/10 text-[#DC2626] shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="space-y-1 min-w-0">
+                <h3 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Delete {docsPendingBatchDelete.length} Selected{' '}
+                  {docsPendingBatchDelete.length === 1
+                    ? 'Document'
+                    : 'Documents'}
+                  ?
+                </h3>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
+                  Are you sure you want to permanently delete{' '}
+                  <strong className="text-[#14101B] dark:text-[#F4F1F8]">
+                    {docsPendingBatchDelete.length} selected PDF{' '}
+                    {docsPendingBatchDelete.length === 1 ? 'file' : 'files'}
+                  </strong>{' '}
+                  from your local vault? This action cannot be undone.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                onClick={() => setDocsPendingBatchDelete(null)}
+                className="px-4 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmBatchDeleteDocuments}
+                className="px-4 py-2 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-bold cursor-pointer"
+              >
+                Delete All ({docsPendingBatchDelete.length})
               </button>
             </div>
           </div>
@@ -1050,6 +1255,14 @@ export default function App() {
             downloadBytesAsFile(doc.pdfData, doc.name)
           }
           onRequestDeleteDocument={(doc) => setDocPendingDelete(doc)}
+          onRequestBatchDeleteDocuments={(docs) =>
+            setDocsPendingBatchDelete(docs)
+          }
+          onBatchMergeDocuments={handleBatchMergeDocuments}
+          onBatchCompressDocuments={handleBatchCompressDocuments}
+          onBatchRemoveWatermarkDocuments={handleBatchRemoveWatermarkDocuments}
+          onBatchShareDocuments={handleBatchShareDocuments}
+          onBatchDownloadDocuments={handleBatchDownloadDocuments}
         />
       )}
 
@@ -1080,6 +1293,7 @@ export default function App() {
         <PdfToolsView
           initialTool={activeTool}
           activeDocumentId={activeDocument?.id}
+          initialMergeDocIds={initialMergeDocIds}
           documents={documents}
           onSaveNewDocument={async (doc) => {
             await storageService.saveDocument(doc);
@@ -1106,6 +1320,14 @@ export default function App() {
             downloadBytesAsFile(doc.pdfData, doc.name)
           }
           onRequestDeleteDocument={(doc) => setDocPendingDelete(doc)}
+          onRequestBatchDeleteDocuments={(docs) =>
+            setDocsPendingBatchDelete(docs)
+          }
+          onBatchMergeDocuments={handleBatchMergeDocuments}
+          onBatchCompressDocuments={handleBatchCompressDocuments}
+          onBatchRemoveWatermarkDocuments={handleBatchRemoveWatermarkDocuments}
+          onBatchShareDocuments={handleBatchShareDocuments}
+          onBatchDownloadDocuments={handleBatchDownloadDocuments}
           onCreateFolder={async (name) => {
             await storageService.saveFolder({
               id: `folder-${Date.now()}`,
