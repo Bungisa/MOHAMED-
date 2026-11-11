@@ -275,7 +275,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             { label: 'Maskable & Any Icons', detail: '192px & 512px Exact Size' },
             { label: 'Offline Service Worker', detail: 'Cache + Offline Fallback' },
             { label: 'Digital Asset Links', detail: '/.well-known/assetlinks.json' },
-            { label: 'File Handlers', detail: 'Open .pdf, .docx & images' },
+            { label: 'File Handlers', detail: 'application/pdf (.pdf)' },
             { label: 'Web Share Target', detail: 'Receive shared PDFs/images' },
             { label: 'Background & Periodic Sync', detail: 'sw.js sync + periodicsync' },
             { label: 'Push & Launch Handler', detail: 'Single-window + Push API' },
@@ -385,17 +385,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
-        {/* Native Android "Open With..." PDF, Word & Document Reader Intent Filter */}
+        {/* Native Android "Open With..." PDF File Opener Activity & Intent Filter */}
         <div className="p-4 rounded-xl bg-[#003FE8]/5 dark:bg-[#003FE8]/15 border border-[#003FE8]/25 space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-[#003FE8] dark:text-[#60A5FA]">
-              Default PDF, Word &amp; Document Reader (&ldquo;Open With ElimikaPDF&rdquo;)
+              Android PDF File Opener (&ldquo;Open With ElimikaPDF&rdquo; — Android 10+)
             </span>
             <button
               onClick={() =>
                 copyText(
                   'intent-filter',
-                  `<!-- Add inside your Launcher <activity> in AndroidManifest.xml -->\n<intent-filter android:label="ElimikaPDF Reader">\n  <action android:name="android.intent.action.VIEW" />\n  <action android:name="android.intent.action.EDIT" />\n  <action android:name="android.intent.action.SEND" />\n  <category android:name="android.intent.category.DEFAULT" />\n  <category android:name="android.intent.category.BROWSABLE" />\n  <data android:scheme="content" />\n  <data android:scheme="file" />\n  <data android:mimeType="application/pdf" />\n  <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />\n  <data android:mimeType="application/msword" />\n  <data android:mimeType="application/rtf" />\n  <data android:mimeType="text/plain" />\n  <data android:mimeType="application/vnd.oasis.opendocument.text" />\n</intent-filter>`
+                  `<!-- Register PdfOpenActivity inside <application> in app/src/main/AndroidManifest.xml -->\n<activity\n    android:name=".PdfOpenActivity"\n    android:exported="true"\n    android:launchMode="singleTask"\n    android:label="ElimikaPDF">\n    <intent-filter android:label="ElimikaPDF">\n        <action android:name="android.intent.action.VIEW" />\n        <category android:name="android.intent.category.DEFAULT" />\n        <category android:name="android.intent.category.BROWSABLE" />\n        <data android:scheme="content" />\n        <data android:scheme="file" />\n        <data android:mimeType="application/pdf" />\n    </intent-filter>\n</activity>`
                 )
               }
               className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-white dark:bg-[#16111F] border border-[#003FE8]/30 text-[11px] font-semibold text-[#003FE8] dark:text-[#60A5FA] cursor-pointer"
@@ -407,16 +407,16 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               )}
               <span>
                 {copiedField === 'intent-filter'
-                  ? 'Copied Multi-Doc Intent Filter'
-                  : 'Copy AndroidManifest Intent Filter'}
+                  ? 'Copied PDF Activity & Intent Filter'
+                  : 'Copy AndroidManifest PDF Activity'}
               </span>
             </button>
           </div>
           <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-            <strong>1. Desktop &amp; Android &ldquo;Share&rdquo; Sheet (Active Automatically):</strong> Selecting <strong>Share &rarr; ElimikaPDF</strong> on any <strong>PDF, Word (<code>.docx</code> / <code>.doc</code>), Text (<code>.txt</code> / <code>.rtf</code>), or Image</strong> in WhatsApp, Gmail, or Files opens it immediately in the <strong>Open with ElimikaPDF</strong> chooser modal.
+            <strong>1. Native Android PDF File Opener (<code>PdfOpenActivity.java</code> + <code>AndroidManifest.xml</code>):</strong> Included in <code>/android-twa-integration/</code>. Registers <code>android.intent.action.VIEW</code>, <code>android.intent.category.DEFAULT</code>, and <code>application/pdf</code> for <code>content://</code> and <code>file://</code> URIs, safely reads temporary ContentResolver permissions on Android 10+, and opens the selected PDF directly in the ElimikaPDF Reader (both cold-start and already-running via <code>onNewIntent</code>).
           </p>
           <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-            <strong>2. Android Native &ldquo;Open With&rdquo; Dialog (For Google Play <code>.aab</code>):</strong> Paste the <code>&lt;intent-filter&gt;</code> above into your Android project&rsquo;s <code>app/src/main/AndroidManifest.xml</code> before building your <code>.aab</code> so Android lists <strong>ElimikaPDF Reader</strong> whenever a user taps any PDF or Word file directly.
+            <strong>2. Desktop &amp; Android Share Sheet:</strong> Selecting <strong>Share &rarr; ElimikaPDF</strong> on any PDF opens it directly in the ElimikaPDF PDF Reader without requiring the user to browse for it again.
           </p>
         </div>
 

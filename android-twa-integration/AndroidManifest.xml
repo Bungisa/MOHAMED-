@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ElimikaPDF — AndroidManifest.xml (Trusted Web Activity / PWABuilder / Bubblewrap)
+  Place inside: app/src/main/AndroidManifest.xml in your PWABuilder / Bubblewrap Android project.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="app.elimikapdf.studio">
+
+    <!-- Network access for TWA & local bridge -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Camera permission for Document Scanner -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <application
+        android:name=".Application"
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/appName"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.LauncherActivity">
+
+        <meta-data
+            android:name="asset_statements"
+            android:resource="@string/asset_statements" />
+
+        <!-- 1. Main Trusted Web Activity Launcher -->
+        <activity
+            android:name=".LauncherActivity"
+            android:alwaysRetainTaskState="true"
+            android:exported="true"
+            android:label="@string/launcherName"
+            android:launchMode="singleTask">
+
+            <meta-data
+                android:name="android.support.customtabs.trusted.DEFAULT_URL"
+                android:value="@string/launchUrl" />
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="https"
+                    android:host="@string/hostName" />
+            </intent-filter>
+        </activity>
+
+        <!--
+          2. Dedicated Android PDF Opener Activity ("Open with ElimikaPDF")
+          - Registers strictly for application/pdf (does NOT register non-PDF formats as PDFs)
+          - Supports android.intent.action.VIEW and android.intent.category.DEFAULT
+          - Supports content:// and file:// URIs on Android 10+ (API 29-35)
+          - Uses launchMode="singleTask" so both cold-start (onCreate) and already-running (onNewIntent)
+            scenarios are handled cleanly.
+        -->
+        <activity
+            android:name=".PdfOpenActivity"
+            android:exported="true"
+            android:label="ElimikaPDF Reader"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+
+            <!-- Content & File URI PDF Open With Intent Filter -->
+            <intent-filter android:label="ElimikaPDF Reader">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
+
+            <!-- Also handle SEND (Share) for application/pdf -->
+            <intent-filter android:label="ElimikaPDF Reader">
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/pdf" />
+            </intent-filter>
+        </activity>
+
+    </application>
+</manifest>

@@ -45,7 +45,15 @@ function sanitizeFilename(raw: string, fallbackExt = 'pdf'): string {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
+
+  // Allow PWABuilder and external validators to inspect manifest, service worker, icons, and assetlinks
+  app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, HEAD, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Download-Filename, X-Download-Mimetype');
+    next();
+  });
 
   // Store binary file for reliable HTTP GET download (supports large PDFs up to 500 MB)
   app.post(
@@ -135,6 +143,74 @@ async function startServer() {
   app.get('/api/downloads/:id/:filename', serveDownload);
   app.head('/api/downloads/:id', serveDownload);
   app.get('/api/downloads/:id', serveDownload);
+
+  // Android Native "Open With" (ACTION_VIEW content:// URI) Bridge Endpoint
+  // Receives raw PDF bytes from Android PdfOpenActivity, validates %PDF- signature, and issues a one-time openId
+  app.post(
+    '/api/android-open-pdf',
+    express.raw({ type: '*/*', limit: '500mb' }),
+    (req, res) => {
+      try {
+        const rawFilename =
+          (req.query.filename as string) ||
+          (req.headers['x-pdf-filename'] as string) ||
+          'Opened_Document.pdf';
+        const filename = sanitizeFilename(rawFilename, 'pdf');
+        const bodyBuffer = Buffer.isBuffer(req.body)
+          ? req.body
+          : Buffer.from(req.body || []);
+
+        if (bodyBuffer.length < 5) {
+          res.status(400).json({
+            error: 'The selected file is empty or unreadable.',
+          });
+          return;
+        }
+
+        // Validate %PDF- magic header so non-PDF or corrupted files are rejected cleanly
+        const magic = bodyBuffer.subarray(0, 5).toString('ascii');
+        if (magic !== '%PDF-') {
+          res.status(400).json({
+            error: 'Unsupported file format. Only valid PDF documents (%PDF-) can be opened.',
+          });
+          return;
+        }
+
+        const openId = `android_pdf_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        downloadStore.set(openId, {
+          buffer: bodyBuffer,
+          filename,
+          mimeType: 'application/pdf',
+          createdAt: Date.now(),
+        });
+
+        const redirectUrl = `/?action=pdf-reader&android_open_id=${encodeURIComponent(openId)}&filename=${encodeURIComponent(filename)}`;
+        res.status(200).json({
+          openId,
+          filename,
+          size: bodyBuffer.length,
+          redirectUrl,
+        });
+      } catch (err) {
+        console.error('Error in /api/android-open-pdf:', err);
+        res.status(500).json({ error: 'Failed to ingest Android PDF stream' });
+      }
+    }
+  );
+
+  app.get('/api/android-open-pdf/:id', (req, res) => {
+    const id = req.params.id;
+    const item = downloadStore.get(id);
+    if (!item) {
+      res.status(404).json({ error: 'Android PDF session expired or not found.' });
+      return;
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('X-Android-Pdf-Filename', encodeURIComponent(item.filename));
+    res.setHeader('Access-Control-Expose-Headers', 'X-Android-Pdf-Filename');
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(200).send(item.buffer);
+  });
 
   // Serve Digital Asset Links for Google Play Store Trusted Web Activity (TWA) verification
   app.get('/.well-known/assetlinks.json', (_req, res) => {

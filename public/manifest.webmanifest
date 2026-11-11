@@ -1,8 +1,8 @@
 {
   "id": "/",
-  "name": "ElimikaPDF — PDF, Word & Document Reader",
+  "name": "ElimikaPDF — PDF Reader, Scanner & PDF Editor",
   "short_name": "ElimikaPDF",
-  "description": "Fast PDF & Word Reader, document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
+  "description": "Fast PDF Reader, document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
   "theme_color": "#003FE8",
   "background_color": "#FAF9FB",
   "display": "standalone",
@@ -15,7 +15,7 @@
   "categories": ["productivity", "business", "utilities"],
   "prefer_related_applications": false,
   "launch_handler": {
-    "client_mode": "navigate-existing"
+    "client_mode": ["focus-existing", "navigate-existing"]
   },
   "handle_links": "preferred",
   "edge_side_panel": {
@@ -23,20 +23,11 @@
   },
   "file_handlers": [
     {
-      "action": "/?action=open-file",
-      "name": "ElimikaPDF Document Reader",
+      "action": "/?action=pdf-reader",
+      "name": "ElimikaPDF Reader",
       "launch_type": "single-client",
       "accept": {
-        "application/pdf": [".pdf"],
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
-        "application/msword": [".doc"],
-        "application/rtf": [".rtf"],
-        "text/rtf": [".rtf"],
-        "text/plain": [".txt", ".md", ".csv"],
-        "application/vnd.oasis.opendocument.text": [".odt"],
-        "image/png": [".png"],
-        "image/jpeg": [".jpg", ".jpeg"],
-        "image/webp": [".webp"]
+        "application/pdf": [".pdf"]
       }
     }
   ],
@@ -53,18 +44,8 @@
           "name": "SharedFiles",
           "accept": [
             "application/pdf",
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            "application/msword",
-            "application/rtf",
-            "text/rtf",
-            "text/plain",
-            "application/vnd.oasis.opendocument.text",
             "image/png",
-            "image/jpeg",
-            "image/webp",
-            "image/*",
-            "application/octet-stream",
-            "*/*"
+            "image/jpeg"
           ]
         }
       ]
@@ -88,12 +69,6 @@
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "maskable"
-    },
-    {
-      "src": "/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg",
-      "sizes": "512x512",
-      "type": "image/jpeg",
-      "purpose": "any"
     }
   ],
   "screenshots": [
@@ -114,9 +89,9 @@
   ],
   "shortcuts": [
     {
-      "name": "Open PDF or Word",
-      "short_name": "Read Doc",
-      "description": "Open and read PDF or Word documents in full-screen Reader Mode",
+      "name": "PDF Reader",
+      "short_name": "Read PDF",
+      "description": "Open and read PDF documents in full-screen Reader Mode",
       "url": "/?action=pdf-reader",
       "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
     },

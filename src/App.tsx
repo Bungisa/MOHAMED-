@@ -82,6 +82,11 @@ export default function App() {
   const [openWithPromptDoc, setOpenWithPromptDoc] =
     useState<StoredDocument | null>(null);
 
+  // Loading state when opening an incoming PDF from Android "Open with" menu
+  const [externalPdfLoadingLabel, setExternalPdfLoadingLabel] = useState<
+    string | null
+  >(null);
+
   // Global toast / error notification
   const [toast, setToast] = useState<{
     message: string;
@@ -224,6 +229,13 @@ export default function App() {
 
     for (let i = 0; i < fileArray.length; i++) {
       const file = fileArray[i];
+      if (file.size === 0) {
+        showToast(
+          `Cannot open "${file.name}": The selected file is empty (0 bytes).`,
+          'error'
+        );
+        continue;
+      }
       if (file.size > 500 * 1024 * 1024) {
         showToast(
           `Skipped "${file.name}": File exceeds 500 MB local storage limit.`,
@@ -239,7 +251,7 @@ export default function App() {
         const buf = await file.arrayBuffer();
         const rawBytes = new Uint8Array(buf);
 
-        // Check if file is a PDF (by extension, MIME, or %PDF- magic header)
+        // Check if file is a PDF (by %PDF- magic header, extension, or MIME)
         const isPdfMagic =
           rawBytes.length >= 5 &&
           rawBytes[0] === 0x25 && // %
@@ -251,7 +263,8 @@ export default function App() {
           mime === 'application/pdf' || lower.endsWith('.pdf') || isPdfMagic;
 
         const isImage =
-          mime.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower);
+          !isPdfMagic &&
+          (mime.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower));
 
         const isWordOrText =
           !isPdf &&
@@ -260,11 +273,24 @@ export default function App() {
             mime.includes('word') ||
             mime.includes('officedocument') ||
             mime.includes('rtf') ||
-            mime.startsWith('text/') ||
-            mime === 'application/octet-stream');
+            mime.startsWith('text/'));
 
         if (isPdf) {
+          if (!isPdfMagic) {
+            showToast(
+              `Cannot open "${file.name}": File does not have a valid PDF header (%PDF-) or is corrupted.`,
+              'error'
+            );
+            continue;
+          }
           const pageCount = await getPdfPageCount(rawBytes);
+          if (!pageCount || pageCount < 1) {
+            showToast(
+              `Cannot open "${file.name}": PDF contains 0 readable pages or is corrupted.`,
+              'error'
+            );
+            continue;
+          }
           const newDoc: StoredDocument = {
             id: `doc-upload-${Date.now()}-${i}`,
             name: file.name.toLowerCase().endsWith('.pdf')
@@ -338,13 +364,13 @@ export default function App() {
           lastAdded = newDoc;
         } else {
           showToast(
-            `Skipped "${file.name}": Supported formats are PDF (.pdf), Word (.docx, .doc), Text (.txt, .rtf), and Images (.png, .jpg).`,
+            `Unsupported file "${file.name}": Please select a valid PDF document (.pdf).`,
             'error'
           );
         }
       } catch {
         showToast(
-          `Could not open "${file.name}". Please ensure it is a valid PDF, Word (.docx/.doc), Text, or Image file.`,
+          `Failed to open "${file.name}". The PDF file appears corrupted, password-locked, or unsupported.`,
           'error'
         );
       }
@@ -360,7 +386,6 @@ export default function App() {
           `Opened "${lastAdded.name}" in ElimikaPDF Reader (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
         );
       } else if (openInEditorAfter) {
-        // Show the "Open with ElimikaPDF..." chooser modal so the user can pick Reader, Edit, Word Converter, OCR, etc.
         setOpenWithPromptDoc(lastAdded);
       } else {
         showToast(
@@ -370,15 +395,119 @@ export default function App() {
     }
   };
 
-  // Handle files opened via OS File Handlers (window.launchQueue) or Android/Desktop Web Share Target
+  // Handle PDF files opened from Android "Open with" menu (cold-start & already-running warm-start),
+  // OS File Handlers (window.launchQueue), or Web Share Target
   useEffect(() => {
-    const ingestExternalFiles = async (incomingFiles: File[]) => {
+    const openExternalPdfDirectlyInReader = async (
+      incomingFiles: File[],
+      sourceLabel = 'Android File Manager'
+    ) => {
       if (!incomingFiles || incomingFiles.length === 0) return;
-      await handleUploadPdfFiles(incomingFiles, true);
+      const firstFile = incomingFiles[0];
+      setExternalPdfLoadingLabel(
+        `Opening "${firstFile.name}" from ${sourceLabel}...`
+      );
+      try {
+        // Automatically open directly in ElimikaPDF Reader (openInReaderMode = true) without asking user to browse again
+        await handleUploadPdfFiles(incomingFiles, true, true);
+      } finally {
+        setExternalPdfLoadingLabel(null);
+      }
     };
 
-    // 1. OS File Handlers API (window.launchQueue — opens PDF, Word .docx/.doc, Text .txt/.rtf, and Images)
+    const decodeBase64PdfAndOpen = async (
+      base64Data: string,
+      filename = 'Android_Document.pdf'
+    ) => {
+      if (!base64Data) return;
+      setExternalPdfLoadingLabel(`Opening "${filename}" in ElimikaPDF Reader...`);
+      try {
+        const cleanBase64 = base64Data.includes(',')
+          ? base64Data.split(',')[1]
+          : base64Data.trim();
+        const binaryStr = atob(cleanBase64);
+        const bytes = new Uint8Array(binaryStr.length);
+        for (let i = 0; i < binaryStr.length; i++) {
+          bytes[i] = binaryStr.charCodeAt(i);
+        }
+        const safeName = filename.toLowerCase().endsWith('.pdf')
+          ? filename
+          : `${filename}.pdf`;
+        const file = new File([bytes], safeName, { type: 'application/pdf' });
+        await openExternalPdfDirectlyInReader([file], 'Android Open With');
+      } catch {
+        setExternalPdfLoadingLabel(null);
+        showToast(
+          `Could not read "${filename}" from Android URI. The file may be corrupted or unreadable.`,
+          'error'
+        );
+      }
+    };
+
+    const fetchAndroidOpenIdAndOpen = async (
+      openId: string,
+      fallbackName = 'Android_Document.pdf',
+      broadcastToExisting = true
+    ) => {
+      if (!openId) return;
+      setExternalPdfLoadingLabel(
+        `Loading "${fallbackName}" into ElimikaPDF Reader...`
+      );
+      try {
+        // Notify any already-running ElimikaPDF client window via BroadcastChannel
+        if (broadcastToExisting && 'BroadcastChannel' in window) {
+          try {
+            const bc = new BroadcastChannel('elimikapdf-open-pdf');
+            bc.postMessage({
+              type: 'ANDROID_OPEN_PDF_ID',
+              openId,
+              filename: fallbackName,
+            });
+            bc.close();
+          } catch {
+            // Ignore BroadcastChannel errors
+          }
+        }
+
+        const res = await fetch(
+          `/api/android-open-pdf/${encodeURIComponent(openId)}`
+        );
+        if (!res.ok) {
+          let errMsg = `Failed to load "${fallbackName}" (status ${res.status}).`;
+          try {
+            const errJson = await res.json();
+            if (errJson?.error) errMsg = errJson.error;
+          } catch {
+            // Ignore JSON parse error
+          }
+          showToast(errMsg, 'error');
+          return;
+        }
+        const headerName = res.headers.get('X-Android-Pdf-Filename');
+        const finalName = headerName
+          ? decodeURIComponent(headerName)
+          : fallbackName;
+        const blob = await res.blob();
+        const file = new File([blob], finalName, { type: 'application/pdf' });
+        await openExternalPdfDirectlyInReader([file], 'Android Open With');
+      } catch {
+        showToast(
+          `Could not open "${fallbackName}". Please verify the PDF file is valid.`,
+          'error'
+        );
+      } finally {
+        setExternalPdfLoadingLabel(null);
+      }
+    };
+
+    // 1. Native Android WebView / Capacitor JavascriptInterface Bridge (cold-start + warm-start onNewIntent)
     const win = window as Window & {
+      ElimikaAndroidBridge?: {
+        hasPendingPdf?: () => boolean;
+        consumePendingPdfBase64?: () => string;
+        getPendingPdfFilename?: () => string;
+      };
+      receiveAndroidPdfBase64?: (base64: string, filename?: string) => void;
       launchQueue?: {
         setConsumer: (
           consumer: (launchParams: {
@@ -388,6 +517,91 @@ export default function App() {
       };
     };
 
+    // Expose global callback for Android WebView.evaluateJavascript("window.receiveAndroidPdfBase64(...)")
+    win.receiveAndroidPdfBase64 = (base64: string, filename?: string) => {
+      decodeBase64PdfAndOpen(base64, filename || 'Android_Document.pdf');
+    };
+
+    const checkNativeAndroidBridge = () => {
+      try {
+        if (
+          win.ElimikaAndroidBridge &&
+          typeof win.ElimikaAndroidBridge.hasPendingPdf === 'function' &&
+          win.ElimikaAndroidBridge.hasPendingPdf()
+        ) {
+          const filename =
+            typeof win.ElimikaAndroidBridge.getPendingPdfFilename === 'function'
+              ? win.ElimikaAndroidBridge.getPendingPdfFilename()
+              : 'Android_Document.pdf';
+          const b64 =
+            typeof win.ElimikaAndroidBridge.consumePendingPdfBase64 ===
+            'function'
+              ? win.ElimikaAndroidBridge.consumePendingPdfBase64()
+              : '';
+          if (b64) {
+            decodeBase64PdfAndOpen(b64, filename);
+          }
+        }
+      } catch {
+        // Ignore bridge inspection errors
+      }
+    };
+
+    // Check immediately on cold start
+    checkNativeAndroidBridge();
+
+    // Listen for warm-start custom event dispatched by Android Activity.onNewIntent
+    const onAndroidIntentEvent = (e: Event) => {
+      const customEvt = e as CustomEvent<{
+        base64?: string;
+        filename?: string;
+        openId?: string;
+      }>;
+      if (customEvt.detail?.base64) {
+        decodeBase64PdfAndOpen(
+          customEvt.detail.base64,
+          customEvt.detail.filename || 'Android_Document.pdf'
+        );
+      } else if (customEvt.detail?.openId) {
+        fetchAndroidOpenIdAndOpen(
+          customEvt.detail.openId,
+          customEvt.detail.filename || 'Android_Document.pdf',
+          false
+        );
+      } else {
+        checkNativeAndroidBridge();
+      }
+    };
+    window.addEventListener('elimikapdf:android-open-pdf', onAndroidIntentEvent);
+
+    // Also check when app returns to foreground (already-running warm start)
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkNativeAndroidBridge();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    // 2. Listen on BroadcastChannel so an already-running ElimikaPDF instance immediately opens a newly selected PDF
+    let broadcastChannel: BroadcastChannel | null = null;
+    if ('BroadcastChannel' in window) {
+      try {
+        broadcastChannel = new BroadcastChannel('elimikapdf-open-pdf');
+        broadcastChannel.onmessage = (event) => {
+          if (event.data?.type === 'ANDROID_OPEN_PDF_ID' && event.data?.openId) {
+            fetchAndroidOpenIdAndOpen(
+              event.data.openId,
+              event.data.filename || 'Android_Document.pdf',
+              false
+            );
+          }
+        };
+      } catch {
+        broadcastChannel = null;
+      }
+    }
+
+    // 3. OS File Handlers API (window.launchQueue — opens selected PDF directly in ElimikaPDF Reader)
     if (win.launchQueue && typeof win.launchQueue.setConsumer === 'function') {
       win.launchQueue.setConsumer(async (launchParams) => {
         if (!launchParams.files || launchParams.files.length === 0) return;
@@ -397,16 +611,23 @@ export default function App() {
             const f = await handle.getFile();
             loadedFiles.push(f);
           }
-          await ingestExternalFiles(loadedFiles);
+          await openExternalPdfDirectlyInReader(loadedFiles, 'Open With');
         } catch {
-          // Ignore if file handle permission was cancelled
+          showToast(
+            'Permission to read the selected PDF file was denied.',
+            'error'
+          );
         }
       });
     }
 
-    // 2. Web Share Target API (/?shared=1 from Service Worker OR /?shared_server_id=... from Express Server)
+    // 4. Check URL query parameters for TWA Android Open With (?android_open_id=...) or Web Share Target (?shared=1 / ?shared_server_id=...)
     const params = new URLSearchParams(window.location.search);
-    if (params.get('shared') === '1') {
+    const androidOpenId = params.get('android_open_id');
+    if (androidOpenId) {
+      const rawName = params.get('filename') || 'Android_Document.pdf';
+      fetchAndroidOpenIdAndOpen(androidOpenId, rawName, true);
+    } else if (params.get('shared') === '1') {
       fetch('/__shared_file_latest')
         .then(async (res) => {
           if (!res.ok) return;
@@ -414,10 +635,10 @@ export default function App() {
             res.headers.get('X-Shared-Filename') || 'Shared_Document.pdf';
           const filename = decodeURIComponent(rawName);
           const mimeType =
-            res.headers.get('Content-Type') || 'application/octet-stream';
+            res.headers.get('Content-Type') || 'application/pdf';
           const blob = await res.blob();
           const file = new File([blob], filename, { type: mimeType });
-          await ingestExternalFiles([file]);
+          await openExternalPdfDirectlyInReader([file], 'Android Share');
         })
         .catch(() => {
           // Ignore if no shared file was cached
@@ -425,18 +646,29 @@ export default function App() {
     } else if (params.get('shared_server_id')) {
       const serverId = params.get('shared_server_id')!;
       const rawName = params.get('filename') || 'Shared_Document.pdf';
-      const mimeType = params.get('mime') || 'application/octet-stream';
+      const mimeType = params.get('mime') || 'application/pdf';
       fetch(`/api/downloads/${encodeURIComponent(serverId)}`)
         .then(async (res) => {
           if (!res.ok) return;
           const blob = await res.blob();
           const file = new File([blob], rawName, { type: mimeType });
-          await ingestExternalFiles([file]);
+          await openExternalPdfDirectlyInReader([file], 'Android Share');
         })
         .catch(() => {
           // Ignore if expired
         });
     }
+
+    return () => {
+      window.removeEventListener(
+        'elimikapdf:android-open-pdf',
+        onAndroidIntentEvent
+      );
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+      if (broadcastChannel) {
+        broadcastChannel.close();
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -567,6 +799,23 @@ export default function App() {
       documentCount={documents.length}
       onQuickScan={() => navigateToView('scanner')}
     >
+      {/* Loading Overlay for Incoming Android "Open With" PDF URIs */}
+      {externalPdfLoadingLabel && (
+        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl max-w-sm w-full p-6 flex items-center gap-4 shadow-2xl">
+            <div className="w-9 h-9 rounded-full border-3 border-[#003FE8] border-t-transparent animate-spin shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                ElimikaPDF Reader
+              </p>
+              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
+                {externalPdfLoadingLabel}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Toast Notification Banner */}
       {toast && (
         <div className="fixed bottom-20 lg:bottom-6 right-4 z-50 max-w-md px-4 py-3 rounded-xl shadow-lg border flex items-center justify-between gap-3 bg-white dark:bg-[#16111F] border-[#4A1D5E] dark:border-[#9D5CE5] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8]">
