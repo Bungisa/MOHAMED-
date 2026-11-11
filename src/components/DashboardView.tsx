@@ -168,11 +168,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-5">
-      {/* Hidden File Inputs */}
+      {/* Hidden File Inputs (Accept PDF, Word .docx/.doc, Text .txt/.rtf, and Images) */}
       <input
         ref={pdfInputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/rtf,image/png,image/jpeg,image/webp"
         multiple
         className="hidden"
         onChange={handlePdfUploadChange}
@@ -180,7 +180,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       <input
         ref={pdfReaderInputRef}
         type="file"
-        accept="application/pdf,.pdf"
+        accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/rtf,image/png,image/jpeg,image/webp"
         multiple
         className="hidden"
         onChange={handlePdfReaderUploadChange}
@@ -205,8 +205,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             <Eye className="w-5 h-5" />
           </div>
           <div className="min-w-0">
-            <p className="text-xs sm:text-sm font-bold truncate">Read PDF</p>
-            <p className="text-[11px] opacity-85 truncate">Open PDF Reader</p>
+            <p className="text-xs sm:text-sm font-bold truncate">Read File</p>
+            <p className="text-[11px] opacity-85 truncate">PDF, Word & Docs</p>
           </div>
         </button>
 
@@ -233,10 +233,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
           <div className="min-w-0">
             <p className="text-xs sm:text-sm font-bold truncate">
-              {isUploading ? 'Opening...' : 'Edit PDF'}
+              {isUploading ? 'Opening...' : 'Open & Edit'}
             </p>
             <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] truncate">
-              Text & Watermark
+              PDF, Word & Docs
             </p>
           </div>
         </button>

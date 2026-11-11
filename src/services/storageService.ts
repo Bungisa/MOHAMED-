@@ -37,10 +37,61 @@ export interface IDocumentRepository {
   deleteFolder(id: string): Promise<void>;
 }
 
+export const MAX_VAULT_QUOTA_BYTES = 500 * 1024 * 1024; // 500 MB Local Vault Quota
+
+export async function requestPersistentStorage(): Promise<boolean> {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.storage &&
+      typeof navigator.storage.persist === 'function'
+    ) {
+      const alreadyPersisted = await navigator.storage.persisted();
+      if (alreadyPersisted) return true;
+      return await navigator.storage.persist();
+    }
+  } catch {
+    // Ignore in unsupported environments
+  }
+  return false;
+}
+
+export async function getDeviceStorageEstimate(): Promise<{
+  quotaBytes: number;
+  usageBytes: number;
+  persisted: boolean;
+}> {
+  try {
+    if (
+      typeof navigator !== 'undefined' &&
+      navigator.storage &&
+      typeof navigator.storage.estimate === 'function'
+    ) {
+      const [est, persisted] = await Promise.all([
+        navigator.storage.estimate(),
+        navigator.storage.persisted ? navigator.storage.persisted() : Promise.resolve(false),
+      ]);
+      return {
+        quotaBytes: Math.max(MAX_VAULT_QUOTA_BYTES, est.quota || MAX_VAULT_QUOTA_BYTES),
+        usageBytes: est.usage || 0,
+        persisted,
+      };
+    }
+  } catch {
+    // Fallback to 500 MB nominal quota
+  }
+  return {
+    quotaBytes: MAX_VAULT_QUOTA_BYTES,
+    usageBytes: 0,
+    persisted: false,
+  };
+}
+
 let dbPromise: Promise<IDBPDatabase> | null = null;
 
 function getDb(): Promise<IDBPDatabase> {
   if (!dbPromise) {
+    requestPersistentStorage().catch(() => {});
     dbPromise = openDB(DB_NAME, DB_VERSION, {
       upgrade(db) {
         if (!db.objectStoreNames.contains(DOCS_STORE)) {

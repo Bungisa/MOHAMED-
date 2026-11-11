@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Privacy Policy — ElimikaPDF</title>
+  <meta name="description" content="Official Privacy Policy for ElimikaPDF (PDF Reader, Document Scanner, PDF Editor & OCR Studio)." />
+  <style>
+    :root {
+      --bg: #FAF9FB;
+      --card: #FFFFFF;
+      --text: #14101B;
+      --muted: #6E667D;
+      --border: #E4DFEC;
+      --accent: #4A1D5E;
+      --green: #15803D;
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", "Segoe UI", Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      padding: 24px 16px 64px;
+    }
+    .container {
+      max-width: 820px;
+      margin: 0 auto;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 32px 28px;
+      box-shadow: 0 2px 10px rgba(20, 16, 27, 0.04);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .brand-left {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-left img {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      object-fit: cover;
+    }
+    h1 {
+      font-size: 1.6rem;
+      margin: 0;
+      color: var(--accent);
+    }
+    .badge {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--green);
+      background: rgba(21, 128, 61, 0.1);
+      padding: 6px 12px;
+      border-radius: 999px;
+    }
+    h2 {
+      font-size: 1.15rem;
+      color: var(--accent);
+      margin-top: 28px;
+      margin-bottom: 8px;
+    }
+    p, li {
+      font-size: 0.95rem;
+      color: var(--text);
+    }
+    ul {
+      padding-left: 20px;
+    }
+    .meta {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 20px;
+    }
+    .highlight-box {
+      background: #F4F1F8;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 20px;
+      margin: 20px 0;
+    }
+    .back-link {
+      display: inline-block;
+      margin-top: 28px;
+      padding: 10px 18px;
+      background: var(--accent);
+      color: #fff;
+      text-decoration: none;
+      border-radius: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+    }
+    footer {
+      margin-top: 36px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="brand">
+      <div class="brand-left">
+        <img src="/pwa-192x192.png" alt="ElimikaPDF Icon" />
+        <div>
+          <h1>ElimikaPDF — Privacy Policy</h1>
+          <div class="meta">Effective Date: November 10, 2026 &middot; Last Updated: November 10, 2026</div>
+        </div>
+      </div>
+      <span class="badge">100% On-Device Local Privacy</span>
+    </div>
+
+    <div class="highlight-box">
+      <strong>Summary of Our Privacy Commitment:</strong>
+      <p style="margin: 6px 0 0;">
+        <strong>ElimikaPDF</strong> is a local-first PDF Reader, Document Scanner, PDF Editor, Word Converter, and Optical Character Recognition (OCR) application. Your documents, camera scans, PDF annotations, and extracted text are processed and stored <strong>locally on your device</strong>. We do not sell, rent, collect, or transmit your personal documents to any external tracking or advertising servers.
+      </p>
+    </div>
+
+    <h2>1. Information We Collect and Process</h2>
+    <p>
+      ElimikaPDF is designed to operate without requiring user registration or personal accounts. We do not collect personally identifiable information (PII) such as your name, phone number, physical address, or payment information.
+    </p>
+    <ul>
+      <li><strong>Documents &amp; Files:</strong> Any PDF files, Word documents (<code>.docx</code>), or images you open, edit, merge, split, compress, or convert are processed locally inside your device's memory and stored in your device's local <code>IndexedDB</code> storage vault.</li>
+      <li><strong>Optical Character Recognition (OCR):</strong> Text recognition (English and Kiswahili) runs locally on your device. Extracted text remains inside your local document vault unless you explicitly export or share it.</li>
+    </ul>
+
+    <h2>2. Device Permissions We Request</h2>
+    <p>To provide core document scanning and PDF management features, ElimikaPDF may request the following permissions on your device:</p>
+    <ul>
+      <li><strong>Camera Permission (<code>android.permission.CAMERA</code>):</strong> Used strictly when you open the Document Scanner to photograph physical pages, receipts, notes, or contracts for perspective cropping and PDF creation. Camera frames are processed in real time on your device and are never uploaded or streamed to external servers.</li>
+      <li><strong>File &amp; Media Access:</strong> Used only when you explicitly pick a PDF, Word file, or image from your device storage (or share a PDF to ElimikaPDF via the system Share / Open With menu) and when you save or download edited files back to your device.</li>
+      <li><strong>Notifications (Optional):</strong> Used only if you enable local notifications for completed document tasks.</li>
+    </ul>
+
+    <h2>3. Data Storage, Retention, and Deletion</h2>
+    <ul>
+      <li><strong>On-Device Storage:</strong> All stored documents and user preferences (such as Light/Dark theme and default scan filters) are saved locally on your device using browser <code>IndexedDB</code> and <code>localStorage</code>.</li>
+      <li><strong>Full User Control &amp; Instant Deletion:</strong> You can delete any individual document at any time by tapping the Delete (trash) icon next to the file, or erase all locally stored data at once by navigating to <strong>Settings &rarr; Delete All Locally Stored Documents</strong> (or by clearing the app data / uninstalling the app on your device).</li>
+    </ul>
+
+    <h2>4. Third-Party Sharing &amp; Analytics</h2>
+    <p>
+      ElimikaPDF does <strong>not</strong> include third-party advertising SDKs, behavioral trackers, or data brokers. Your files are only shared with other applications (such as WhatsApp, Gmail, or Google Drive) when you explicitly tap the <strong>Share</strong> or <strong>Send to Email</strong> button on your device.
+    </p>
+
+    <h2>5. Children's Privacy</h2>
+    <p>
+      ElimikaPDF is a general-audience productivity and educational document utility. We do not knowingly collect any personal information from children under the age of 13 (or the applicable age of digital consent in your jurisdiction).
+    </p>
+
+    <h2>6. Changes to This Privacy Policy</h2>
+    <p>
+      We may update this Privacy Policy from time to time to reflect improvements to ElimikaPDF or regulatory requirements. Any updates will be posted on this page with an updated revision date.
+    </p>
+
+    <h2>7. Contact Us</h2>
+    <p>
+      If you have any questions, concerns, or requests regarding this Privacy Policy or how ElimikaPDF handles your data, please contact the developer at:
+    </p>
+    <p>
+      <strong>App Name:</strong> ElimikaPDF<br />
+      <strong>Email:</strong> <a href="mailto:mohamedshabani751@gmail.com">mohamedshabani751@gmail.com</a>
+    </p>
+
+    <a href="/" class="back-link">&larr; Back to ElimikaPDF App</a>
+
+    <footer>
+      &copy; 2026 ElimikaPDF. All rights reserved. Compliant with Google Play Store User Data &amp; Privacy Policy Requirements.
+    </footer>
+  </div>
+</body>
+</html>

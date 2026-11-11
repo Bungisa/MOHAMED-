@@ -14,7 +14,15 @@ import {
   savePreferences,
   seedInitialDocumentsIfEmpty,
 } from './services/storageService';
-import { getPdfPageCount, downloadBytesAsFile } from './services/pdfService';
+import {
+  getPdfPageCount,
+  downloadBytesAsFile,
+  createPdfFromImages,
+} from './services/pdfService';
+import {
+  parseUploadedWordFile,
+  generatePdfFromWordBlocks,
+} from './services/wordConversionService';
 import { Layout } from './components/Layout';
 import { DashboardView } from './components/DashboardView';
 import { ScannerView } from './components/ScannerView';
@@ -24,6 +32,7 @@ import { DocumentsLibraryView } from './components/DocumentsLibraryView';
 import {
   SettingsView,
   HelpAndSupportView,
+  PrivacyPolicyView,
 } from './components/SettingsAndHelpView';
 import {
   AlertTriangle,
@@ -31,12 +40,23 @@ import {
   Eye,
   FileEdit,
   FileOutput,
+  FileText,
   ScanText,
   Scissors,
 } from 'lucide-react';
 
 export default function App() {
-  const [activeView, setActiveView] = useState<ActiveView>('dashboard');
+  const [activeView, setActiveView] = useState<ActiveView>(() => {
+    if (typeof window !== 'undefined') {
+      const p = window.location.pathname.toLowerCase();
+      const s = window.location.search.toLowerCase();
+      const h = window.location.hash.toLowerCase();
+      if (p.includes('privacy') || s.includes('privacy') || h.includes('privacy')) {
+        return 'privacy';
+      }
+    }
+    return 'dashboard';
+  });
   const [activeTool, setActiveTool] = useState<ToolId>('merge-pdf');
   const [preferences, setPreferences] = useState<AppPreferences>(() =>
     loadPreferences()
@@ -141,8 +161,20 @@ export default function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const action = params.get('action');
+    const viewParam = params.get('view');
+    const pathLower = window.location.pathname.toLowerCase();
+    const hashLower = window.location.hash.toLowerCase();
+
     let initialView: ActiveView = 'dashboard';
-    if (action === 'scan') {
+    if (
+      pathLower.includes('privacy') ||
+      viewParam === 'privacy' ||
+      params.has('privacy') ||
+      hashLower.includes('privacy')
+    ) {
+      initialView = 'privacy';
+      setActiveView('privacy');
+    } else if (action === 'scan') {
       initialView = 'scanner';
       setActiveView('scanner');
     } else if (action === 'pdf-reader') {
@@ -165,6 +197,10 @@ export default function App() {
       // Ignore in restricted iframe contexts
     }
     const onPopState = (e: PopStateEvent) => {
+      if (window.location.hash.toLowerCase().includes('privacy')) {
+        setActiveView('privacy');
+        return;
+      }
       const targetView = (e.state?.view as ActiveView) || 'dashboard';
       setActiveView(targetView);
       refreshVault();
@@ -185,49 +221,130 @@ export default function App() {
   ) => {
     const fileArray = Array.from(files);
     let lastAdded: StoredDocument | null = null;
+
     for (let i = 0; i < fileArray.length; i++) {
       const file = fileArray[i];
-      if (
-        file.type !== 'application/pdf' &&
-        !file.name.toLowerCase().endsWith('.pdf')
-      ) {
+      if (file.size > 500 * 1024 * 1024) {
         showToast(
-          `Skipped "${file.name}": Only valid PDF files are supported here.`,
+          `Skipped "${file.name}": File exceeds 500 MB local storage limit.`,
           'error'
         );
         continue;
       }
-      if (file.size > 100 * 1024 * 1024) {
-        showToast(
-          `Skipped "${file.name}": File exceeds 100 MB local processing limit.`,
-          'error'
-        );
-        continue;
-      }
+
+      const lower = file.name.toLowerCase();
+      const mime = (file.type || '').toLowerCase();
 
       try {
         const buf = await file.arrayBuffer();
-        const pdfBytes = new Uint8Array(buf);
-        const pageCount = await getPdfPageCount(pdfBytes);
+        const rawBytes = new Uint8Array(buf);
 
-        const newDoc: StoredDocument = {
-          id: `doc-upload-${Date.now()}-${i}`,
-          name: file.name,
-          category: 'Other',
-          starred: false,
-          sizeBytes: pdfBytes.byteLength,
-          pageCount,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastOpenedAt: new Date().toISOString(),
-          pdfData: pdfBytes,
-        };
+        // Check if file is a PDF (by extension, MIME, or %PDF- magic header)
+        const isPdfMagic =
+          rawBytes.length >= 5 &&
+          rawBytes[0] === 0x25 && // %
+          rawBytes[1] === 0x50 && // P
+          rawBytes[2] === 0x44 && // D
+          rawBytes[3] === 0x46; // F
 
-        await storageService.saveDocument(newDoc);
-        lastAdded = newDoc;
+        const isPdf =
+          mime === 'application/pdf' || lower.endsWith('.pdf') || isPdfMagic;
+
+        const isImage =
+          mime.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower);
+
+        const isWordOrText =
+          !isPdf &&
+          !isImage &&
+          (/\.(docx?|rtf|txt|md|csv|odt)$/i.test(lower) ||
+            mime.includes('word') ||
+            mime.includes('officedocument') ||
+            mime.includes('rtf') ||
+            mime.startsWith('text/') ||
+            mime === 'application/octet-stream');
+
+        if (isPdf) {
+          const pageCount = await getPdfPageCount(rawBytes);
+          const newDoc: StoredDocument = {
+            id: `doc-upload-${Date.now()}-${i}`,
+            name: file.name.toLowerCase().endsWith('.pdf')
+              ? file.name
+              : `${file.name}.pdf`,
+            category: 'Other',
+            starred: false,
+            sizeBytes: rawBytes.byteLength,
+            pageCount,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: rawBytes,
+          };
+          await storageService.saveDocument(newDoc);
+          lastAdded = newDoc;
+        } else if (isImage) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Image read error'));
+            reader.readAsDataURL(file);
+          });
+          const pdfBytes = await createPdfFromImages([dataUrl], {
+            pageSize: 'A4',
+            marginPt: 18,
+          });
+          const pageCount = await getPdfPageCount(pdfBytes);
+          const cleanName = file.name.replace(/\.[^.]+$/, '') + '.pdf';
+          const newDoc: StoredDocument = {
+            id: `doc-img-${Date.now()}-${i}`,
+            name: cleanName,
+            category: 'Scans',
+            starred: false,
+            sizeBytes: pdfBytes.byteLength,
+            pageCount,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: pdfBytes,
+          };
+          await storageService.saveDocument(newDoc);
+          lastAdded = newDoc;
+        } else if (isWordOrText) {
+          const parsed = await parseUploadedWordFile(file);
+          const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
+            parsed.blocks,
+            {
+              pageSize: 'A4',
+              fontFamily: 'helvetica',
+              baseFontSize: 11,
+              lineSpacing: 1.35,
+              addPageNumbers: true,
+            }
+          );
+          const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
+          const newDoc: StoredDocument = {
+            id: `doc-word-${Date.now()}-${i}`,
+            name: `${baseTitle}.pdf`,
+            category: 'Reports',
+            starred: false,
+            sizeBytes: pdfBytes.byteLength,
+            pageCount,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: pdfBytes,
+            ocrText: parsed.plainText,
+          };
+          await storageService.saveDocument(newDoc);
+          lastAdded = newDoc;
+        } else {
+          showToast(
+            `Skipped "${file.name}": Supported formats are PDF (.pdf), Word (.docx, .doc), Text (.txt, .rtf), and Images (.png, .jpg).`,
+            'error'
+          );
+        }
       } catch {
         showToast(
-          `Failed to load "${file.name}". The PDF file appears corrupted or unsupported.`,
+          `Could not open "${file.name}". Please ensure it is a valid PDF, Word (.docx/.doc), Text, or Image file.`,
           'error'
         );
       }
@@ -243,7 +360,7 @@ export default function App() {
           `Opened "${lastAdded.name}" in ElimikaPDF Reader (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
         );
       } else if (openInEditorAfter) {
-        // Show the "Open PDF With ElimikaPDF..." chooser modal so the user sees PDF Reader, Edit PDF, PDF to Word, OCR, etc.
+        // Show the "Open with ElimikaPDF..." chooser modal so the user can pick Reader, Edit, Word Converter, OCR, etc.
         setOpenWithPromptDoc(lastAdded);
       } else {
         showToast(
@@ -255,26 +372,12 @@ export default function App() {
 
   // Handle files opened via OS File Handlers (window.launchQueue) or Android/Desktop Web Share Target
   useEffect(() => {
-    const ingestExternalFile = async (file: File) => {
-      const lower = file.name.toLowerCase();
-      if (file.type === 'application/pdf' || lower.endsWith('.pdf')) {
-        await handleUploadPdfFiles([file], true);
-      } else if (
-        lower.endsWith('.docx') ||
-        lower.endsWith('.doc') ||
-        file.type.includes('word')
-      ) {
-        setActiveTool('word-to-pdf');
-        navigateToView('tools');
-        showToast(`Opened "${file.name}" in Word to PDF Converter.`);
-      } else if (file.type.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower)) {
-        setScannerImportedFiles([file]);
-        navigateToView('scanner');
-        showToast(`Imported shared image "${file.name}" into Document Scanner.`);
-      }
+    const ingestExternalFiles = async (incomingFiles: File[]) => {
+      if (!incomingFiles || incomingFiles.length === 0) return;
+      await handleUploadPdfFiles(incomingFiles, true);
     };
 
-    // 1. OS File Handlers API (window.launchQueue)
+    // 1. OS File Handlers API (window.launchQueue — opens PDF, Word .docx/.doc, Text .txt/.rtf, and Images)
     const win = window as Window & {
       launchQueue?: {
         setConsumer: (
@@ -289,30 +392,49 @@ export default function App() {
       win.launchQueue.setConsumer(async (launchParams) => {
         if (!launchParams.files || launchParams.files.length === 0) return;
         try {
-          const fileHandle = launchParams.files[0];
-          const file = await fileHandle.getFile();
-          await ingestExternalFile(file);
+          const loadedFiles: File[] = [];
+          for (const handle of launchParams.files) {
+            const f = await handle.getFile();
+            loadedFiles.push(f);
+          }
+          await ingestExternalFiles(loadedFiles);
         } catch {
           // Ignore if file handle permission was cancelled
         }
       });
     }
 
-    // 2. Web Share Target API (/?shared=1 redirected from Service Worker POST /?share-target=1)
+    // 2. Web Share Target API (/?shared=1 from Service Worker OR /?shared_server_id=... from Express Server)
     const params = new URLSearchParams(window.location.search);
     if (params.get('shared') === '1') {
       fetch('/__shared_file_latest')
         .then(async (res) => {
           if (!res.ok) return;
-          const rawName = res.headers.get('X-Shared-Filename') || 'Shared_Document.pdf';
+          const rawName =
+            res.headers.get('X-Shared-Filename') || 'Shared_Document.pdf';
           const filename = decodeURIComponent(rawName);
-          const mimeType = res.headers.get('Content-Type') || 'application/pdf';
+          const mimeType =
+            res.headers.get('Content-Type') || 'application/octet-stream';
           const blob = await res.blob();
           const file = new File([blob], filename, { type: mimeType });
-          await ingestExternalFile(file);
+          await ingestExternalFiles([file]);
         })
         .catch(() => {
           // Ignore if no shared file was cached
+        });
+    } else if (params.get('shared_server_id')) {
+      const serverId = params.get('shared_server_id')!;
+      const rawName = params.get('filename') || 'Shared_Document.pdf';
+      const mimeType = params.get('mime') || 'application/octet-stream';
+      fetch(`/api/downloads/${encodeURIComponent(serverId)}`)
+        .then(async (res) => {
+          if (!res.ok) return;
+          const blob = await res.blob();
+          const file = new File([blob], rawName, { type: mimeType });
+          await ingestExternalFiles([file]);
+        })
+        .catch(() => {
+          // Ignore if expired
         });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -608,17 +730,31 @@ export default function App() {
                 </div>
               </button>
 
-              <div className="grid grid-cols-2 gap-2 pt-1">
+              <div className="grid grid-cols-3 gap-2 pt-1">
+                <button
+                  onClick={() => {
+                    const doc = openWithPromptDoc;
+                    setOpenWithPromptDoc(null);
+                    handleOpenToolForDocument(doc, 'word-to-pdf');
+                  }}
+                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
+                >
+                  <FileText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                    Word Studio
+                  </span>
+                </button>
+
                 <button
                   onClick={() => {
                     const doc = openWithPromptDoc;
                     setOpenWithPromptDoc(null);
                     handleOpenToolForDocument(doc, 'ocr-pdf');
                   }}
-                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2.5 transition-colors cursor-pointer"
+                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
                 >
                   <ScanText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
-                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
                     OCR Text
                   </span>
                 </button>
@@ -629,11 +765,11 @@ export default function App() {
                     setOpenWithPromptDoc(null);
                     handleOpenToolForDocument(doc, 'split-pdf');
                   }}
-                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2.5 transition-colors cursor-pointer"
+                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
                 >
                   <Scissors className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
-                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Split / Extract
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                    Split PDF
                   </span>
                 </button>
               </div>
@@ -741,6 +877,7 @@ export default function App() {
           onUpdatePreferences={handleUpdatePreferences}
           totalStorageBytes={totalStorageBytes}
           documentCount={documents.length}
+          onOpenPrivacyPolicy={() => navigateToView('privacy')}
           onClearAllStorage={async () => {
             await storageService.clearAllDocuments();
             setDocuments([]);
@@ -754,6 +891,10 @@ export default function App() {
             showToast('Restored sample PDF documents.');
           }}
         />
+      )}
+
+      {activeView === 'privacy' && (
+        <PrivacyPolicyView onBack={() => navigateToView('dashboard')} />
       )}
 
       {activeView === 'help' && <HelpAndSupportView />}

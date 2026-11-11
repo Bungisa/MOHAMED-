@@ -5,7 +5,8 @@ export type ActiveView =
   | 'tools'
   | 'documents'
   | 'settings'
-  | 'help';
+  | 'help'
+  | 'privacy';
 
 export type ToolId =
   | 'read-pdf'

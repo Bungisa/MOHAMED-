@@ -1,8 +1,9 @@
-const CACHE_NAME = 'elimikapdf-v4';
+const CACHE_NAME = 'elimikapdf-v5';
 const SHARED_CACHE_NAME = 'elimikapdf-shared-files-v1';
 const PRECACHE_URLS = [
   '/',
   '/index.html',
+  '/privacy-policy.html',
   '/manifest.webmanifest',
   '/pwa-192x192.png',
   '/pwa-512x512.png',
@@ -102,6 +103,23 @@ self.addEventListener('fetch', (event) => {
     url.pathname.startsWith('/node_modules/') ||
     url.pathname.startsWith('/api/')
   ) {
+    return;
+  }
+
+  // Dedicated handling for /privacy-policy, /privacy, and /privacy-policy.html
+  if (
+    url.pathname === '/privacy-policy' ||
+    url.pathname === '/privacy-policy/' ||
+    url.pathname === '/privacy' ||
+    url.pathname === '/privacy-policy.html'
+  ) {
+    event.respondWith(
+      fetch('/privacy-policy.html').catch(async () => {
+        const cached = await caches.match('/privacy-policy.html');
+        if (cached) return cached;
+        return fetch(request);
+      })
+    );
     return;
   }
 

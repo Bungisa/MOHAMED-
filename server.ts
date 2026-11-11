@@ -47,10 +47,10 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  // Store binary file for reliable HTTP GET download (fixes Android Chrome / WebView blob download errors in iframes)
+  // Store binary file for reliable HTTP GET download (supports large PDFs up to 500 MB)
   app.post(
     '/api/downloads',
-    express.raw({ type: '*/*', limit: '100mb' }),
+    express.raw({ type: '*/*', limit: '500mb' }),
     (req, res) => {
       try {
         const rawFilename =
@@ -143,10 +143,79 @@ async function startServer() {
     res.sendFile(path.join(__dirname, 'public', '.well-known', 'assetlinks.json'));
   });
 
-  // Fallback for cold-start Web Share Target POST requests if Service Worker hasn't claimed client yet
-  app.post('/share-target', (_req, res) => {
-    res.redirect(303, '/?action=pdf-reader');
-  });
+  // Serve Google Play Console compliant Privacy Policy page at /privacy-policy, /privacy, and /privacy-policy.html
+  const servePrivacyPolicy = (_req: express.Request, res: express.Response) => {
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.sendFile(path.join(__dirname, 'public', 'privacy-policy.html'));
+  };
+  app.get('/privacy-policy', servePrivacyPolicy);
+  app.get('/privacy', servePrivacyPolicy);
+  app.get('/privacy-policy.html', servePrivacyPolicy);
+
+  // Cold-start Web Share Target POST handler (extracts multipart file if Service Worker hasn't claimed client yet)
+  app.post(
+    '/share-target',
+    express.raw({ type: '*/*', limit: '500mb' }),
+    (req, res) => {
+      try {
+        const contentType = req.headers['content-type'] || '';
+        const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/i);
+        const bodyBuf = Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+
+        if (boundaryMatch && bodyBuf.length > 0) {
+          const boundary = `--${boundaryMatch[1] || boundaryMatch[2]}`;
+          const rawLatin1 = bodyBuf.toString('latin1');
+          const parts = rawLatin1.split(boundary);
+
+          for (const part of parts) {
+            if (
+              part.includes('name="SharedFiles"') ||
+              part.includes('filename="')
+            ) {
+              const headerEndIdx = part.indexOf('\r\n\r\n');
+              if (headerEndIdx !== -1) {
+                const headerSection = part.slice(0, headerEndIdx);
+                const fnMatch = headerSection.match(/filename="([^"]+)"/i);
+                const ctMatch = headerSection.match(/Content-Type:\s*([^\r\n]+)/i);
+                const rawFilename = fnMatch
+                  ? Buffer.from(fnMatch[1], 'latin1').toString('utf8')
+                  : 'Shared_Document.pdf';
+                const partMime = ctMatch
+                  ? ctMatch[1].trim()
+                  : 'application/octet-stream';
+
+                // Extract binary body (trimming trailing \r\n before next boundary)
+                let contentLatin1 = part.slice(headerEndIdx + 4);
+                if (contentLatin1.endsWith('\r\n')) {
+                  contentLatin1 = contentLatin1.slice(0, -2);
+                }
+                const fileBuffer = Buffer.from(contentLatin1, 'latin1');
+
+                if (fileBuffer.length > 0) {
+                  const id = `shared_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                  downloadStore.set(id, {
+                    buffer: fileBuffer,
+                    filename: rawFilename,
+                    mimeType: partMime,
+                    createdAt: Date.now(),
+                  });
+                  res.redirect(
+                    303,
+                    `/?shared_server_id=${encodeURIComponent(id)}&filename=${encodeURIComponent(rawFilename)}&mime=${encodeURIComponent(partMime)}`
+                  );
+                  return;
+                }
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Error parsing /share-target POST:', err);
+      }
+      res.redirect(303, '/?action=pdf-reader');
+    }
+  );
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

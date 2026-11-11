@@ -14,7 +14,7 @@ import {
   HardDrive,
 } from 'lucide-react';
 import { ActiveView, ThemeMode } from '../types/document';
-import { formatBytes } from '../services/storageService';
+import { formatBytes, MAX_VAULT_QUOTA_BYTES } from '../services/storageService';
 import { PWAInstallButton, OfflineIndicator } from './PWAInstallPrompt';
 
 interface LayoutProps {
@@ -79,6 +79,12 @@ const SECONDARY_NAV_ITEMS: {
     icon: Settings,
   },
   {
+    id: 'privacy',
+    label: 'Privacy Policy',
+    shortLabel: 'Privacy',
+    icon: ShieldCheck,
+  },
+  {
     id: 'help',
     label: 'Help & Guide',
     shortLabel: 'Help',
@@ -96,10 +102,10 @@ export const Layout: React.FC<LayoutProps> = ({
   onQuickScan,
   children,
 }) => {
-  const quotaBytes = 50 * 1024 * 1024;
+  const quotaBytes = MAX_VAULT_QUOTA_BYTES;
   const usagePercent = Math.min(
     100,
-    Math.max(2, Math.round((totalStorageBytes / quotaBytes) * 100))
+    Math.max(1, Math.round((totalStorageBytes / quotaBytes) * 100))
   );
 
   const cycleTheme = () => {
@@ -193,7 +199,7 @@ export const Layout: React.FC<LayoutProps> = ({
           </div>
         </nav>
 
-        {/* Local Storage & Privacy Meter */}
+        {/* Local Storage & Privacy Meter (500 MB High-Capacity Tier) */}
         <div className="p-4 m-3 rounded-lg bg-white/80 dark:bg-[#0D0A12]/60 border border-[#E4DFEC] dark:border-[#261F33] space-y-2.5">
           <div className="flex items-center justify-between text-xs text-[#6E667D] dark:text-[#A39BB5]">
             <span className="flex items-center gap-1.5 font-medium text-[#14101B] dark:text-[#F4F1F8]">
@@ -201,7 +207,7 @@ export const Layout: React.FC<LayoutProps> = ({
               Local Vault
             </span>
             <span className="font-mono tabular-nums">
-              {formatBytes(totalStorageBytes)}
+              {formatBytes(totalStorageBytes)} / 500 MB
             </span>
           </div>
           <div className="w-full h-1.5 bg-[#E4DFEC] dark:bg-[#261F33] rounded-full overflow-hidden">
@@ -215,7 +221,7 @@ export const Layout: React.FC<LayoutProps> = ({
             <span>·</span>
             <span className="flex items-center gap-1">
               <ShieldCheck className="w-3 h-3 text-[#15803D] dark:text-[#4ADE80]" />
-              On-device
+              500 MB+ Ready
             </span>
           </div>
           <div className="pt-1">

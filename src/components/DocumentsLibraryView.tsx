@@ -139,10 +139,10 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
 
           <label className="h-9 px-3.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap">
             <FileUp className="w-4 h-4 shrink-0" />
-            <span>Upload PDF</span>
+            <span>Open File</span>
             <input
               type="file"
-              accept="application/pdf,.pdf"
+              accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/rtf,image/png,image/jpeg,image/webp"
               multiple
               className="hidden"
               onChange={(e) => {
