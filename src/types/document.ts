@@ -22,6 +22,7 @@ export type ToolId =
   | 'rotate-pdf'
   | 'organize-pdf'
   | 'ocr-pdf'
+  | 'remove-watermark'
   | 'security-pdf';
 
 export type DocumentCategory =
@@ -125,6 +126,7 @@ export interface Point2D {
 
 export type ScanFilterType =
   | 'original'
+  | 'clean-watermark'
   | 'ocv-black'
   | 'vivid-light'
   | 'magic'

@@ -171,7 +171,7 @@ export async function renderPdfPage(
  */
 export async function renderAllPdfPages(
   pdfBytes: Uint8Array,
-  scale = 1.2,
+  scale = 1.65,
   onProgress?: (renderedPages: RenderedPageInfo[], totalPages: number) => void
 ): Promise<RenderedPageInfo[]> {
   const dataCopy = new Uint8Array(pdfBytes);
@@ -188,7 +188,7 @@ export async function renderAllPdfPages(
           pageNumber,
           scale,
           'image/jpeg',
-          0.88
+          0.94
         );
         renderedList.push(pageInfo);
       } catch (pageErr) {
@@ -876,32 +876,139 @@ export async function organizePdfPages(
     addRotationDeg?: number;
   }[]
 ): Promise<Uint8Array> {
-  const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
-  const srcDoc = await PDFDocument.load(cleanBytes, {
-    ignoreEncryption: true,
-  });
-  const outDoc = await PDFDocument.create();
+  const rawInput = toCleanUint8Array(pdfBytes);
+  const cleanBytes = await ensureUnencryptedPdfBytes(rawInput);
 
-  for (const spec of pageSpecs) {
-    if (spec.isBlank) {
-      outDoc.addPage([595.28, 841.89]);
-    } else if (
-      spec.sourcePageNumber &&
-      spec.sourcePageNumber >= 1 &&
-      spec.sourcePageNumber <= srcDoc.getPageCount()
-    ) {
-      const [copiedPage] = await outDoc.copyPages(srcDoc, [
-        spec.sourcePageNumber - 1,
-      ]);
-      if (spec.addRotationDeg) {
-        const currentRot = copiedPage.getRotation().angle;
-        copiedPage.setRotation(degrees((currentRot + spec.addRotationDeg) % 360));
-      }
-      outDoc.addPage(copiedPage);
+  try {
+    const srcDoc = await PDFDocument.load(cleanBytes, {
+      ignoreEncryption: true,
+    });
+    if (srcDoc.isEncrypted) {
+      throw new Error('Encrypted source PDF; using rendered page fallback.');
     }
-  }
+    const outDoc = await PDFDocument.create();
+    const totalSrcPages = srcDoc.getPageCount();
 
-  return outDoc.save({ useObjectStreams: false });
+    for (const spec of pageSpecs) {
+      if (spec.isBlank) {
+        outDoc.addPage([595.28, 841.89]);
+      } else if (
+        spec.sourcePageNumber &&
+        spec.sourcePageNumber >= 1 &&
+        spec.sourcePageNumber <= totalSrcPages
+      ) {
+        const [copiedPage] = await outDoc.copyPages(srcDoc, [
+          spec.sourcePageNumber - 1,
+        ]);
+        if (spec.addRotationDeg) {
+          const currentRot = copiedPage.getRotation().angle || 0;
+          copiedPage.setRotation(
+            degrees(((currentRot + spec.addRotationDeg) % 360 + 360) % 360)
+          );
+        }
+        outDoc.addPage(copiedPage);
+      }
+    }
+
+    const savedBytes = await outDoc.save({ useObjectStreams: false });
+    if (!savedBytes || savedBytes.byteLength < 64) {
+      throw new Error('Saved organized PDF was empty.');
+    }
+
+    // Verify with PDF.js that the reorganized PDF loads cleanly
+    const verifyCopy = new Uint8Array(savedBytes);
+    const loadingTask = pdfjsLib.getDocument({ data: verifyCopy });
+    const verifiedPdf = await loadingTask.promise;
+    try {
+      if (verifiedPdf.numPages !== pageSpecs.length) {
+        throw new Error('Organized PDF page count mismatch.');
+      }
+      const firstPage = await verifiedPdf.getPage(1);
+      await firstPage.getOperatorList();
+    } finally {
+      await loadingTask.destroy();
+    }
+
+    return savedBytes;
+  } catch (err) {
+    console.warn(
+      'Direct copyPages fallback triggered in organizePdfPages; rendering clean pages:',
+      err
+    );
+    const totalCount = await getPdfPageCount(cleanBytes);
+    const pageImages: string[] = [];
+
+    const rotateDataUrl = (
+      dataUrl: string,
+      rotDeg: number
+    ): Promise<string> => {
+      const normRot = ((rotDeg % 360) + 360) % 360;
+      if (normRot === 0) return Promise.resolve(dataUrl);
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          if (normRot === 90 || normRot === 270) {
+            canvas.width = img.height;
+            canvas.height = img.width;
+          } else {
+            canvas.width = img.width;
+            canvas.height = img.height;
+          }
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.rotate((normRot * Math.PI) / 180);
+          ctx.drawImage(img, -img.width / 2, -img.height / 2);
+          resolve(canvas.toDataURL('image/jpeg', 0.92));
+        };
+        img.onerror = () => resolve(dataUrl);
+        img.src = dataUrl;
+      });
+    };
+
+    const createBlankDataUrl = (): string => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 794;
+      canvas.height = 1123;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      return canvas.toDataURL('image/jpeg', 0.9);
+    };
+
+    for (const spec of pageSpecs) {
+      if (spec.isBlank) {
+        pageImages.push(createBlankDataUrl());
+      } else if (
+        spec.sourcePageNumber &&
+        spec.sourcePageNumber >= 1 &&
+        spec.sourcePageNumber <= totalCount
+      ) {
+        const rendered = await renderPdfPage(
+          cleanBytes,
+          spec.sourcePageNumber,
+          1.5,
+          'image/jpeg',
+          0.92
+        );
+        const rotated = await rotateDataUrl(
+          rendered.dataUrl,
+          spec.addRotationDeg || 0
+        );
+        pageImages.push(rotated);
+      }
+    }
+
+    return createPdfFromImages(pageImages, { pageSize: 'Fit', marginPt: 0 });
+  }
 }
 
 /**
@@ -1857,6 +1964,201 @@ export async function compositeTextBoxesOntoImageDataUrl(
     img.onerror = () => resolve(baseImageDataUrl);
     img.src = baseImageDataUrl;
   });
+}
+
+/**
+ * Removes watermarks across all pages of a PDF while preserving document words,
+ * anti-aliased font quality, and original document colors.
+ *
+ * Uses a 2-Pass Pipeline on multi-page PDFs:
+ * - Pass 1 (Multi-Page Repeating Watermark Consensus): Samples pages to identify
+ *   static/repeating watermark pixels that appear at identical normalized (x, y)
+ *   positions with matching RGB/luminance across pages (such as diagonal text stamps,
+ *   background emblems, or header/footer watermarks), while ignoring dynamic document words.
+ * - Pass 2 (High-DPI Color-Preserving & Text-Preserving Unmixing): Renders each page at
+ *   high resolution (scale 2.0) and runs `processWatermarkRemovalOnImageData` to unmix
+ *   watermarks from behind text and restore pure #FFFFFF paper while keeping colored
+ *   headings, signatures, diagrams, and crisp black words intact.
+ */
+export async function removeWatermarksFromPdf(
+  pdfBytes: Uint8Array,
+  options: {
+    preserveColor?: boolean;
+    strength?: number; // -40 to +60, default 0
+    targetWatermarkRgb?: [number, number, number] | null;
+    removeSolidBanners?: boolean;
+    onProgress?: (currentPage: number, totalPages: number) => void;
+  } = {}
+): Promise<Uint8Array> {
+  const { processWatermarkRemovalOnImageData } = await import(
+    './imageProcessingService'
+  );
+  const preserveColor = options.preserveColor ?? true;
+  const strength = options.strength ?? 0;
+
+  const cleanBytes = toCleanUint8Array(pdfBytes);
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(cleanBytes) });
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
+  const outPdf = await PDFDocument.create();
+
+  try {
+    // Pass 1: If multi-page PDF (2+ pages), build a normalized consensus grid (360x480)
+    // across up to 4 pages to detect repeating static watermark regions.
+    const gridW = 360;
+    const gridH = 480;
+    let repeatingWatermarkGrid: Uint8Array | null = null;
+
+    if (totalPages >= 2) {
+      const sampleCount = Math.min(totalPages, 4);
+      const sampleGrids: Uint8Array[] = [];
+
+      for (let s = 1; s <= sampleCount; s++) {
+        const page = await pdf.getPage(s);
+        const vp = page.getViewport({ scale: 0.65 });
+        const c = document.createElement('canvas');
+        c.width = gridW;
+        c.height = gridH;
+        const cCtx = c.getContext('2d');
+        if (cCtx) {
+          cCtx.fillStyle = '#FFFFFF';
+          cCtx.fillRect(0, 0, gridW, gridH);
+          const tempCanvas = document.createElement('canvas');
+          tempCanvas.width = Math.max(1, Math.floor(vp.width));
+          tempCanvas.height = Math.max(1, Math.floor(vp.height));
+          const tCtx = tempCanvas.getContext('2d');
+          if (tCtx) {
+            tCtx.fillStyle = '#FFFFFF';
+            tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+            await page.render({
+              canvasContext: tCtx,
+              viewport: vp,
+              canvas: tempCanvas,
+            }).promise;
+            cCtx.drawImage(tempCanvas, 0, 0, gridW, gridH);
+          }
+          const imgD = cCtx.getImageData(0, 0, gridW, gridH).data;
+          const lumGrid = new Uint8Array(gridW * gridH);
+          for (let i = 0; i < gridW * gridH; i++) {
+            const idx = i * 4;
+            lumGrid[i] = Math.round(
+              0.299 * imgD[idx] + 0.587 * imgD[idx + 1] + 0.114 * imgD[idx + 2]
+            );
+          }
+          sampleGrids.push(lumGrid);
+        }
+      }
+
+      if (sampleGrids.length >= 2) {
+        repeatingWatermarkGrid = new Uint8Array(gridW * gridH);
+        for (let i = 0; i < gridW * gridH; i++) {
+          const baseL = sampleGrids[0][i];
+          // A repeating watermark pixel is non-white (< 242) and not deep black ink (> 95),
+          // and stays within ±14 luminance across all sampled pages
+          if (baseL > 95 && baseL < 242) {
+            let matchesAll = true;
+            for (let k = 1; k < sampleGrids.length; k++) {
+              if (Math.abs(sampleGrids[k][i] - baseL) > 14) {
+                matchesAll = false;
+                break;
+              }
+            }
+            if (matchesAll) {
+              repeatingWatermarkGrid[i] = 1;
+            }
+          }
+        }
+      }
+    }
+
+    // Pass 2: High-DPI render + Color-Preserving & Text-Preserving Watermark Removal per page
+    const renderScale = totalPages > 20 ? 1.65 : 2.0;
+
+    for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
+      options.onProgress?.(pageNum, totalPages);
+      const page = await pdf.getPage(pageNum);
+      const origViewport = page.getViewport({ scale: 1.0 });
+      const hiViewport = page.getViewport({ scale: renderScale });
+
+      const canvas = document.createElement('canvas');
+      const w = Math.max(1, Math.floor(hiViewport.width));
+      const h = Math.max(1, Math.floor(hiViewport.height));
+      canvas.width = w;
+      canvas.height = h;
+
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, w, h);
+
+      await page.render({
+        canvasContext: ctx,
+        viewport: hiViewport,
+        canvas,
+      }).promise;
+
+      const imageData = ctx.getImageData(0, 0, w, h);
+      const data = imageData.data;
+
+      // If multi-page repeating watermark consensus detected static watermark coordinates,
+      // gently lift those non-dark-ink repeating watermark pixels before unmixing
+      if (repeatingWatermarkGrid) {
+        for (let y = 0; y < h; y++) {
+          const gy = Math.min(gridH - 1, Math.floor((y / h) * gridH));
+          const rowOff = y * w;
+          for (let x = 0; x < w; x++) {
+            const gx = Math.min(gridW - 1, Math.floor((x / w) * gridW));
+            if (repeatingWatermarkGrid[gy * gridW + gx] === 1) {
+              const idx = (rowOff + x) * 4;
+              const lum =
+                0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+              // Only lift if this specific high-res pixel is not a sharp dark character core (lum > 105)
+              if (lum > 105 && lum < 245) {
+                data[idx] = Math.min(255, Math.round(data[idx] + (255 - data[idx]) * 0.45));
+                data[idx + 1] = Math.min(
+                  255,
+                  Math.round(data[idx + 1] + (255 - data[idx + 1]) * 0.45)
+                );
+                data[idx + 2] = Math.min(
+                  255,
+                  Math.round(data[idx + 2] + (255 - data[idx + 2]) * 0.45)
+                );
+              }
+            }
+          }
+        }
+      }
+
+      processWatermarkRemovalOnImageData(data, w, h, {
+        preserveColor,
+        strength,
+        targetWatermarkRgb: options.targetWatermarkRgb ?? null,
+        removeSolidBanners: options.removeSolidBanners ?? !preserveColor,
+      });
+
+      ctx.putImageData(imageData, 0, 0);
+
+      const cleanJpegUrl = canvas.toDataURL('image/jpeg', 0.96);
+      const b64 = cleanJpegUrl.split(',')[1];
+      const jpgBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const embeddedJpg = await outPdf.embedJpg(jpgBytes);
+
+      const outPage = outPdf.addPage([origViewport.width, origViewport.height]);
+      outPage.drawImage(embeddedJpg, {
+        x: 0,
+        y: 0,
+        width: origViewport.width,
+        height: origViewport.height,
+      });
+
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+
+  return await outPdf.save();
 }
 
 

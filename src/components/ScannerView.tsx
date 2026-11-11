@@ -19,6 +19,10 @@ import {
   AlertCircle,
   Share2,
   Layers,
+  Zap,
+  Grid3X3,
+  Settings,
+  Timer,
 } from 'lucide-react';
 import {
   Point2D,
@@ -48,8 +52,14 @@ interface ScannerViewProps {
 }
 
 type WorkflowStep = 'capture' | 'crop' | 'enhance' | 'export';
+type CameraCaptureMode = 'photo' | 'id-card' | 'document' | 'book' | 'signature';
 
 const FILTER_OPTIONS: { id: ScanFilterType; label: string; desc: string }[] = [
+  {
+    id: 'clean-watermark',
+    label: 'Watermark Clean',
+    desc: 'Removes watermarks & keeps colors',
+  },
   { id: 'ocv-black', label: 'OCV BLACK', desc: 'Deep jet-black ink & pure white' },
   { id: 'vivid-light', label: 'Vivid Light', desc: 'Vivid color & luminous contrast' },
   { id: 'magic', label: 'Magic Color', desc: 'Crisp text & whitened paper' },
@@ -75,10 +85,17 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
   const [facingMode, setFacingMode] = useState<'environment' | 'user'>(
     'environment'
   );
+  const [cameraFlashMode, setCameraFlashMode] = useState<'auto' | 'on' | 'off'>('auto');
+  const [cameraGridEnabled, setCameraGridEnabled] = useState(false);
+  const [cameraCaptureMode, setCameraCaptureMode] = useState<CameraCaptureMode>('document');
+  const [cameraAutoMode, setCameraAutoMode] = useState(true);
+  const [showCameraSettingsModal, setShowCameraSettingsModal] = useState(false);
+  const [selectedCaptureFilter, setSelectedCaptureFilter] = useState<ScanFilterType>(defaultFilter);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const didAutoStartRef = useRef(false);
 
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
@@ -110,6 +127,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
       streamRef.current = null;
     }
     setCameraActive(false);
+    setShowCameraSettingsModal(false);
   }, []);
 
   useEffect(() => {
@@ -118,44 +136,89 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     };
   }, [stopCamera]);
 
-  const startCamera = async (mode: 'environment' | 'user' = facingMode) => {
-    setCameraError(null);
-    stopCamera();
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: mode,
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-        },
-        audio: false,
-      });
-      streamRef.current = stream;
-      setCameraActive(true);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(() => {});
+  const startCamera = useCallback(
+    async (mode: 'environment' | 'user' = facingMode) => {
+      setCameraError(null);
+      stopCamera();
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: mode,
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        streamRef.current = stream;
+        setCameraActive(true);
+        setTimeout(() => {
+          if (videoRef.current) {
+            videoRef.current.srcObject = stream;
+            videoRef.current.play().catch(() => {});
+          }
+        }, 50);
+      } catch (err) {
+        setCameraError(
+          err instanceof Error
+            ? `Camera access unavailable (${err.message}). You can upload photos from your device or generate a test document page below.`
+            : 'Camera permission denied or no camera detected on this device.'
+        );
+        setCameraActive(false);
+      }
+    },
+    [facingMode, stopCamera]
+  );
+
+  // Auto-open full-screen camera when user opens ScannerView directly
+  useEffect(() => {
+    if (
+      !didAutoStartRef.current &&
+      (!initialImportedFiles || initialImportedFiles.length === 0) &&
+      pages.length === 0
+    ) {
+      didAutoStartRef.current = true;
+      startCamera('environment');
+    }
+  }, [initialImportedFiles, pages.length, startCamera]);
+
+  const cycleFlashMode = async () => {
+    const nextMode: 'auto' | 'on' | 'off' =
+      cameraFlashMode === 'auto'
+        ? 'on'
+        : cameraFlashMode === 'on'
+          ? 'off'
+          : 'auto';
+    setCameraFlashMode(nextMode);
+    if (streamRef.current) {
+      const videoTrack = streamRef.current.getVideoTracks()[0];
+      if (videoTrack && 'applyConstraints' in videoTrack) {
+        try {
+          await videoTrack.applyConstraints({
+            advanced: [{ torch: nextMode === 'on' } as MediaTrackConstraintSet],
+          });
+        } catch {
+          // Hardware torch not supported on this device/browser
         }
-      }, 50);
-    } catch (err) {
-      setCameraError(
-        err instanceof Error
-          ? `Camera access unavailable (${err.message}). You can upload photos from your device or generate a test document page below.`
-          : 'Camera permission denied or no camera detected on this device.'
-      );
-      setCameraActive(false);
+      }
     }
   };
 
   const ingestDataUrlAsPage = useCallback(
-    async (dataUrl: string) => {
+    async (dataUrl: string, modeOverride?: CameraCaptureMode) => {
       setIsProcessing(true);
       try {
+        const effectiveMode = modeOverride ?? cameraCaptureMode;
+        const effectiveFilter: ScanFilterType =
+          effectiveMode === 'photo'
+            ? 'original'
+            : effectiveMode === 'signature'
+              ? 'ocv-black'
+              : selectedCaptureFilter;
+
         const corners = await detectDocumentCorners(dataUrl);
         const cropped = await applyPerspectiveCrop(dataUrl, corners);
         const enhanced = await applyImageEnhancements(cropped.dataUrl, {
-          filter: defaultFilter,
+          filter: effectiveFilter,
           brightness: 0,
           contrast: 0,
           rotation: 0,
@@ -167,7 +230,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           croppedDataUrl: cropped.dataUrl,
           processedDataUrl: enhanced,
           corners,
-          filter: defaultFilter,
+          filter: effectiveFilter,
           brightness: 0,
           contrast: 0,
           rotation: 0,
@@ -185,7 +248,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
         setIsProcessing(false);
       }
     },
-    [defaultFilter]
+    [cameraCaptureMode, selectedCaptureFilter]
   );
 
   // Ingest files passed from Dashboard "Import Image" button
@@ -215,7 +278,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     const dataUrl = canvas.toDataURL('image/jpeg', 0.94);
     stopCamera();
-    await ingestDataUrlAsPage(dataUrl);
+    await ingestDataUrlAsPage(dataUrl, cameraCaptureMode);
   };
 
   /**
@@ -694,50 +757,275 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
           {step === 'capture' && (
             <div className="p-6 space-y-6">
               {cameraActive ? (
-                <div className="space-y-4">
-                  <div className="relative rounded-xl overflow-hidden bg-black aspect-4/3 max-h-[520px] mx-auto flex items-center justify-center">
-                    <video
-                      ref={videoRef}
-                      playsInline
-                      muted
-                      className="w-full h-full object-contain"
-                    />
-                    {/* Viewfinder alignment frame */}
-                    <div className="absolute inset-8 border-2 border-dashed border-[#9D5CE5]/80 rounded-lg pointer-events-none flex items-end justify-center pb-3">
-                      <span className="px-2.5 py-1 rounded bg-black/60 text-white text-[11px]">
-                        Position document inside frame
-                      </span>
-                    </div>
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-center gap-3">
+                <div className="fixed inset-0 z-[70] bg-black text-white flex flex-col select-none">
+                  {/* Top Black Camera Toolbar matching screenshot: [←] [⚡A] [⊞] [🔄] [⚙️] */}
+                  <div className="h-16 px-4 sm:px-6 bg-black flex items-center justify-between shrink-0 z-20">
                     <button
+                      type="button"
+                      onClick={stopCamera}
+                      title="Close full-screen camera"
+                      aria-label="Back"
+                      className="w-10 h-10 rounded-full flex items-center justify-center text-white hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={cycleFlashMode}
+                      title={`Flash mode: ${cameraFlashMode.toUpperCase()}`}
+                      aria-label="Toggle flash"
+                      className="h-10 px-2.5 rounded-full flex items-center justify-center gap-0.5 text-white hover:bg-white/10 transition-colors cursor-pointer"
+                    >
+                      <Zap
+                        className={`w-4 h-4 ${
+                          cameraFlashMode === 'on'
+                            ? 'fill-[#FBBF24] text-[#FBBF24]'
+                            : cameraFlashMode === 'off'
+                              ? 'text-white/45'
+                              : 'fill-white text-white'
+                        }`}
+                      />
+                      <span className="text-[11px] font-bold tracking-tight">
+                        {cameraFlashMode === 'auto'
+                          ? 'A'
+                          : cameraFlashMode === 'on'
+                            ? 'ON'
+                            : 'OFF'}
+                      </span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setCameraGridEnabled((v) => !v)}
+                      title="Toggle alignment grid"
+                      aria-label="Toggle alignment grid"
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                        cameraGridEnabled
+                          ? 'text-[#0088FF] bg-white/10'
+                          : 'text-white hover:bg-white/10'
+                      }`}
+                    >
+                      <Grid3X3 className="w-5 h-5" />
+                    </button>
+
+                    <button
+                      type="button"
                       onClick={() => {
                         const next =
                           facingMode === 'environment' ? 'user' : 'environment';
                         setFacingMode(next);
                         startCamera(next);
                       }}
-                      className="px-4 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-2 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      title="Flip Camera"
+                      aria-label="Flip Camera"
+                      className="w-10 h-10 rounded-full flex items-center justify-center text-white hover:bg-white/10 transition-colors cursor-pointer"
                     >
-                      <SwitchCamera className="w-4 h-4" />
-                      <span>Flip Camera</span>
+                      <SwitchCamera className="w-5 h-5" />
                     </button>
 
                     <button
-                      onClick={handleCaptureFromVideo}
-                      className="px-6 py-3 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] text-sm font-bold flex items-center gap-2 shadow-sm cursor-pointer"
+                      type="button"
+                      onClick={() => setShowCameraSettingsModal((v) => !v)}
+                      title="Camera & Filter Settings"
+                      aria-label="Camera Settings"
+                      className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors cursor-pointer ${
+                        showCameraSettingsModal
+                          ? 'text-[#0088FF] bg-white/10'
+                          : 'text-white hover:bg-white/10'
+                      }`}
                     >
-                      <Camera className="w-4 h-4" />
-                      <span>Capture Page Now</span>
+                      <Settings className="w-5 h-5" />
                     </button>
+                  </div>
 
-                    <button
-                      onClick={stopCamera}
-                      className="px-4 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-medium text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-[#F4F1F8] cursor-pointer"
-                    >
-                      Close Camera
-                    </button>
+                  {/* Full-Bleed Camera Viewfinder */}
+                  <div className="flex-1 relative bg-black overflow-hidden flex items-center justify-center">
+                    <video
+                      ref={videoRef}
+                      playsInline
+                      autoPlay
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+
+                    {/* Optional 3x3 Alignment Grid Overlay */}
+                    {cameraGridEnabled && (
+                      <div className="absolute inset-0 pointer-events-none grid grid-cols-3 grid-rows-3">
+                        {Array.from({ length: 9 }).map((_, idx) => (
+                          <div
+                            key={idx}
+                            className="border border-white/25"
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Mode-Specific Guide Frame */}
+                    {cameraCaptureMode === 'id-card' && (
+                      <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 aspect-[1.58/1] max-w-md mx-auto border-2 border-[#0088FF]/80 rounded-xl pointer-events-none flex items-end justify-center pb-2">
+                        <span className="px-2.5 py-0.5 rounded bg-black/65 text-[11px] font-medium text-white">
+                          Align ID Card within frame
+                        </span>
+                      </div>
+                    )}
+                    {cameraCaptureMode === 'book' && (
+                      <div className="absolute inset-6 border-2 border-white/45 rounded-lg pointer-events-none flex items-center justify-center">
+                        <div className="h-full border-l-2 border-dashed border-[#0088FF]/80" />
+                      </div>
+                    )}
+                    {cameraCaptureMode === 'signature' && (
+                      <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 h-36 max-w-md mx-auto border-2 border-[#0088FF]/80 rounded-xl pointer-events-none flex items-end justify-center pb-2">
+                        <span className="px-2.5 py-0.5 rounded bg-black/65 text-[11px] font-medium text-white">
+                          Center handwritten signature
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Quick Filter Picker Popover when ⚙️ is tapped */}
+                    {showCameraSettingsModal && (
+                      <div className="absolute top-3 right-4 w-64 rounded-2xl bg-black/85 backdrop-blur-md border border-white/15 p-3 space-y-2 z-30 shadow-2xl">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-white">
+                            Default Scan Filter
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setShowCameraSettingsModal(false)}
+                            className="text-[11px] text-[#0088FF] font-semibold cursor-pointer"
+                          >
+                            Done
+                          </button>
+                        </div>
+                        <div className="grid grid-cols-1 gap-1 max-h-56 overflow-y-auto">
+                          {FILTER_OPTIONS.map((f) => (
+                            <button
+                              key={f.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCaptureFilter(f.id);
+                                setShowCameraSettingsModal(false);
+                              }}
+                              className={`px-2.5 py-1.5 rounded-lg text-left text-xs flex items-center justify-between cursor-pointer ${
+                                selectedCaptureFilter === f.id
+                                  ? 'bg-[#0088FF] text-white font-semibold'
+                                  : 'text-white/80 hover:bg-white/10'
+                              }`}
+                            >
+                              <span>{f.label}</span>
+                              {selectedCaptureFilter === f.id && (
+                                <Check className="w-3.5 h-3.5" />
+                              )}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Bottom Black Camera Dock matching screenshot */}
+                  <div className="bg-black pt-1 pb-7 px-4 flex flex-col gap-5 shrink-0 z-20">
+                    {/* 5 Capture Mode Tabs: Photo | ID Card | Document | Book | Signature */}
+                    <div className="flex items-center justify-around max-w-md mx-auto w-full">
+                      {(
+                        [
+                          { id: 'photo', label: 'Photo' },
+                          { id: 'id-card', label: 'ID Card' },
+                          { id: 'document', label: 'Document' },
+                          { id: 'book', label: 'Book' },
+                          { id: 'signature', label: 'Signature' },
+                        ] as const
+                      ).map((modeTab) => {
+                        const isSelected = cameraCaptureMode === modeTab.id;
+                        return (
+                          <button
+                            key={modeTab.id}
+                            type="button"
+                            onClick={() => setCameraCaptureMode(modeTab.id)}
+                            className={`pt-2 pb-1 px-2 text-xs transition-colors cursor-pointer border-t-2 ${
+                              isSelected
+                                ? 'border-[#0088FF] text-[#0088FF] font-semibold'
+                                : 'border-transparent text-white/85 hover:text-white font-medium'
+                            }`}
+                          >
+                            {modeTab.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Shutter Row: [AUTO] [Circular Blue Camera Button] [Gallery / Page Count] */}
+                    <div className="grid grid-cols-3 items-center max-w-md mx-auto w-full">
+                      {/* Left: AUTO toggle */}
+                      <div className="flex items-center justify-center">
+                        <button
+                          type="button"
+                          onClick={() => setCameraAutoMode((v) => !v)}
+                          className="flex flex-col items-center justify-center gap-1 text-white hover:opacity-80 cursor-pointer"
+                        >
+                          <Timer
+                            className={`w-5 h-5 ${
+                              cameraAutoMode ? 'text-white' : 'text-white/45'
+                            }`}
+                          />
+                          <span
+                            className={`text-[10px] font-bold tracking-wider ${
+                              cameraAutoMode ? 'text-white' : 'text-white/45'
+                            }`}
+                          >
+                            {cameraAutoMode ? 'AUTO' : 'MANUAL'}
+                          </span>
+                        </button>
+                      </div>
+
+                      {/* Center: Circular Blue Camera Shutter Button */}
+                      <div className="flex items-center justify-center">
+                        <button
+                          type="button"
+                          onClick={handleCaptureFromVideo}
+                          aria-label="Capture Document"
+                          className="w-16 h-16 rounded-full bg-[#0088FF] hover:bg-[#0077E6] active:scale-95 transition-transform ring-4 ring-[#0055AA]/70 flex items-center justify-center shadow-lg cursor-pointer"
+                        >
+                          <Camera className="w-7 h-7 text-white fill-white/15" />
+                        </button>
+                      </div>
+
+                      {/* Right: Captured Pages Thumbnail or Import from Gallery */}
+                      <div className="flex items-center justify-center">
+                        {pages.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              stopCamera();
+                              setStep('crop');
+                            }}
+                            title="Review captured pages"
+                            className="relative w-11 h-11 rounded-lg border-2 border-white/80 overflow-hidden bg-white/10 cursor-pointer"
+                          >
+                            <img
+                              src={pages[pages.length - 1].processedDataUrl}
+                              alt="Last captured page"
+                              className="w-full h-full object-cover"
+                            />
+                            <span className="absolute -top-1 -right-1 px-1.5 py-0.2 rounded-full bg-[#0088FF] text-white text-[10px] font-bold">
+                              {pages.length}
+                            </span>
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            title="Import from Gallery"
+                            className="flex flex-col items-center justify-center gap-1 text-white/80 hover:text-white cursor-pointer"
+                          >
+                            <Upload className="w-5 h-5" />
+                            <span className="text-[10px] font-semibold">
+                              Gallery
+                            </span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -1352,6 +1640,7 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
             <button
               onClick={() => {
                 setStep('capture');
+                startCamera();
               }}
               className="px-2.5 py-1.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center gap-1 cursor-pointer"
             >

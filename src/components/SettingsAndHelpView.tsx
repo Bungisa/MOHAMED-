@@ -216,7 +216,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const staticPrivacyUrl = `${baseOrigin}/privacy-policy.html`;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-6 space-y-2">
         <h1 className="text-xl font-bold tracking-tight">
           Application Settings, PWA & Google Play Store Center
@@ -738,7 +738,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
 export const PrivacyPolicyView: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-6 sm:p-8 space-y-6 shadow-xs">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-5">
           <div className="flex items-center gap-3">
@@ -878,7 +878,7 @@ export const PrivacyPolicyView: React.FC<{ onBack?: () => void }> = ({ onBack })
 
 export const HelpAndSupportView: React.FC = () => {
   return (
-    <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-6 space-y-2">
         <h1 className="text-xl font-bold tracking-tight">
           Help, Architecture & User Guide

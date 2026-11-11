@@ -29,6 +29,12 @@ import {
   FileText,
   FileOutput,
   Sparkles,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpDown,
+  Plus,
+  Crown,
+  CircleArrowRight,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -48,7 +54,9 @@ import {
   RenderedPageInfo,
   PictureTextBoxOverlay,
   compositeTextBoxesOntoImageDataUrl,
+  removeWatermarksFromPdf,
 } from '../services/pdfService';
+import { applyImageEnhancements } from '../services/imageProcessingService';
 import {
   parseUploadedWordFile,
   plainTextToWordBlocks,
@@ -104,6 +112,7 @@ const TOOL_CATEGORIES: {
   {
     category: 'OCR & Security',
     items: [
+      { id: 'remove-watermark', label: 'Watermark Remover', icon: Sparkles },
       { id: 'ocr-pdf', label: 'OCR Text (EN/SW)', icon: ScanText },
       { id: 'security-pdf', label: 'PDF Security', icon: Shield },
     ],
@@ -244,9 +253,22 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     }
   };
 
-  // 2. SPLIT PDF STATE
+  // 2. SPLIT PDF STATE (Matches Split UI: Range [Custom / Fixed / Smart], Pages, Size)
+  const [splitTopTab, setSplitTopTab] = useState<'range' | 'pages' | 'size'>(
+    'range'
+  );
+  const [splitRangeSubMode, setSplitRangeSubMode] = useState<
+    'custom' | 'fixed' | 'smart'
+  >('custom');
+  const [customRanges, setCustomRanges] = useState<
+    { id: string; from: number; to: number }[]
+  >([{ id: 'range-1', from: 1, to: 2 }]);
+  const [mergeAllRanges, setMergeAllRanges] = useState<boolean>(false);
+  const [fixedRangeStep, setFixedRangeStep] = useState<number>(2);
   const [splitRangeInput, setSplitRangeInput] = useState('1');
   const [splitMode, setSplitMode] = useState<'range' | 'each-page'>('range');
+  const [maxSplitSizeValue, setMaxSplitSizeValue] = useState<number>(1);
+  const [maxSplitSizeUnit, setMaxSplitSizeUnit] = useState<'MB' | 'KB'>('MB');
   const [actualSplitPageCount, setActualSplitPageCount] = useState<number>(
     selectedDoc?.pageCount || 1
   );
@@ -270,13 +292,22 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       return;
     }
     setSplitResults([]);
-    setActualSplitPageCount(Math.max(1, selectedDoc.pageCount || 1));
+    const fallbackCount = Math.max(1, selectedDoc.pageCount || 1);
+    setActualSplitPageCount(fallbackCount);
+    setCustomRanges([
+      { id: 'range-1', from: 1, to: Math.min(2, fallbackCount) },
+    ]);
     (async () => {
       try {
         const realCount = await getPdfPageCount(selectedDoc.pdfData);
         if (!cancelled && realCount > 0) {
           setActualSplitPageCount(realCount);
-          setSplitRangeInput(realCount > 1 ? `1-${Math.min(2, realCount)}` : '1');
+          setSplitRangeInput(
+            realCount > 1 ? `1-${Math.min(2, realCount)}` : '1'
+          );
+          setCustomRanges([
+            { id: 'range-1', from: 1, to: Math.min(2, realCount) },
+          ]);
         }
       } catch {
         // Ignore
@@ -285,7 +316,74 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [selectedDoc]);
+  }, [selectedDoc?.id]);
+
+  const handleAddCustomRange = () => {
+    setCustomRanges((prev) => {
+      const last = prev[prev.length - 1];
+      const nextFrom = last
+        ? Math.min(actualSplitPageCount, last.to + 1)
+        : 1;
+      const nextTo = Math.min(actualSplitPageCount, nextFrom + 1);
+      return [
+        ...prev,
+        {
+          id: `range-${Date.now()}-${prev.length + 1}`,
+          from: nextFrom,
+          to: Math.max(nextFrom, nextTo),
+        },
+      ];
+    });
+  };
+
+  const handleUpdateCustomRange = (
+    id: string,
+    field: 'from' | 'to',
+    rawVal: number
+  ) => {
+    const clamped = Math.max(
+      1,
+      Math.min(actualSplitPageCount, Math.round(rawVal || 1))
+    );
+    setCustomRanges((prev) =>
+      prev.map((r) => {
+        if (r.id !== id) return r;
+        if (field === 'from') {
+          return { ...r, from: clamped, to: Math.max(clamped, r.to) };
+        }
+        return { ...r, to: Math.max(r.from, clamped) };
+      })
+    );
+  };
+
+  const handleRemoveCustomRange = (id: string) => {
+    setCustomRanges((prev) =>
+      prev.length <= 1 ? prev : prev.filter((r) => r.id !== id)
+    );
+  };
+
+  const handleGenerateSmartRanges = () => {
+    const total = Math.max(1, actualSplitPageCount);
+    if (total <= 2) {
+      setCustomRanges([
+        { id: 'smart-1', from: 1, to: 1 },
+        ...(total === 2 ? [{ id: 'smart-2', from: 2, to: 2 }] : []),
+      ]);
+      return;
+    }
+    const targetSections = Math.min(4, Math.max(2, Math.ceil(total / 3)));
+    const stepSize = Math.ceil(total / targetSections);
+    const smartList: { id: string; from: number; to: number }[] = [];
+    for (let start = 1, idx = 1; start <= total; start += stepSize, idx++) {
+      const end = Math.min(total, start + stepSize - 1);
+      smartList.push({
+        id: `smart-${idx}-${Date.now()}`,
+        from: start,
+        to: end,
+      });
+    }
+    setCustomRanges(smartList);
+  };
 
   const parsePageRanges = (input: string, maxPages: number): number[] => {
     const safeMax = Math.max(1, maxPages);
@@ -351,6 +449,9 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       setSelectedDocId(newDoc.id);
       setActualSplitPageCount(count);
       setSplitRangeInput(count > 1 ? `1-${Math.min(2, count)}` : '1');
+      setCustomRanges([
+        { id: 'range-1', from: 1, to: Math.min(2, count) },
+      ]);
       setFeedback(
         `Loaded "${newDoc.name}" (${count} pages) for splitting.`
       );
@@ -365,28 +466,61 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   const handleRunSplitExtract = async () => {
     if (!selectedDoc) return;
     const maxPages = Math.max(
-      actualSplitPageCount,
-      selectedDoc.pageCount || 1
+      1,
+      actualSplitPageCount || selectedDoc.pageCount || 1
     );
+    const baseTitle = selectedDoc.name.replace(/\.pdf$/i, '');
 
-    if (splitMode === 'each-page') {
-      setIsBusy(true);
-      setFeedback(null);
-      try {
-        const baseTitle = selectedDoc.name.replace(/\.pdf$/i, '');
-        const generated: {
-          id: string;
-          name: string;
-          bytes: Uint8Array;
-          downloadUrl: string;
-          pageCount: number;
-          pagesLabel: string;
-        }[] = [];
+    setIsBusy(true);
+    setFeedback(null);
+    try {
+      const generated: {
+        id: string;
+        name: string;
+        bytes: Uint8Array;
+        downloadUrl: string;
+        pageCount: number;
+        pagesLabel: string;
+      }[] = [];
 
-        for (let p = 1; p <= maxPages; p++) {
-          const splitBytes = await extractPdfPages(selectedDoc.pdfData, [p]);
+      // Helper to build a range list of 1-indexed page numbers
+      const expandRange = (from: number, to: number): number[] => {
+        const s = Math.max(1, Math.min(maxPages, Math.min(from, to)));
+        const e = Math.max(1, Math.min(maxPages, Math.max(from, to)));
+        const arr: number[] = [];
+        for (let p = s; p <= e; p++) arr.push(p);
+        return arr;
+      };
+
+      if (splitTopTab === 'range') {
+        let activeRanges: { from: number; to: number }[] = [];
+
+        if (splitRangeSubMode === 'custom' || splitRangeSubMode === 'smart') {
+          activeRanges = customRanges.map((r) => ({
+            from: Math.max(1, Math.min(maxPages, r.from)),
+            to: Math.max(1, Math.min(maxPages, r.to)),
+          }));
+        } else if (splitRangeSubMode === 'fixed') {
+          const step = Math.max(1, Math.min(maxPages, fixedRangeStep || 1));
+          for (let start = 1; start <= maxPages; start += step) {
+            activeRanges.push({
+              from: start,
+              to: Math.min(maxPages, start + step - 1),
+            });
+          }
+        }
+
+        if (mergeAllRanges && activeRanges.length > 0) {
+          const allPages: number[] = [];
+          for (const r of activeRanges) {
+            allPages.push(...expandRange(r.from, r.to));
+          }
+          const splitBytes = await extractPdfPages(
+            selectedDoc.pdfData,
+            allPages
+          );
           const outName = sanitizeDownloadFilename(
-            `${baseTitle}_Page_${p}.pdf`,
+            `${baseTitle}_Merged_Ranges.pdf`,
             'application/pdf'
           );
           const downloadUrl = await prepareServerDownloadUrl(
@@ -395,113 +529,199 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
             'application/pdf'
           );
           generated.push({
-            id: `split-p${p}-${Date.now()}`,
+            id: `split-merged-${Date.now()}`,
             name: outName,
             bytes: splitBytes,
             downloadUrl,
-            pageCount: 1,
-            pagesLabel: `Page ${p}`,
+            pageCount: allPages.length,
+            pagesLabel: `${activeRanges.length} Merged Range(s)`,
           });
+        } else {
+          for (let i = 0; i < activeRanges.length; i++) {
+            const r = activeRanges[i];
+            const rangePages = expandRange(r.from, r.to);
+            const splitBytes = await extractPdfPages(
+              selectedDoc.pdfData,
+              rangePages
+            );
+            const labelSuffix =
+              r.from === r.to ? `Page_${r.from}` : `Pages_${r.from}-${r.to}`;
+            const outName = sanitizeDownloadFilename(
+              `${baseTitle}_Range_${i + 1}_${labelSuffix}.pdf`,
+              'application/pdf'
+            );
+            const downloadUrl = await prepareServerDownloadUrl(
+              splitBytes,
+              outName,
+              'application/pdf'
+            );
+            generated.push({
+              id: `split-r${i + 1}-${Date.now()}`,
+              name: outName,
+              bytes: splitBytes,
+              downloadUrl,
+              pageCount: rangePages.length,
+              pagesLabel:
+                r.from === r.to
+                  ? `Range ${i + 1} (Page ${r.from})`
+                  : `Range ${i + 1} (Pages ${r.from}–${r.to})`,
+            });
+          }
         }
-
-        setSplitResults(generated);
-        // Trigger direct HTTP attachment download of the first split file immediately
-        if (generated.length > 0) {
-          const a = document.createElement('a');
-          a.href = generated[0].downloadUrl;
-          a.download = generated[0].name;
-          a.rel = 'noopener';
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
+      } else if (splitTopTab === 'pages') {
+        if (splitMode === 'each-page') {
+          for (let p = 1; p <= maxPages; p++) {
+            const splitBytes = await extractPdfPages(selectedDoc.pdfData, [p]);
+            const outName = sanitizeDownloadFilename(
+              `${baseTitle}_Page_${p}.pdf`,
+              'application/pdf'
+            );
+            const downloadUrl = await prepareServerDownloadUrl(
+              splitBytes,
+              outName,
+              'application/pdf'
+            );
+            generated.push({
+              id: `split-p${p}-${Date.now()}`,
+              name: outName,
+              bytes: splitBytes,
+              downloadUrl,
+              pageCount: 1,
+              pagesLabel: `Page ${p}`,
+            });
+          }
+        } else {
+          const pagesToExtract = parsePageRanges(splitRangeInput, maxPages);
+          if (pagesToExtract.length === 0) {
+            setFeedback(
+              `Please select or enter valid page numbers between 1 and ${maxPages}.`
+            );
+            setIsBusy(false);
+            return;
+          }
+          if (mergeAllRanges) {
+            const splitBytes = await extractPdfPages(
+              selectedDoc.pdfData,
+              pagesToExtract
+            );
+            const outName = sanitizeDownloadFilename(
+              `${baseTitle}_Pages_${pagesToExtract.join('-')}.pdf`,
+              'application/pdf'
+            );
+            const downloadUrl = await prepareServerDownloadUrl(
+              splitBytes,
+              outName,
+              'application/pdf'
+            );
+            generated.push({
+              id: `split-sel-${Date.now()}`,
+              name: outName,
+              bytes: splitBytes,
+              downloadUrl,
+              pageCount: pagesToExtract.length,
+              pagesLabel: `Pages ${pagesToExtract.join(', ')}`,
+            });
+          } else {
+            for (const p of pagesToExtract) {
+              const splitBytes = await extractPdfPages(selectedDoc.pdfData, [
+                p,
+              ]);
+              const outName = sanitizeDownloadFilename(
+                `${baseTitle}_Page_${p}.pdf`,
+                'application/pdf'
+              );
+              const downloadUrl = await prepareServerDownloadUrl(
+                splitBytes,
+                outName,
+                'application/pdf'
+              );
+              generated.push({
+                id: `split-p${p}-${Date.now()}`,
+                name: outName,
+                bytes: splitBytes,
+                downloadUrl,
+                pageCount: 1,
+                pagesLabel: `Page ${p}`,
+              });
+            }
+          }
         }
-        for (const item of generated) {
-          await onSaveNewDocument({
-            id: `doc-${item.id}`,
-            name: item.name,
-            category: selectedDoc.category,
-            starred: false,
-            sizeBytes: item.bytes.byteLength,
-            pageCount: 1,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: item.bytes,
-          });
-        }
-        setFeedback(
-          `Split "${selectedDoc.name}" into ${generated.length} separate PDF page file(s)! Tap any green "Download Split PDF" button below to download.`
+      } else if (splitTopTab === 'size') {
+        const targetMaxBytes = Math.max(
+          20 * 1024,
+          (maxSplitSizeValue || 1) *
+            (maxSplitSizeUnit === 'MB' ? 1024 * 1024 : 1024)
         );
-      } catch (err) {
-        console.error('Error splitting PDF:', err);
-        setFeedback('Failed to split PDF pages. Please try again.');
-      } finally {
-        setIsBusy(false);
+        const avgPageBytes = Math.max(
+          4096,
+          Math.ceil(selectedDoc.sizeBytes / maxPages)
+        );
+        const pagesPerChunk = Math.max(
+          1,
+          Math.floor(targetMaxBytes / avgPageBytes)
+        );
+        let partIndex = 1;
+        for (let start = 1; start <= maxPages; start += pagesPerChunk) {
+          const end = Math.min(maxPages, start + pagesPerChunk - 1);
+          const chunkPages = expandRange(start, end);
+          const splitBytes = await extractPdfPages(
+            selectedDoc.pdfData,
+            chunkPages
+          );
+          const outName = sanitizeDownloadFilename(
+            `${baseTitle}_Part_${partIndex}_Pages_${start}-${end}.pdf`,
+            'application/pdf'
+          );
+          const downloadUrl = await prepareServerDownloadUrl(
+            splitBytes,
+            outName,
+            'application/pdf'
+          );
+          generated.push({
+            id: `split-size-${partIndex}-${Date.now()}`,
+            name: outName,
+            bytes: splitBytes,
+            downloadUrl,
+            pageCount: chunkPages.length,
+            pagesLabel: `Part ${partIndex} (Pages ${start}–${end})`,
+          });
+          partIndex++;
+        }
       }
-      return;
-    }
 
-    const pagesToExtract = parsePageRanges(splitRangeInput, maxPages);
-    if (pagesToExtract.length === 0) {
+      setSplitResults(generated);
+
+      if (generated.length > 0) {
+        const a = document.createElement('a');
+        a.href = generated[0].downloadUrl;
+        a.download = generated[0].name;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      }
+
+      for (const item of generated) {
+        await onSaveNewDocument({
+          id: `doc-${item.id}`,
+          name: item.name,
+          category: selectedDoc.category,
+          starred: false,
+          sizeBytes: item.bytes.byteLength,
+          pageCount: item.pageCount,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastOpenedAt: new Date().toISOString(),
+          pdfData: item.bytes,
+        });
+      }
+
       setFeedback(
-        `Please select or enter valid page numbers between 1 and ${maxPages}.`
-      );
-      return;
-    }
-    setIsBusy(true);
-    setFeedback(null);
-    try {
-      const splitBytes = await extractPdfPages(
-        selectedDoc.pdfData,
-        pagesToExtract
-      );
-      const outName = sanitizeDownloadFilename(
-        `${selectedDoc.name.replace(/\.pdf$/i, '')}_Pages_${pagesToExtract.join('-')}.pdf`,
-        'application/pdf'
-      );
-      const downloadUrl = await prepareServerDownloadUrl(
-        splitBytes,
-        outName,
-        'application/pdf'
-      );
-      const resultItem = {
-        id: `split-range-${Date.now()}`,
-        name: outName,
-        bytes: splitBytes,
-        downloadUrl,
-        pageCount: pagesToExtract.length,
-        pagesLabel: `Pages ${pagesToExtract.join(', ')}`,
-      };
-      setSplitResults([resultItem]);
-
-      // Trigger direct HTTP attachment download immediately
-      const a = document.createElement('a');
-      a.href = downloadUrl;
-      a.download = outName;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-
-      const newDoc: StoredDocument = {
-        id: `doc-split-${Date.now()}`,
-        name: outName,
-        category: selectedDoc.category,
-        starred: false,
-        sizeBytes: splitBytes.byteLength,
-        pageCount: pagesToExtract.length,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        lastOpenedAt: new Date().toISOString(),
-        pdfData: splitBytes,
-      };
-      await onSaveNewDocument(newDoc);
-      setFeedback(
-        `Split ${pagesToExtract.length} page(s) into "${outName}" (${formatBytes(splitBytes.byteLength)}). Tap the green "Download Split PDF" button below to save directly to your device.`
+        `Created ${generated.length} split PDF file(s) from "${selectedDoc.name}" and saved to My Files!`
       );
     } catch (err) {
-      console.error('Error extracting split PDF:', err);
-      setFeedback('Could not extract selected pages from this PDF.');
+      console.error('Error splitting PDF:', err);
+      setFeedback('Could not split the selected PDF pages. Please try again.');
     } finally {
       setIsBusy(false);
     }
@@ -894,6 +1114,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       thumbUrl?: string;
     }[]
   >([]);
+  const [draggedOrgIdx, setDraggedOrgIdx] = useState<number | null>(null);
 
   useEffect(() => {
     if (activeTool === 'organize-pdf' && selectedDoc) {
@@ -901,6 +1122,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       const loadThumbs = async () => {
         setIsBusy(true);
         try {
+          const totalCount = await getPdfPageCount(selectedDoc.pdfData);
           const list: {
             id: string;
             sourcePageNumber?: number;
@@ -908,10 +1130,10 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
             addRotationDeg: number;
             thumbUrl?: string;
           }[] = [];
-          for (let i = 1; i <= selectedDoc.pageCount; i++) {
+          for (let i = 1; i <= totalCount; i++) {
             const p = await renderPdfPage(selectedDoc.pdfData, i, 0.7);
             list.push({
-              id: `org-${i}-${Date.now()}`,
+              id: `org-${i}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
               sourcePageNumber: i,
               addRotationDeg: 0,
               thumbUrl: p.dataUrl,
@@ -927,11 +1149,45 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         cancelled = true;
       };
     }
-  }, [activeTool, selectedDoc]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTool, selectedDoc?.id]);
 
-  const handleSaveOrganizedPdf = async () => {
+  const moveOrgPage = (fromIndex: number, toIndex: number) => {
+    setOrgSpecs((prev) => {
+      if (
+        fromIndex < 0 ||
+        fromIndex >= prev.length ||
+        toIndex < 0 ||
+        toIndex >= prev.length ||
+        fromIndex === toIndex
+      ) {
+        return prev;
+      }
+      const next = [...prev];
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const duplicateOrgPage = (idx: number) => {
+    setOrgSpecs((prev) => {
+      const target = prev[idx];
+      if (!target) return prev;
+      const copy = {
+        ...target,
+        id: `org-dup-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      };
+      const next = [...prev];
+      next.splice(idx + 1, 0, copy);
+      return next;
+    });
+  };
+
+  const handleSaveOrganizedPdf = async (openInEditorAfterSave = false) => {
     if (!selectedDoc || orgSpecs.length === 0) return;
     setIsBusy(true);
+    setFeedback(null);
     try {
       const updatedBytes = await organizePdfPages(
         selectedDoc.pdfData,
@@ -945,10 +1201,29 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         pdfData: updatedBytes,
       };
       await onUpdateDocument(updatedDoc);
+
+      // Refresh orgSpecs sourcePageNumber mapping to match the newly saved PDF page order (1..N)
+      setOrgSpecs((prev) =>
+        prev.map((s, idx) => ({
+          ...s,
+          sourcePageNumber: idx + 1,
+          isBlank: false,
+          addRotationDeg: 0,
+        }))
+      );
+
+      if (openInEditorAfterSave && onOpenInEditor) {
+        onOpenInEditor(updatedDoc);
+        return;
+      }
+
       downloadBytesAsFile(updatedBytes, updatedDoc.name);
       setFeedback(
-        `Saved reorganized PDF (${orgSpecs.length} pages) and downloaded.`
+        `Applied new page arrangement (${orgSpecs.length} pages) to "${updatedDoc.name}" and downloaded!`
       );
+    } catch (err) {
+      console.error('Error organizing PDF pages:', err);
+      setFeedback('Could not apply page arrangement. Please try again.');
     } finally {
       setIsBusy(false);
     }
@@ -1071,6 +1346,170 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         `Applied permanent security watermark and updated Local Vault protection settings.`
       );
     } finally {
+      setIsBusy(false);
+    }
+  };
+
+  // 8B. SMART COLOR-PRESERVING WATERMARK REMOVER STATE & HANDLERS
+  const [wmRemovePreserveColor, setWmRemovePreserveColor] = useState(true);
+  const [wmRemoveStrength, setWmRemoveStrength] = useState(0); // -30 (Gentle) to +45 (Max)
+  const [wmRemoveSolidBanners, setWmRemoveSolidBanners] = useState(false);
+  const [wmTargetRgb, setWmTargetRgb] = useState<[number, number, number] | null>(
+    null
+  );
+  const [wmPreviewPage, setWmPreviewPage] = useState(1);
+  const [wmOriginalPreviewUrl, setWmOriginalPreviewUrl] = useState<string>('');
+  const [wmCleanedPreviewUrl, setWmCleanedPreviewUrl] = useState<string>('');
+  const [wmIsRenderingPreview, setWmIsRenderingPreview] = useState(false);
+  const [wmProgressText, setWmProgressText] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (activeTool !== 'remove-watermark' || !selectedDoc) return;
+
+    const clampedPage = Math.max(
+      1,
+      Math.min(selectedDoc.pageCount || 1, wmPreviewPage)
+    );
+
+    setWmIsRenderingPreview(true);
+    (async () => {
+      try {
+        const sourceBytes = selectedDoc.basePdfData || selectedDoc.pdfData;
+        const pageInfo = await renderPdfPage(
+          sourceBytes,
+          clampedPage,
+          1.75,
+          'image/jpeg',
+          0.95
+        );
+        if (cancelled) return;
+        setWmOriginalPreviewUrl(pageInfo.dataUrl);
+
+        const cleanedUrl = await applyImageEnhancements(pageInfo.dataUrl, {
+          filter: wmRemovePreserveColor ? 'clean-watermark' : 'ocv-black',
+          brightness: wmRemoveStrength,
+          contrast: 0,
+          rotation: 0,
+          targetWatermarkRgb: wmTargetRgb,
+        });
+        if (!cancelled) {
+          setWmCleanedPreviewUrl(cleanedUrl);
+        }
+      } catch (err) {
+        console.error('Watermark preview error:', err);
+      } finally {
+        if (!cancelled) {
+          setWmIsRenderingPreview(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeTool,
+    selectedDoc?.id,
+    wmPreviewPage,
+    wmRemovePreserveColor,
+    wmRemoveStrength,
+    wmTargetRgb,
+  ]);
+
+  const handleSampleWatermarkPixel = (
+    e: React.MouseEvent<HTMLImageElement>
+  ) => {
+    const imgEl = e.currentTarget;
+    const rect = imgEl.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    const clickX = (e.clientX - rect.left) / rect.width;
+    const clickY = (e.clientY - rect.top) / rect.height;
+
+    const canvas = document.createElement('canvas');
+    canvas.width = imgEl.naturalWidth || 600;
+    canvas.height = imgEl.naturalHeight || 800;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+    const px = Math.max(
+      0,
+      Math.min(canvas.width - 1, Math.floor(clickX * canvas.width))
+    );
+    const py = Math.max(
+      0,
+      Math.min(canvas.height - 1, Math.floor(clickY * canvas.height))
+    );
+    const pixel = ctx.getImageData(px, py, 1, 1).data;
+    const r = pixel[0];
+    const g = pixel[1];
+    const b = pixel[2];
+    const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+
+    if (lum < 55) {
+      setFeedback(
+        'That point looks like dark document text. Click directly on a grey or colored watermark area to sample its tint.'
+      );
+      return;
+    }
+
+    setWmTargetRgb([r, g, b]);
+    setFeedback(
+      `Sampled watermark tint RGB(${r}, ${g}, ${b}). All matching watermark pixels are now targeted for removal while preserving document words and other colors!`
+    );
+  };
+
+  const handleExecuteWatermarkRemoval = async (
+    openInEditorAfterSave = false
+  ) => {
+    if (!selectedDoc) return;
+    setIsBusy(true);
+    setFeedback(null);
+    setWmProgressText(`Analyzing & cleaning page 1 of ${selectedDoc.pageCount}...`);
+    try {
+      const sourceBytes = selectedDoc.basePdfData || selectedDoc.pdfData;
+      const cleanedPdfBytes = await removeWatermarksFromPdf(sourceBytes, {
+        preserveColor: wmRemovePreserveColor,
+        strength: wmRemoveStrength,
+        targetWatermarkRgb: wmTargetRgb,
+        removeSolidBanners: wmRemoveSolidBanners || !wmRemovePreserveColor,
+        onProgress: (cur, tot) => {
+          setWmProgressText(`Cleaning watermark on page ${cur} of ${tot}...`);
+        },
+      });
+
+      const updatedDoc: StoredDocument = {
+        ...selectedDoc,
+        pdfData: cleanedPdfBytes,
+        basePdfData: cleanedPdfBytes,
+        watermarkText: '',
+        appliedFilter: 'original',
+        appliedBrightness: 0,
+        appliedContrast: 0,
+        sizeBytes: cleanedPdfBytes.byteLength,
+        updatedAt: new Date().toISOString(),
+        thumbnailDataUrl: wmCleanedPreviewUrl || selectedDoc.thumbnailDataUrl,
+      };
+
+      await onUpdateDocument(updatedDoc);
+
+      if (openInEditorAfterSave && onOpenInEditor) {
+        onOpenInEditor(updatedDoc);
+        return;
+      }
+
+      const cleanFileName = `${selectedDoc.name.replace(/\.pdf$/i, '')}_Clean.pdf`;
+      downloadBytesAsFile(cleanedPdfBytes, cleanFileName);
+      setFeedback(
+        `Removed watermarks across all ${selectedDoc.pageCount} pages while preserving document words, sharpness, and colors! Saved & downloaded "${cleanFileName}".`
+      );
+    } catch (err) {
+      console.error('Failed to remove watermarks from PDF:', err);
+      setFeedback('Could not process watermark removal. Please try again.');
+    } finally {
+      setWmProgressText(null);
       setIsBusy(false);
     }
   };
@@ -1366,7 +1805,7 @@ Status: Approved for Production Distribution`;
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Compact Header & Tool Grid */}
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4 space-y-3.5">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -1586,24 +2025,17 @@ Status: Approved for Production Distribution`;
           </div>
         )}
 
-        {/* 2. SPLIT PDF */}
+        {/* 2. SPLIT PDF (Exact Range / Pages / Size Studio matching Image 1) */}
         {activeTool === 'split-pdf' && selectedDoc && (
-          <div className="space-y-6 max-w-3xl">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
-              <div>
-                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  Split PDF & Download Extracted Pages
-                </h2>
-                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Active document: <strong>{selectedDoc.name}</strong> (
-                  {actualSplitPageCount} pages total ·{' '}
-                  {formatBytes(selectedDoc.sizeBytes)})
-                </p>
-              </div>
-
-              <label className="px-4 py-2 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold flex items-center gap-2 cursor-pointer self-start">
+          <div className="max-w-xl mx-auto space-y-6">
+            {/* Top Bar with Active File Info + Upload Another PDF */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#E4DFEC] dark:border-[#261F33]">
+              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
+                Document: <strong className="text-[#14101B] dark:text-[#F4F1F8]">{selectedDoc.name}</strong> ({actualSplitPageCount} pages · {formatBytes(selectedDoc.sizeBytes)})
+              </p>
+              <label className="px-3 py-1.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] text-xs font-semibold flex items-center gap-1.5 cursor-pointer shrink-0">
                 <Upload className="w-3.5 h-3.5 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                <span>Upload PDF to Split</span>
+                <span>Change PDF</span>
                 <input
                   type="file"
                   accept="application/pdf"
@@ -1613,160 +2045,431 @@ Status: Approved for Production Distribution`;
               </label>
             </div>
 
-            {/* Split Mode Selector */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setSplitMode('range')}
-                className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
-                  splitMode === 'range'
-                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/5 dark:bg-[#9D5CE5]/15'
-                    : 'border-[#E4DFEC] dark:border-[#261F33]'
-                }`}
-              >
-                <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  Extract Selected Pages (Single Split PDF)
-                </p>
-                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                  Tap page numbers below or enter a range (e.g. 1-3, 5) to download as a new PDF.
-                </p>
-              </button>
+            {/* Split Studio Card */}
+            <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] shadow-xs overflow-hidden">
+              {/* Centered "Split" Title */}
+              <div className="py-4 text-center border-b border-[#E4DFEC] dark:border-[#261F33]">
+                <h2 className="text-xl font-bold text-[#2D3139] dark:text-[#F4F1F8]">
+                  Split
+                </h2>
+              </div>
 
-              <button
-                type="button"
-                onClick={() => setSplitMode('each-page')}
-                className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
-                  splitMode === 'each-page'
-                    ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/5 dark:bg-[#9D5CE5]/15'
-                    : 'border-[#E4DFEC] dark:border-[#261F33]'
-                }`}
-              >
-                <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  Split Every Page into Separate PDFs
-                </p>
-                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                  Splits all {actualSplitPageCount} page(s) into individual 1-page PDF files ready to download.
-                </p>
-              </button>
-            </div>
-
-            {splitMode === 'range' && (
-              <div className="space-y-4">
-                {/* Interactive Page Number Selector Pills */}
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <span className="text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8]">
-                      Tap Pages to Include in Split PDF:
+              {/* 3-Column Mode Tabs: Range | Pages | Size */}
+              <div className="grid grid-cols-3 border-b border-[#E4DFEC] dark:border-[#261F33]">
+                {/* Tab 1: Range */}
+                <button
+                  type="button"
+                  onClick={() => setSplitTopTab('range')}
+                  className={`relative py-4 px-2 flex flex-col items-center justify-center gap-2 border-r border-[#E4DFEC] dark:border-[#261F33] transition-colors cursor-pointer ${
+                    splitTopTab === 'range'
+                      ? 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8]'
+                      : 'bg-[#F8F9FA] dark:bg-[#0D0A12] text-[#878D99]'
+                  }`}
+                >
+                  {splitTopTab === 'range' && (
+                    <span className="absolute top-2.5 left-2.5 w-5 h-5 rounded-full bg-[#3ECF8E] text-white flex items-center justify-center shadow-2xs">
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
                     </span>
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setSplitRangeInput(
-                            actualSplitPageCount > 1
-                              ? `1-${actualSplitPageCount}`
-                              : '1'
-                          )
-                        }
-                        className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
-                      >
-                        Select All ({actualSplitPageCount})
-                      </button>
-                      {actualSplitPageCount >= 2 && (
-                        <>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSplitRangeInput(
-                                `1-${Math.max(1, Math.floor(actualSplitPageCount / 2))}`
-                              )
-                            }
-                            className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
-                          >
-                            First Half
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSplitRangeInput(
-                                `${Math.floor(actualSplitPageCount / 2) + 1}-${actualSplitPageCount}`
-                              )
-                            }
-                            className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
-                          >
-                            Second Half
-                          </button>
-                        </>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => setSplitRangeInput('1')}
-                        className="px-2.5 py-1 rounded text-[11px] font-semibold bg-[#F2EFF6] dark:bg-[#261F33] hover:bg-[#E4DFEC] cursor-pointer"
-                      >
-                        Reset to Page 1
-                      </button>
-                    </div>
+                  )}
+                  <div className="w-10 h-8 border-2 border-dashed border-current rounded flex items-center justify-center gap-1 px-1">
+                    <span className="w-2.5 h-4 border border-current rounded-[1px]" />
+                    <span className="w-1 h-0.5 bg-current" />
+                    <span className="w-2.5 h-4 border border-current rounded-[1px]" />
                   </div>
+                  <span className="text-sm font-medium">Range</span>
+                </button>
 
-                  <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
-                    {Array.from(
-                      { length: actualSplitPageCount },
-                      (_, idx) => idx + 1
-                    ).map((pNum) => {
-                      const selectedList = parsePageRanges(
-                        splitRangeInput,
-                        actualSplitPageCount
-                      );
-                      const isPicked = selectedList.includes(pNum);
-                      return (
+                {/* Tab 2: Pages */}
+                <button
+                  type="button"
+                  onClick={() => setSplitTopTab('pages')}
+                  className={`relative py-4 px-2 flex flex-col items-center justify-center gap-2 border-r border-[#E4DFEC] dark:border-[#261F33] transition-colors cursor-pointer ${
+                    splitTopTab === 'pages'
+                      ? 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8]'
+                      : 'bg-[#F8F9FA] dark:bg-[#0D0A12] text-[#878D99]'
+                  }`}
+                >
+                  {splitTopTab === 'pages' && (
+                    <span className="absolute top-2.5 left-2.5 w-5 h-5 rounded-full bg-[#3ECF8E] text-white flex items-center justify-center shadow-2xs">
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    </span>
+                  )}
+                  <LayoutGrid className="w-7 h-7 stroke-[1.6]" />
+                  <span className="text-sm font-medium">Pages</span>
+                </button>
+
+                {/* Tab 3: Size */}
+                <button
+                  type="button"
+                  onClick={() => setSplitTopTab('size')}
+                  className={`relative py-4 px-2 flex flex-col items-center justify-center gap-2 transition-colors cursor-pointer ${
+                    splitTopTab === 'size'
+                      ? 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8]'
+                      : 'bg-[#F8F9FA] dark:bg-[#0D0A12] text-[#878D99]'
+                  }`}
+                >
+                  {splitTopTab === 'size' && (
+                    <span className="absolute top-2.5 left-2.5 w-5 h-5 rounded-full bg-[#3ECF8E] text-white flex items-center justify-center shadow-2xs">
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                    </span>
+                  )}
+                  <span className="absolute top-2.5 right-2.5 w-5 h-5 rounded-full bg-[#FBBF24] text-[#14101B] flex items-center justify-center shadow-2xs">
+                    <Crown className="w-3 h-3 fill-current" />
+                  </span>
+                  <FileOutput className="w-7 h-7 stroke-[1.6]" />
+                  <span className="text-sm font-medium">Size</span>
+                </button>
+              </div>
+
+              {/* Tab Content Body */}
+              <div className="p-5 sm:p-6 space-y-5">
+                {/* TAB 1: RANGE */}
+                {splitTopTab === 'range' && (
+                  <div className="space-y-5">
+                    <div className="space-y-2.5">
+                      <p className="text-sm font-bold text-[#2D3139] dark:text-[#F4F1F8]">
+                        Range mode:
+                      </p>
+                      <div className="grid grid-cols-3 gap-2.5">
                         <button
-                          key={pNum}
                           type="button"
-                          onClick={() => handleToggleSplitPageNumber(pNum)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer ${
-                            isPicked
-                              ? 'bg-[#2563EB] text-white shadow-xs'
-                              : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] hover:border-[#2563EB]'
+                          onClick={() => setSplitRangeSubMode('custom')}
+                          className={`py-2.5 px-3 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                            splitRangeSubMode === 'custom'
+                              ? 'border-2 border-[#E5322D] text-[#E5322D] bg-white dark:bg-[#16111F] font-semibold shadow-2xs'
+                              : 'border border-transparent bg-[#F2F3F7] dark:bg-[#261F33] text-[#6E7582] dark:text-[#A39BB5]'
                           }`}
                         >
-                          Page {pNum}
+                          Custom
                         </button>
-                      );
-                    })}
+                        <button
+                          type="button"
+                          onClick={() => setSplitRangeSubMode('fixed')}
+                          className={`py-2.5 px-3 rounded-lg text-sm font-medium transition-all cursor-pointer ${
+                            splitRangeSubMode === 'fixed'
+                              ? 'border-2 border-[#E5322D] text-[#E5322D] bg-white dark:bg-[#16111F] font-semibold shadow-2xs'
+                              : 'border border-transparent bg-[#F2F3F7] dark:bg-[#261F33] text-[#6E7582] dark:text-[#A39BB5]'
+                          }`}
+                        >
+                          Fixed
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSplitRangeSubMode('smart');
+                            handleGenerateSmartRanges();
+                          }}
+                          className={`py-2.5 px-3 rounded-lg text-sm font-medium transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                            splitRangeSubMode === 'smart'
+                              ? 'border-2 border-[#E5322D] text-[#E5322D] bg-white dark:bg-[#16111F] font-semibold shadow-2xs'
+                              : 'border border-transparent bg-[#F2F3F7] dark:bg-[#261F33] text-[#6E7582] dark:text-[#A39BB5]'
+                          }`}
+                        >
+                          <span>Smart</span>
+                          <Sparkles className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Custom or Smart Range List */}
+                    {(splitRangeSubMode === 'custom' ||
+                      splitRangeSubMode === 'smart') && (
+                      <div className="space-y-4">
+                        {customRanges.map((range, idx) => (
+                          <div
+                            key={range.id}
+                            className="space-y-2 pb-3 border-b border-[#E4DFEC]/70 dark:border-[#261F33] last:border-b-0"
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <ArrowUpDown className="w-4 h-4 text-[#5A6270]" />
+                                <span className="text-sm font-medium text-[#2D3139] dark:text-[#F4F1F8]">
+                                  Range
+                                </span>
+                                <span className="px-2 py-0.5 rounded bg-[#EAECEF] dark:bg-[#261F33] text-xs font-semibold text-[#2D3139] dark:text-[#F4F1F8]">
+                                  {idx + 1}
+                                </span>
+                              </div>
+                              {customRanges.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    handleRemoveCustomRange(range.id)
+                                  }
+                                  className="text-xs font-semibold text-[#E5322D] hover:underline cursor-pointer"
+                                >
+                                  Remove
+                                </button>
+                              )}
+                            </div>
+
+                            <div className="space-y-1.5">
+                              {/* "from page" split input box */}
+                              <div className="flex items-center border border-[#8E95A2] dark:border-[#3E3452] rounded-md overflow-hidden max-w-[260px] bg-white dark:bg-[#0D0A12]">
+                                <span className="px-3 py-2 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] border-r border-[#8E95A2] dark:border-[#3E3452] whitespace-nowrap">
+                                  from page
+                                </span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={actualSplitPageCount}
+                                  value={range.from}
+                                  onChange={(e) =>
+                                    handleUpdateCustomRange(
+                                      range.id,
+                                      'from',
+                                      Number(e.target.value)
+                                    )
+                                  }
+                                  className="w-full px-3 py-2 text-right text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] bg-transparent focus:outline-none"
+                                />
+                              </div>
+
+                              {/* "to" split input box */}
+                              <div className="flex items-center border border-[#8E95A2] dark:border-[#3E3452] rounded-md overflow-hidden max-w-[200px] bg-white dark:bg-[#0D0A12]">
+                                <span className="px-3.5 py-2 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] border-r border-[#8E95A2] dark:border-[#3E3452] whitespace-nowrap">
+                                  to
+                                </span>
+                                <input
+                                  type="number"
+                                  min={range.from}
+                                  max={actualSplitPageCount}
+                                  value={range.to}
+                                  onChange={(e) =>
+                                    handleUpdateCustomRange(
+                                      range.id,
+                                      'to',
+                                      Number(e.target.value)
+                                    )
+                                  }
+                                  className="w-full px-3 py-2 text-right text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] bg-transparent focus:outline-none"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+
+                        {/* + Add Range Button */}
+                        <div className="pt-2 text-center border-t border-[#E4DFEC] dark:border-[#261F33]">
+                          <button
+                            type="button"
+                            onClick={handleAddCustomRange}
+                            className="inline-flex items-center justify-center gap-1.5 px-5 py-2 rounded-lg border border-[#E5322D] text-[#E5322D] hover:bg-[#E5322D]/5 text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            <Plus className="w-4 h-4 stroke-[2.5]" />
+                            <span>Add Range</span>
+                          </button>
+                        </div>
+
+                        {customRanges.length > 1 && (
+                          <label className="flex items-center gap-2.5 pt-1 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={mergeAllRanges}
+                              onChange={(e) =>
+                                setMergeAllRanges(e.target.checked)
+                              }
+                              className="w-4 h-4 accent-[#E5322D] rounded"
+                            />
+                            <span>Merge all ranges in one PDF file.</span>
+                          </label>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Fixed Range Mode */}
+                    {splitRangeSubMode === 'fixed' && (
+                      <div className="space-y-3">
+                        <div className="flex items-center border border-[#8E95A2] dark:border-[#3E3452] rounded-md overflow-hidden max-w-[280px] bg-white dark:bg-[#0D0A12]">
+                          <span className="px-3 py-2.5 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] border-r border-[#8E95A2] dark:border-[#3E3452] whitespace-nowrap">
+                            Split into page ranges of:
+                          </span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={actualSplitPageCount}
+                            value={fixedRangeStep}
+                            onChange={(e) =>
+                              setFixedRangeStep(
+                                Math.max(
+                                  1,
+                                  Math.min(
+                                    actualSplitPageCount,
+                                    Number(e.target.value) || 1
+                                  )
+                                )
+                              )
+                            }
+                            className="w-full px-3 py-2.5 text-right text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] bg-transparent focus:outline-none"
+                          />
+                        </div>
+                        <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] bg-[#F8F9FA] dark:bg-[#0D0A12] p-3 rounded-lg border border-[#E4DFEC] dark:border-[#261F33]">
+                          This PDF will be split into files of{' '}
+                          <strong>{fixedRangeStep}</strong> page(s) each.{' '}
+                          <strong>
+                            {Math.ceil(
+                              actualSplitPageCount / Math.max(1, fixedRangeStep)
+                            )}{' '}
+                            PDF(s)
+                          </strong>{' '}
+                          will be created.
+                        </p>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
 
-                <div className="space-y-1.5">
-                  <label className="block text-xs font-semibold">
-                    Or Type Page Numbers / Ranges (e.g. 1-2, 4)
-                  </label>
-                  <input
-                    type="text"
-                    value={splitRangeInput}
-                    onChange={(e) => setSplitRangeInput(e.target.value)}
-                    placeholder={`1-${actualSplitPageCount}`}
-                    className="w-full px-3.5 py-2.5 text-sm font-mono rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
-                  />
-                </div>
+                {/* TAB 2: PAGES */}
+                {splitTopTab === 'pages' && (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <p className="text-sm font-bold text-[#2D3139] dark:text-[#F4F1F8]">
+                        Extract mode:
+                      </p>
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <button
+                          type="button"
+                          onClick={() => setSplitMode('each-page')}
+                          className={`py-2.5 px-3 rounded-lg text-xs sm:text-sm font-medium transition-all cursor-pointer ${
+                            splitMode === 'each-page'
+                              ? 'border-2 border-[#E5322D] text-[#E5322D] bg-white dark:bg-[#16111F] font-semibold'
+                              : 'border border-transparent bg-[#F2F3F7] dark:bg-[#261F33] text-[#6E7582] dark:text-[#A39BB5]'
+                          }`}
+                        >
+                          Extract all pages
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSplitMode('range')}
+                          className={`py-2.5 px-3 rounded-lg text-xs sm:text-sm font-medium transition-all cursor-pointer ${
+                            splitMode === 'range'
+                              ? 'border-2 border-[#E5322D] text-[#E5322D] bg-white dark:bg-[#16111F] font-semibold'
+                              : 'border border-transparent bg-[#F2F3F7] dark:bg-[#261F33] text-[#6E7582] dark:text-[#A39BB5]'
+                          }`}
+                        >
+                          Select pages
+                        </button>
+                      </div>
+                    </div>
+
+                    {splitMode === 'each-page' ? (
+                      <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] bg-[#F8F9FA] dark:bg-[#0D0A12] p-3 rounded-lg border border-[#E4DFEC] dark:border-[#261F33]">
+                        Selected pages will be converted into separate PDF files.{' '}
+                        <strong>{actualSplitPageCount} PDF(s)</strong> will be created.
+                      </p>
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-semibold text-[#2D3139] dark:text-[#F4F1F8]">
+                            Pages to extract:
+                          </label>
+                          <input
+                            type="text"
+                            value={splitRangeInput}
+                            onChange={(e) => setSplitRangeInput(e.target.value)}
+                            placeholder={`e.g. 1, 3-${actualSplitPageCount}`}
+                            className="w-full px-3.5 py-2 text-sm font-mono rounded-lg bg-white dark:bg-[#0D0A12] border border-[#8E95A2] dark:border-[#3E3452]"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2.5 rounded-xl bg-[#F8F9FA] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                          {Array.from(
+                            { length: actualSplitPageCount },
+                            (_, idx) => idx + 1
+                          ).map((pNum) => {
+                            const selectedList = parsePageRanges(
+                              splitRangeInput,
+                              actualSplitPageCount
+                            );
+                            const isPicked = selectedList.includes(pNum);
+                            return (
+                              <button
+                                key={pNum}
+                                type="button"
+                                onClick={() => handleToggleSplitPageNumber(pNum)}
+                                className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-colors cursor-pointer ${
+                                  isPicked
+                                    ? 'bg-[#E5322D] text-white'
+                                    : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
+                                }`}
+                              >
+                                {pNum}
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        <label className="flex items-center gap-2.5 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={mergeAllRanges}
+                            onChange={(e) =>
+                              setMergeAllRanges(e.target.checked)
+                            }
+                            className="w-4 h-4 accent-[#E5322D] rounded"
+                          />
+                          <span>Merge extracted pages into one PDF file.</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* TAB 3: SIZE */}
+                {splitTopTab === 'size' && (
+                  <div className="space-y-4">
+                    <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                      Split this document ({formatBytes(selectedDoc.sizeBytes)}) into smaller PDF files, each no larger than the maximum size specified below:
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center border border-[#8E95A2] dark:border-[#3E3452] rounded-md overflow-hidden flex-1 max-w-[240px] bg-white dark:bg-[#0D0A12]">
+                        <span className="px-3 py-2 text-xs font-medium text-[#2D3139] dark:text-[#D5CEE0] border-r border-[#8E95A2] dark:border-[#3E3452] whitespace-nowrap">
+                          Max size:
+                        </span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={500}
+                          value={maxSplitSizeValue}
+                          onChange={(e) =>
+                            setMaxSplitSizeValue(
+                              Math.max(1, Number(e.target.value) || 1)
+                            )
+                          }
+                          className="w-full px-3 py-2 text-right text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] bg-transparent focus:outline-none"
+                        />
+                      </div>
+                      <div className="inline-flex rounded-md border border-[#8E95A2] dark:border-[#3E3452] overflow-hidden">
+                        {(['KB', 'MB'] as const).map((unit) => (
+                          <button
+                            key={unit}
+                            type="button"
+                            onClick={() => setMaxSplitSizeUnit(unit)}
+                            className={`px-3 py-2 text-xs font-bold cursor-pointer ${
+                              maxSplitSizeUnit === unit
+                                ? 'bg-[#E5322D] text-white'
+                                : 'bg-white dark:bg-[#0D0A12] text-[#6E667D]'
+                            }`}
+                          >
+                            {unit}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Primary Red "Split PDF ->" Button */}
+                <button
+                  type="button"
+                  onClick={handleRunSplitExtract}
+                  disabled={isBusy}
+                  className="w-full py-3.5 px-6 rounded-xl bg-[#E5322D] hover:bg-[#C92520] text-white text-base sm:text-lg font-bold flex items-center justify-center gap-3 shadow-md transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  <span>{isBusy ? 'Splitting PDF...' : 'Split PDF'}</span>
+                  <CircleArrowRight className="w-6 h-6 stroke-[2]" />
+                </button>
               </div>
-            )}
-
-            <div className="flex flex-wrap items-center gap-3">
-              <button
-                type="button"
-                onClick={handleRunSplitExtract}
-                disabled={isBusy}
-                className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-sm disabled:opacity-50"
-              >
-                <Scissors className="w-4 h-4" />
-                <span>
-                  {isBusy
-                    ? 'Splitting PDF...'
-                    : splitMode === 'each-page'
-                      ? `Split All ${actualSplitPageCount} Pages & Download`
-                      : 'Split PDF & Download Now'}
-                </span>
-              </button>
             </div>
 
             {/* Persistent Download Split PDF Result Cards */}
@@ -1839,7 +2542,7 @@ Status: Approved for Production Distribution`;
                           className="px-3 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
                         >
                           <Share2 className="w-3.5 h-3.5" />
-                          <span>Save / Share to Phone</span>
+                          <span>Save / Share</span>
                         </button>
                       </div>
                     </div>
@@ -2638,20 +3341,29 @@ Status: Approved for Production Distribution`;
           </div>
         )}
 
-        {/* 6. ORGANIZE & ROTATE PAGES */}
+        {/* 6. ORGANIZE & ROTATE PAGES (Full Reordering, Position Jump, Drag & Drop, Rotate, Duplicate, Blank, Delete) */}
         {activeTool === 'organize-pdf' && selectedDoc && (
           <div className="space-y-6">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
               <div>
-                <h2 className="text-base font-bold">
-                  Organize, Rotate, Insert, or Delete PDF Pages
+                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Organize, Reorder, Rotate, or Delete PDF Pages
                 </h2>
                 <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Rotate individual pages or all pages, reorder sequence, or insert blank separator pages.
+                  Use the <strong>← / →</strong> arrows, choose a target <strong>Page #</strong> from the dropdown, or drag cards to change page order, then click <strong>Apply &amp; Save PDF</strong>.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
+                  type="button"
+                  onClick={() => setOrgSpecs((prev) => [...prev].reverse())}
+                  className="px-3 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <ArrowUpDown className="w-3.5 h-3.5" />
+                  <span>Reverse Order</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() =>
                     setOrgSpecs((prev) =>
                       prev.map((s) => ({
@@ -2660,12 +3372,13 @@ Status: Approved for Production Distribution`;
                       }))
                     )
                   }
-                  className="px-3 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
                   <RotateCw className="w-3.5 h-3.5" />
                   <span>Rotate All 90°</span>
                 </button>
                 <button
+                  type="button"
                   onClick={() =>
                     setOrgSpecs((prev) => [
                       ...prev,
@@ -2676,18 +3389,27 @@ Status: Approved for Production Distribution`;
                       },
                     ])
                   }
-                  className="px-3 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-2 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
                 >
                   <PlusSquare className="w-3.5 h-3.5" />
-                  <span>Append Blank Page</span>
+                  <span>+ Blank Page</span>
                 </button>
                 <button
-                  onClick={handleSaveOrganizedPdf}
+                  type="button"
+                  onClick={() => handleSaveOrganizedPdf(false)}
                   disabled={isBusy || orgSpecs.length === 0}
-                  className="px-4 py-2 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  className="px-4 py-2 rounded-lg bg-[#003FE8] hover:bg-[#0033BA] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
                 >
                   <Save className="w-3.5 h-3.5" />
-                  <span>Apply & Download PDF</span>
+                  <span>{isBusy ? 'Saving Order...' : 'Apply & Download PDF'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSaveOrganizedPdf(true)}
+                  disabled={isBusy || orgSpecs.length === 0}
+                  className="px-4 py-2 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <span>Apply &amp; Open in Editor</span>
                 </button>
               </div>
             </div>
@@ -2696,9 +3418,50 @@ Status: Approved for Production Distribution`;
               {orgSpecs.map((spec, idx) => (
                 <div
                   key={spec.id}
-                  className="p-3 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] space-y-2.5"
+                  draggable
+                  onDragStart={() => setDraggedOrgIdx(idx)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => {
+                    if (draggedOrgIdx !== null && draggedOrgIdx !== idx) {
+                      moveOrgPage(draggedOrgIdx, idx);
+                    }
+                    setDraggedOrgIdx(null);
+                  }}
+                  onDragEnd={() => setDraggedOrgIdx(null)}
+                  className={`p-3 rounded-xl border transition-all bg-[#FAF9FB] dark:bg-[#0D0A12] space-y-2.5 ${
+                    draggedOrgIdx === idx
+                      ? 'opacity-50 border-[#003FE8] ring-2 ring-[#003FE8]'
+                      : 'border-[#E4DFEC] dark:border-[#261F33]'
+                  }`}
                 >
-                  <div className="h-40 bg-white rounded border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center overflow-hidden">
+                  {/* Top Bar: Position Selector + Original Page Info */}
+                  <div className="flex items-center justify-between gap-1 text-xs">
+                    <div className="flex items-center gap-1">
+                      <span className="text-[11px] font-bold text-[#6E667D] dark:text-[#A39BB5]">
+                        Pos:
+                      </span>
+                      <select
+                        value={idx}
+                        onChange={(e) => moveOrgPage(idx, Number(e.target.value))}
+                        aria-label={`Move page ${idx + 1} to position`}
+                        className="px-1.5 py-0.5 rounded bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold text-[#003FE8] dark:text-[#60A5FA] cursor-pointer"
+                      >
+                        {orgSpecs.map((_, posIdx) => (
+                          <option key={posIdx} value={posIdx}>
+                            #{posIdx + 1}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <span className="font-mono text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                      {spec.sourcePageNumber
+                        ? `Orig p.${spec.sourcePageNumber}`
+                        : 'Blank Page'}
+                    </span>
+                  </div>
+
+                  {/* Page Thumbnail Preview */}
+                  <div className="h-40 bg-white rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center overflow-hidden relative">
                     {spec.isBlank ? (
                       <span className="text-xs text-[#6E667D] font-mono">
                         [Blank A4 Page]
@@ -2715,15 +3478,33 @@ Status: Approved for Production Distribution`;
                       />
                     )}
                   </div>
-                  <div className="flex items-center justify-between text-xs">
-                    <span className="font-mono font-bold">
-                      #{idx + 1}{' '}
-                      {spec.sourcePageNumber
-                        ? `(Src p.${spec.sourcePageNumber})`
-                        : '(Blank)'}
-                    </span>
+
+                  {/* Action Controls Row: Move Left, Move Right, Rotate, Duplicate, Delete */}
+                  <div className="flex items-center justify-between gap-1 pt-0.5">
                     <div className="flex items-center gap-1">
                       <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => moveOrgPage(idx, idx - 1)}
+                        title="Move page earlier (Left / Up)"
+                        className="px-2 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#003FE8] hover:text-white disabled:opacity-30 cursor-pointer flex items-center gap-0.5 text-[11px] font-bold transition-colors"
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === orgSpecs.length - 1}
+                        onClick={() => moveOrgPage(idx, idx + 1)}
+                        title="Move page later (Right / Down)"
+                        className="px-2 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#003FE8] hover:text-white disabled:opacity-30 cursor-pointer flex items-center gap-0.5 text-[11px] font-bold transition-colors"
+                      >
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
                         onClick={() =>
                           setOrgSpecs((prev) =>
                             prev.map((s, i) =>
@@ -2738,11 +3519,20 @@ Status: Approved for Production Distribution`;
                           )
                         }
                         title="Rotate 90°"
-                        className="p-1 rounded border border-[#E4DFEC] dark:border-[#261F33] cursor-pointer"
+                        className="p-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
                       >
-                        <RotateCw className="w-3 h-3" />
+                        <RotateCw className="w-3.5 h-3.5" />
                       </button>
                       <button
+                        type="button"
+                        onClick={() => duplicateOrgPage(idx)}
+                        title="Duplicate page"
+                        className="p-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
                         disabled={orgSpecs.length <= 1}
                         onClick={() =>
                           setOrgSpecs((prev) =>
@@ -2750,9 +3540,9 @@ Status: Approved for Production Distribution`;
                           )
                         }
                         title="Delete page"
-                        className="p-1 rounded text-[#DC2626] disabled:opacity-30 cursor-pointer"
+                        className="p-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#DC2626] hover:bg-[#DC2626]/10 disabled:opacity-30 cursor-pointer"
                       >
-                        <Trash2 className="w-3 h-3" />
+                        <Trash2 className="w-3.5 h-3.5" />
                       </button>
                     </div>
                   </div>
@@ -2893,6 +3683,295 @@ Status: Approved for Production Distribution`;
                 placeholder="Click 'Recognize PDF Page' above to run Tesseract OCR and populate selectable text here..."
                 className="w-full p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs leading-relaxed text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
               />
+            </div>
+          </div>
+        )}
+
+        {/* 7B. SMART COLOR-PRESERVING WATERMARK REMOVER STUDIO */}
+        {activeTool === 'remove-watermark' && selectedDoc && (
+          <div className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+              <div>
+                <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-[#15803D]" />
+                  <span>
+                    Smart Watermark Remover — Preserve Words, Quality &amp; Color
+                  </span>
+                </h2>
+                <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                  Uses multi-scale local contrast, edge-gradient protection, and subpixel alpha unmixing to remove diagonal, grey, or colored watermarks without affecting document words or colors.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                {onOpenInEditor && (
+                  <button
+                    type="button"
+                    onClick={() => handleExecuteWatermarkRemoval(true)}
+                    disabled={isBusy}
+                    className="px-4 py-2.5 rounded-xl bg-[#0088FF] hover:bg-[#0077E6] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    <Sparkles className="w-4 h-4" />
+                    <span>
+                      {isBusy
+                        ? wmProgressText || 'Cleaning...'
+                        : 'Clean All Pages & Open in Editor'}
+                    </span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleExecuteWatermarkRemoval(false)}
+                  disabled={isBusy}
+                  className="px-4 py-2.5 rounded-xl bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>
+                    {isBusy
+                      ? wmProgressText || 'Processing PDF...'
+                      : `Remove Watermark & Download (${selectedDoc.pageCount}p)`}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Controls Bar: Mode + Sensitivity Presets + Target Color Eyedropper */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4">
+              {/* 1. Color Preservation Mode */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  1. Watermark Removal Mode
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setWmRemovePreserveColor(true)}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      wmRemovePreserveColor
+                        ? 'border-[#15803D] bg-[#15803D]/10 text-[#15803D] dark:text-[#4ADE80]'
+                        : 'border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-[#6E667D]'
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Keep Original Colors</p>
+                    <p className="text-[10px] opacity-85 mt-0.5">
+                      Preserves colored headings, logos, diagrams &amp; sharp text
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setWmRemovePreserveColor(false)}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      !wmRemovePreserveColor
+                        ? 'border-[#4A1D5E] dark:border-[#9D5CE5] bg-[#4A1D5E]/10 text-[#4A1D5E] dark:text-[#D5B3FF]'
+                        : 'border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-[#6E667D]'
+                    }`}
+                  >
+                    <p className="text-xs font-bold">Jet-Black Ink (B&amp;W)</p>
+                    <p className="text-[10px] opacity-85 mt-0.5">
+                      Converts all text to crisp black &amp; removes dark banners
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {/* 2. Sensitivity / Threshold Fine-Tuning */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    2. Watermark Sensitivity
+                  </label>
+                  <span className="text-xs font-mono font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    {wmRemoveStrength > 0
+                      ? `+${wmRemoveStrength}`
+                      : wmRemoveStrength}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {(
+                    [
+                      { label: 'Gentle', val: -18 },
+                      { label: 'Balanced', val: 0 },
+                      { label: 'Strong', val: 18 },
+                      { label: 'Deep Clean', val: 34 },
+                    ] as const
+                  ).map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => setWmRemoveStrength(preset.val)}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border cursor-pointer transition-colors ${
+                        wmRemoveStrength === preset.val
+                          ? 'bg-[#15803D] text-white border-[#15803D]'
+                          : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
+                      }`}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="range"
+                  min={-35}
+                  max={50}
+                  step={3}
+                  value={wmRemoveStrength}
+                  onChange={(e) => setWmRemoveStrength(Number(e.target.value))}
+                  className="w-full accent-[#15803D] cursor-pointer"
+                />
+              </div>
+
+              {/* 3. Target Watermark Tint Sampler & Solid Banner Option */}
+              <div className="space-y-2">
+                <label className="block text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  3. Precision Watermark Tint Target
+                </label>
+                <div className="p-2.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-2">
+                  {wmTargetRgb ? (
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className="w-6 h-6 rounded-md border border-black/20 shrink-0"
+                        style={{
+                          backgroundColor: `rgb(${wmTargetRgb[0]}, ${wmTargetRgb[1]}, ${wmTargetRgb[2]})`,
+                        }}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-xs font-bold truncate">
+                          Targeted RGB({wmTargetRgb.join(', ')})
+                        </p>
+                        <p className="text-[10px] text-[#6E667D] truncate">
+                          Removing this exact watermark color
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] leading-snug">
+                      Click directly on any watermark in the <strong>Before</strong> preview below to sample its exact color!
+                    </p>
+                  )}
+
+                  {wmTargetRgb && (
+                    <button
+                      type="button"
+                      onClick={() => setWmTargetRgb(null)}
+                      className="px-2.5 py-1 rounded-lg bg-[#DC2626]/10 text-[#DC2626] text-[11px] font-bold cursor-pointer shrink-0"
+                    >
+                      Reset
+                    </button>
+                  )}
+                </div>
+
+                <label className="flex items-center gap-2 text-xs text-[#6E667D] dark:text-[#A39BB5] cursor-pointer pt-0.5">
+                  <input
+                    type="checkbox"
+                    checked={wmRemoveSolidBanners}
+                    onChange={(e) => setWmRemoveSolidBanners(e.target.checked)}
+                    className="accent-[#15803D]"
+                  />
+                  <span>Also erase solid dark rectangular stamp banners</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Page Selector & Live Before / After Comparison */}
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Live High-DPI Comparison (Page {wmPreviewPage} of{' '}
+                    {selectedDoc.pageCount})
+                  </span>
+                  {wmIsRenderingPreview && (
+                    <span className="text-xs text-[#15803D] font-semibold animate-pulse">
+                      Updating live preview...
+                    </span>
+                  )}
+                </div>
+
+                {selectedDoc.pageCount > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={wmPreviewPage <= 1}
+                      onClick={() =>
+                        setWmPreviewPage((p) => Math.max(1, p - 1))
+                      }
+                      className="px-2.5 py-1 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                    >
+                      ← Prev Page
+                    </button>
+                    <button
+                      type="button"
+                      disabled={wmPreviewPage >= selectedDoc.pageCount}
+                      onClick={() =>
+                        setWmPreviewPage((p) =>
+                          Math.min(selectedDoc.pageCount, p + 1)
+                        )
+                      }
+                      className="px-2.5 py-1 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                    >
+                      Next Page →
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* BEFORE (Click to Sample Watermark Color) */}
+                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#0D0A12] p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#6E667D] dark:text-[#A39BB5]">
+                      BEFORE (Original — Click watermark to sample color)
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-[#E4DFEC]/60 dark:bg-[#261F33] text-[10px] font-semibold">
+                      Eyedropper Active
+                    </span>
+                  </div>
+                  <div className="bg-[#181322] rounded-xl p-3 flex items-center justify-center min-h-[380px] overflow-hidden">
+                    {wmOriginalPreviewUrl ? (
+                      <img
+                        src={wmOriginalPreviewUrl}
+                        alt="Original page with watermark"
+                        onClick={handleSampleWatermarkPixel}
+                        title="Click directly on the watermark to sample its exact RGB color"
+                        className="max-h-[480px] w-auto rounded shadow-md cursor-crosshair"
+                      />
+                    ) : (
+                      <span className="text-xs text-white/70">
+                        Rendering original page...
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* AFTER (Cleaned Page — Words & Colors Preserved) */}
+                <div className="rounded-2xl border-2 border-[#15803D]/40 bg-[#FAF9FB] dark:bg-[#0D0A12] p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80]">
+                      AFTER (Watermark Removed — Words &amp; Color Preserved)
+                    </span>
+                    <span className="px-2 py-0.5 rounded bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[10px] font-bold">
+                      High-Resolution Unmixing
+                    </span>
+                  </div>
+                  <div className="bg-[#181322] rounded-xl p-3 flex items-center justify-center min-h-[380px] overflow-hidden">
+                    {wmCleanedPreviewUrl ? (
+                      <img
+                        src={wmCleanedPreviewUrl}
+                        alt="Cleaned page without watermark"
+                        className="max-h-[480px] w-auto rounded shadow-md"
+                      />
+                    ) : (
+                      <span className="text-xs text-white/70">
+                        Generating clean preview...
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         )}

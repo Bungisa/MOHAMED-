@@ -386,7 +386,11 @@ export default function App() {
           `Opened "${lastAdded.name}" in ElimikaPDF Reader (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
         );
       } else if (openInEditorAfter) {
-        setOpenWithPromptDoc(lastAdded);
+        setEditorReaderMode(false);
+        navigateToView('editor');
+        showToast(
+          `Opened "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+        );
       } else {
         showToast(
           `Added "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`

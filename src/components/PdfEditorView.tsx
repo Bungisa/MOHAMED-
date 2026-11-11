@@ -124,6 +124,11 @@ const PDF_COLOR_FILTERS: {
 }[] = [
   { id: 'original', label: 'Original', shortDesc: 'Unmodified PDF' },
   {
+    id: 'clean-watermark',
+    label: 'Watermark Clean (Color)',
+    shortDesc: 'Removes watermarks without affecting words, quality, or color',
+  },
+  {
     id: 'ocv-black',
     label: 'OCV BLACK',
     shortDesc: 'Removes watermarks & makes text crisp black',
@@ -410,7 +415,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     try {
       const allRendered = await renderAllPdfPages(
         pdfBytes,
-        1.2,
+        1.65,
         (renderedSoFar, total) => {
           setTotalExpectedPages(total);
           setPages(renderedSoFar);
@@ -1428,16 +1433,41 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   }, [selectedPictureRegion, pages, annotations, pushAnnotationsWithUndo]);
 
   // Page Structural Operations (Rotate, Delete, Insert Blank, Reorder, Extract)
+  const persistStructuralChange = async (
+    updatedBytes: Uint8Array,
+    newPageCount: number,
+    nextAnnotations: AnnotationElement[]
+  ) => {
+    if (!activeDocument) return;
+    await onSaveUpdatedDocument(
+      {
+        ...activeDocument,
+        pdfData: updatedBytes,
+        sizeBytes: updatedBytes.byteLength,
+        pageCount: newPageCount,
+        annotations: nextAnnotations,
+        updatedAt: new Date().toISOString(),
+      },
+      true
+    );
+  };
+
   const handleRotatePage = async (pageNum: number) => {
     if (!workingPdfBytes) return;
-    const specs = pages.map((p) => ({
-      sourcePageNumber: p.pageNumber,
-      addRotationDeg: p.pageNumber === pageNum ? 90 : 0,
-    }));
-    const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
-    setWorkingPdfBytes(updatedBytes);
-    await renderAllPages(updatedBytes);
-    setStatusMessage(`Rotated Page ${pageNum} by 90°.`);
+    setIsLoadingPages(true);
+    try {
+      const specs = pages.map((p) => ({
+        sourcePageNumber: p.pageNumber,
+        addRotationDeg: p.pageNumber === pageNum ? 90 : 0,
+      }));
+      const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
+      setWorkingPdfBytes(updatedBytes);
+      await renderAllPages(updatedBytes);
+      await persistStructuralChange(updatedBytes, pages.length, annotations);
+      setStatusMessage(`Rotated Page ${pageNum} by 90°.`);
+    } finally {
+      setIsLoadingPages(false);
+    }
   };
 
   const handleDeletePage = async (pageNum: number) => {
@@ -1445,56 +1475,99 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       setStatusMessage('A PDF document must contain at least one page.');
       return;
     }
-    const specs = pages
-      .filter((p) => p.pageNumber !== pageNum)
-      .map((p) => ({ sourcePageNumber: p.pageNumber }));
-    const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
-    setWorkingPdfBytes(updatedBytes);
-    setAnnotations((prev) =>
-      prev
+    setIsLoadingPages(true);
+    try {
+      const specs = pages
+        .filter((p) => p.pageNumber !== pageNum)
+        .map((p) => ({ sourcePageNumber: p.pageNumber }));
+      const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
+      const nextAnns = annotations
         .filter((a) => a.pageNumber !== pageNum)
         .map((a) =>
           a.pageNumber > pageNum ? { ...a, pageNumber: a.pageNumber - 1 } : a
-        )
-    );
-    await renderAllPages(updatedBytes);
-    setStatusMessage(`Deleted Page ${pageNum}.`);
+        );
+      setWorkingPdfBytes(updatedBytes);
+      setAnnotations(nextAnns);
+      await renderAllPages(updatedBytes);
+      await persistStructuralChange(updatedBytes, specs.length, nextAnns);
+      setStatusMessage(`Deleted Page ${pageNum}.`);
+    } finally {
+      setIsLoadingPages(false);
+    }
   };
 
   const handleInsertBlankPageAfter = async (pageNum: number) => {
     if (!workingPdfBytes) return;
-    const specs: { sourcePageNumber?: number; isBlank?: boolean }[] = [];
-    for (const p of pages) {
-      specs.push({ sourcePageNumber: p.pageNumber });
-      if (p.pageNumber === pageNum) {
-        specs.push({ isBlank: true });
+    setIsLoadingPages(true);
+    try {
+      const specs: { sourcePageNumber?: number; isBlank?: boolean }[] = [];
+      for (const p of pages) {
+        specs.push({ sourcePageNumber: p.pageNumber });
+        if (p.pageNumber === pageNum) {
+          specs.push({ isBlank: true });
+        }
       }
-    }
-    const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
-    setWorkingPdfBytes(updatedBytes);
-    setAnnotations((prev) =>
-      prev.map((a) =>
+      const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
+      const nextAnns = annotations.map((a) =>
         a.pageNumber > pageNum ? { ...a, pageNumber: a.pageNumber + 1 } : a
-      )
-    );
-    await renderAllPages(updatedBytes);
-    jumpToPage(pageNum + 1);
-    setStatusMessage(`Inserted blank A4 page after Page ${pageNum}.`);
+      );
+      setWorkingPdfBytes(updatedBytes);
+      setAnnotations(nextAnns);
+      await renderAllPages(updatedBytes);
+      await persistStructuralChange(updatedBytes, specs.length, nextAnns);
+      jumpToPage(pageNum + 1);
+      setStatusMessage(`Inserted blank A4 page after Page ${pageNum}.`);
+    } finally {
+      setIsLoadingPages(false);
+    }
+  };
+
+  const handleMovePageToPosition = async (
+    fromPageNum: number,
+    toPageNum: number
+  ) => {
+    if (!workingPdfBytes) return;
+    if (
+      fromPageNum < 1 ||
+      fromPageNum > pages.length ||
+      toPageNum < 1 ||
+      toPageNum > pages.length ||
+      fromPageNum === toPageNum
+    ) {
+      return;
+    }
+    setIsLoadingPages(true);
+    try {
+      const order = pages.map((p) => p.pageNumber);
+      const [moved] = order.splice(fromPageNum - 1, 1);
+      order.splice(toPageNum - 1, 0, moved);
+
+      // Map old page number -> new 1-indexed page number
+      const oldToNewPageMap = new Map<number, number>();
+      order.forEach((oldNum, newIdx) => {
+        oldToNewPageMap.set(oldNum, newIdx + 1);
+      });
+
+      const nextAnns = annotations.map((a) => ({
+        ...a,
+        pageNumber: oldToNewPageMap.get(a.pageNumber) || a.pageNumber,
+      }));
+
+      const specs = order.map((num) => ({ sourcePageNumber: num }));
+      const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
+      setWorkingPdfBytes(updatedBytes);
+      setAnnotations(nextAnns);
+      await renderAllPages(updatedBytes);
+      await persistStructuralChange(updatedBytes, order.length, nextAnns);
+      jumpToPage(toPageNum);
+      setStatusMessage(`Moved Page ${fromPageNum} to Page ${toPageNum}.`);
+    } finally {
+      setIsLoadingPages(false);
+    }
   };
 
   const handleMovePage = async (pageNum: number, dir: -1 | 1) => {
-    if (!workingPdfBytes) return;
-    const target = pageNum + dir;
-    if (target < 1 || target > pages.length) return;
-    const order = pages.map((p) => p.pageNumber);
-    const idxA = pageNum - 1;
-    const idxB = target - 1;
-    [order[idxA], order[idxB]] = [order[idxB], order[idxA]];
-    const specs = order.map((num) => ({ sourcePageNumber: num }));
-    const updatedBytes = await organizePdfPages(workingPdfBytes, specs);
-    setWorkingPdfBytes(updatedBytes);
-    await renderAllPages(updatedBytes);
-    jumpToPage(target);
+    await handleMovePageToPosition(pageNum, pageNum + dir);
   };
 
   const handleExtractSinglePage = async (pageNum: number) => {
@@ -2764,8 +2837,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         </svg>
                       )}
 
-                    {/* Live Watermark Preview (automatically hidden when OCV BLACK watermark remover filter is active) */}
+                    {/* Live Watermark Preview (automatically hidden when Watermark Remover filter is active) */}
                     {watermarkText.trim() &&
+                      pageColorFilter !== 'clean-watermark' &&
                       pageColorFilter !== 'ocv-black' && (
                         <div
                           style={{ opacity: watermarkOpacity }}
@@ -4329,7 +4403,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         type="button"
                         onClick={() => {
                           setPageColorFilter(f.id);
-                          if (f.id === 'ocv-black') {
+                          if (f.id === 'clean-watermark') {
+                            if (watermarkText) setWatermarkText('');
+                            setStatusMessage(
+                              'Smart Watermark Remover active: Watermarks removed while preserving 100% of document words, font sharpness & original colors.'
+                            );
+                          } else if (f.id === 'ocv-black') {
                             if (watermarkText) setWatermarkText('');
                             setStatusMessage(
                               'OCV BLACK active: Watermarks bleached & removed, leaving crisp jet-black text on pure white paper.'
@@ -4353,14 +4432,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     );
                   })}
 
-                  {/* When OCV BLACK is selected, provide one-tap Watermark Removal Strength presets */}
-                  {pageColorFilter === 'ocv-black' && (
+                  {/* When Watermark Clean (Color) or OCV BLACK is selected, provide one-tap Watermark Removal Strength presets */}
+                  {(pageColorFilter === 'clean-watermark' ||
+                    pageColorFilter === 'ocv-black') && (
                     <div className="flex items-center gap-1 bg-[#15803D]/10 border border-[#15803D]/30 rounded-lg px-2 py-0.5">
                       <span className="text-[10px] font-bold text-[#15803D] dark:text-[#4ADE80] whitespace-nowrap">
                         Watermark Clean:
                       </span>
                       {(
                         [
+                          { label: 'Gentle', b: -15 },
                           { label: 'Standard', b: 0 },
                           { label: 'Strong', b: 18 },
                           { label: 'Max', b: 32 },
@@ -4463,7 +4544,39 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             {bottomPanelTab === 'watermark' && (
               <div className="flex items-center justify-between gap-2 overflow-x-auto">
                 <div className="flex items-center gap-2 shrink-0">
-                  {/* 1-Tap OCV BLACK Watermark Remover */}
+                  {/* 1-Tap Smart Color-Preserving Watermark Remover */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const next =
+                        pageColorFilter === 'clean-watermark'
+                          ? 'original'
+                          : 'clean-watermark';
+                      setPageColorFilter(next);
+                      if (next === 'clean-watermark') {
+                        if (watermarkText) setWatermarkText('');
+                        setStatusMessage(
+                          `Smart Watermark Remover enabled across all ${pages.length} pages: Watermarks removed while preserving document words, font quality & original colors.`
+                        );
+                      } else {
+                        setStatusMessage('Restored original PDF page state.');
+                      }
+                    }}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap border ${
+                      pageColorFilter === 'clean-watermark'
+                        ? 'bg-[#15803D] text-white border-[#15803D]'
+                        : 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8] border-[#E4DFEC] dark:border-[#261F33]'
+                    }`}
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>
+                      {pageColorFilter === 'clean-watermark'
+                        ? 'Watermark Removed (Keep Color: ON)'
+                        : 'Remove Watermark (Keep Color & Words)'}
+                    </span>
+                  </button>
+
+                  {/* Optional OCV BLACK Mode Toggle for Monochrome Scans */}
                   <button
                     type="button"
                     onClick={() => {
@@ -4475,7 +4588,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       if (next === 'ocv-black') {
                         if (watermarkText) setWatermarkText('');
                         setStatusMessage(
-                          `OCV BLACK enabled across all ${pages.length} pages: Background watermarks bleached away.`
+                          `OCV BLACK enabled across all ${pages.length} pages: Background watermarks & solid banners removed.`
                         );
                       } else {
                         setStatusMessage('Restored original PDF page colors.');
@@ -4483,15 +4596,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     }}
                     className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap border ${
                       pageColorFilter === 'ocv-black'
-                        ? 'bg-[#15803D] text-white border-[#15803D]'
-                        : 'bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8] border-[#E4DFEC] dark:border-[#261F33]'
+                        ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                        : 'bg-white dark:bg-[#16111F] text-[#6E667D] dark:text-[#A39BB5] border-[#E4DFEC] dark:border-[#261F33]'
                     }`}
                   >
-                    <Sparkles className="w-3.5 h-3.5" />
                     <span>
                       {pageColorFilter === 'ocv-black'
-                        ? 'OCV BLACK: ON'
-                        : 'Remove Watermark (OCV BLACK)'}
+                        ? 'OCV B&W: ON'
+                        : 'OCV B&W Clean'}
                     </span>
                   </button>
 
@@ -4544,6 +4656,49 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     />
                     <span>Page Numbers</span>
                   </label>
+
+                  {pages.length > 1 && (
+                    <div className="flex items-center gap-1 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-2 py-1">
+                      <button
+                        type="button"
+                        disabled={currentPage <= 1 || isLoadingPages}
+                        onClick={() => handleMovePage(currentPage, -1)}
+                        title="Move current page earlier"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer flex items-center gap-0.5 text-xs font-bold text-[#003FE8] dark:text-[#60A5FA]"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5" />
+                        <span>Move Up</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={currentPage >= pages.length || isLoadingPages}
+                        onClick={() => handleMovePage(currentPage, 1)}
+                        title="Move current page later"
+                        className="p-1 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer flex items-center gap-0.5 text-xs font-bold text-[#003FE8] dark:text-[#60A5FA]"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                        <span>Move Down</span>
+                      </button>
+                      <select
+                        value={currentPage}
+                        disabled={isLoadingPages}
+                        onChange={(e) =>
+                          handleMovePageToPosition(
+                            currentPage,
+                            Number(e.target.value)
+                          )
+                        }
+                        aria-label="Move current page to position"
+                        className="ml-1 px-1.5 py-0.5 rounded bg-[#F2EFF6] dark:bg-[#261F33] text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                      >
+                        {pages.map((p) => (
+                          <option key={p.pageNumber} value={p.pageNumber}>
+                            Move to #{p.pageNumber}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   <button
                     type="button"

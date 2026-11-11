@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   FolderPlus,
   Folder,
@@ -15,6 +15,8 @@ import {
   Check,
   X,
   FileUp,
+  FileText,
+  MoreHorizontal,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -22,6 +24,8 @@ import {
   DocumentCategory,
 } from '../types/document';
 import { formatBytes } from '../services/storageService';
+import { renderPdfPage } from '../services/pdfService';
+import { formatRelativeTime } from './DashboardView';
 
 interface DocumentsLibraryViewProps {
   documents: StoredDocument[];
@@ -70,9 +74,42 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
   const [showNewFolderInput, setShowNewFolderInput] = useState(false);
   const [newFolderName, setNewFolderName] = useState('');
 
-  // Inline rename
+  // Inline rename & action menu
   const [renamingDocId, setRenamingDocId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState('');
+  const [openMenuDocId, setOpenMenuDocId] = useState<string | null>(null);
+  const [thumbnailsMap, setThumbnailsMap] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    const generateMissingThumbnails = async () => {
+      for (const doc of documents) {
+        if (cancelled) break;
+        if (doc.thumbnailDataUrl || thumbnailsMap[doc.id]) continue;
+        try {
+          const rendered = await renderPdfPage(
+            doc.pdfData,
+            1,
+            0.35,
+            'image/jpeg',
+            0.72
+          );
+          if (!cancelled && rendered.dataUrl) {
+            setThumbnailsMap((prev) => ({
+              ...prev,
+              [doc.id]: rendered.dataUrl,
+            }));
+          }
+        } catch {
+          // Ignore thumbnail render error
+        }
+      }
+    };
+    generateMissingThumbnails();
+    return () => {
+      cancelled = true;
+    };
+  }, [documents, thumbnailsMap]);
 
   const handleCreateFolderSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -116,15 +153,15 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
     });
 
   return (
-    <div className="max-w-6xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
       {/* Compact Header */}
       <div className="flex items-center justify-between gap-3 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4">
         <div className="min-w-0">
           <h1 className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8] truncate">
-            My Files ({documents.length})
+            All Files ({documents.length})
           </h1>
           <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
-            Tap any file to Read, Edit, or Share
+            Tap any file card to Read, Edit, or Share
           </p>
         </div>
 
@@ -294,136 +331,223 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
         </div>
       </div>
 
-      {/* Clean Mobile & Desktop File List (Zero Horizontal Clipping) */}
-      <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] overflow-hidden">
-        {filteredDocs.length === 0 ? (
-          <div className="p-10 text-center space-y-2">
-            <p className="text-sm font-bold">No documents found</p>
-            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Upload a PDF or clear your search filter.
-            </p>
-          </div>
-        ) : (
-          <div className="divide-y divide-[#E4DFEC] dark:divide-[#261F33]">
-            {filteredDocs.map((doc) => {
-              const isRenaming = renamingDocId === doc.id;
-              return (
-                <div
-                  key={doc.id}
-                  className="p-3 sm:px-4 flex items-center justify-between gap-2.5 hover:bg-[#F2EFF6]/50 dark:hover:bg-[#261F33]/40 transition-colors"
-                >
-                  {/* Left: Star + Document Name */}
-                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                    <button
-                      onClick={() => onToggleStar(doc)}
-                      className="w-8 h-8 rounded-lg flex items-center justify-center text-[#6E667D] hover:text-[#D97706] cursor-pointer shrink-0"
+      {/* Card Arrangement matching image_597cb37c.png */}
+      {filteredDocs.length === 0 ? (
+        <div className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-10 text-center space-y-2">
+          <p className="text-sm font-bold">No documents found</p>
+          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+            Upload a PDF or clear your search filter.
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-2.5">
+          {filteredDocs.map((doc, idx) => {
+            const isRenaming = renamingDocId === doc.id;
+            const thumbSrc = doc.thumbnailDataUrl || thumbnailsMap[doc.id];
+            const displayTitle = doc.name.replace(/\.pdf$/i, '');
+            const isMenuOpen = openMenuDocId === doc.id;
+            const showPdfBadge = doc.category !== 'Scans' && idx % 3 === 1;
+
+            return (
+              <div
+                key={doc.id}
+                onClick={() => {
+                  if (!isRenaming) {
+                    if (onRequestOpenWithOptions) {
+                      onRequestOpenWithOptions(doc);
+                    } else {
+                      onOpenInEditor(doc, false);
+                    }
+                  }
+                }}
+                className="relative rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:border-[#0088FF]/50 p-3 shadow-2xs flex items-center gap-3.5 transition-all cursor-pointer"
+              >
+                {/* Left: Page 1 Thumbnail inside soft gray rounded frame */}
+                <div className="w-16 h-14 sm:w-20 sm:h-16 rounded-lg bg-[#F1F2F6] dark:bg-[#261F33] p-1 flex items-center justify-center shrink-0 overflow-hidden border border-[#E4DFEC]/70 dark:border-[#342A45]">
+                  {thumbSrc ? (
+                    <img
+                      src={thumbSrc}
+                      alt={doc.name}
+                      className="w-full h-full object-cover object-top rounded-[4px] bg-white shadow-2xs"
+                    />
+                  ) : (
+                    <div className="w-full h-full rounded-[4px] bg-white dark:bg-[#1A1425] flex flex-col items-center justify-center p-1">
+                      <FileText className="w-5 h-5 text-[#0088FF]" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Center: Title + Relative Timestamp + Badges Row */}
+                <div className="min-w-0 flex-1 space-y-1">
+                  {isRenaming ? (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex items-center gap-1.5 flex-1 min-w-0"
                     >
-                      <Star
-                        className={`w-4 h-4 ${
-                          doc.starred ? 'fill-[#D97706] text-[#D97706]' : ''
-                        }`}
+                      <input
+                        type="text"
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        className="flex-1 min-w-0 px-2.5 py-1 text-xs rounded-lg border border-[#4A1D5E] bg-[#FAF9FB] dark:bg-[#0D0A12]"
                       />
-                    </button>
-
-                    {isRenaming ? (
-                      <div className="flex items-center gap-1.5 flex-1 min-w-0">
-                        <input
-                          type="text"
-                          value={renameValue}
-                          onChange={(e) => setRenameValue(e.target.value)}
-                          className="flex-1 min-w-0 px-2.5 py-1 text-xs rounded-lg border border-[#4A1D5E] bg-[#FAF9FB] dark:bg-[#0D0A12]"
-                        />
-                        <button
-                          onClick={async () => {
-                            if (renameValue.trim()) {
-                              await onRenameDocument(doc, renameValue.trim());
-                            }
-                            setRenamingDocId(null);
-                          }}
-                          className="p-1.5 text-[#15803D] cursor-pointer"
-                        >
-                          <Check className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => setRenamingDocId(null)}
-                          className="p-1.5 text-[#6E667D] cursor-pointer"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      </div>
-                    ) : (
                       <button
-                        onClick={() =>
-                          onRequestOpenWithOptions
-                            ? onRequestOpenWithOptions(doc)
-                            : onOpenInEditor(doc, true)
-                        }
-                        className="text-left min-w-0 flex-1 cursor-pointer group"
+                        onClick={async () => {
+                          if (renameValue.trim()) {
+                            await onRenameDocument(doc, renameValue.trim());
+                          }
+                          setRenamingDocId(null);
+                        }}
+                        className="p-1.5 text-[#15803D] cursor-pointer"
                       >
-                        <p className="text-xs sm:text-sm font-semibold text-[#14101B] dark:text-[#F4F1F8] group-hover:text-[#4A1D5E] dark:group-hover:text-[#D5B3FF] truncate">
-                          {doc.name}
-                        </p>
-                        <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono tabular-nums mt-0.5 truncate">
-                          {doc.pageCount}p · {formatBytes(doc.sizeBytes)} ·{' '}
-                          {new Date(doc.updatedAt).toLocaleDateString()}
-                        </p>
+                        <Check className="w-4 h-4" />
                       </button>
-                    )}
-                  </div>
+                      <button
+                        onClick={() => setRenamingDocId(null)}
+                        className="p-1.5 text-[#6E667D] cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-sm sm:text-[15px] font-medium text-[#434C5E] dark:text-[#F4F1F8] truncate">
+                        {displayTitle}
+                      </p>
+                      <p className="text-xs text-[#7B8394] dark:text-[#A39BB5]">
+                        {formatRelativeTime(doc.updatedAt || doc.createdAt)}
+                      </p>
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-[5px] border border-[#7B8394]/80 text-[11px] font-semibold text-[#5E6675] dark:text-[#A39BB5] tabular-nums">
+                          {doc.pageCount}
+                        </span>
+                        {showPdfBadge ? (
+                          <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#E53935] text-white text-[9px] font-extrabold tracking-tight">
+                            PDF
+                          </span>
+                        ) : (
+                          <>
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] border border-[#C62828]/80 text-[11px] font-bold text-[#B71C1C] dark:text-[#F87171]">
+                              N
+                            </span>
+                            <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
+                          </>
+                        )}
+                        {doc.starred && (
+                          <Star className="w-3.5 h-3.5 fill-[#D97706] text-[#D97706] shrink-0" />
+                        )}
+                        <span className="hidden sm:inline text-[11px] text-[#7B8394] dark:text-[#A39BB5] font-mono ml-1">
+                          {formatBytes(doc.sizeBytes)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
 
-                  {/* Right: Always-Visible Action Buttons */}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <button
-                      onClick={() => onOpenInEditor(doc, true)}
-                      title="Open in ElimikaPDF Reader"
-                      className="h-9 px-2.5 rounded-lg bg-[#003FE8]/10 text-[#003FE8] dark:bg-[#38BDF8]/20 dark:text-[#38BDF8] hover:bg-[#003FE8] hover:text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                    >
-                      <Eye className="w-3.5 h-3.5 shrink-0" />
-                      <span>Read</span>
-                    </button>
+                {/* Right: Three-Dots Menu Button */}
+                <div
+                  className="flex items-center gap-1 shrink-0"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setOpenMenuDocId((prev) =>
+                        prev === doc.id ? null : doc.id
+                      )
+                    }
+                    title="Document options"
+                    className="w-9 h-9 rounded-full flex items-center justify-center text-[#5E6675] dark:text-[#A39BB5] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                  >
+                    <MoreHorizontal className="w-5 h-5" />
+                  </button>
+                </div>
 
+                {isMenuOpen && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className="absolute right-3 top-12 w-52 rounded-xl bg-white dark:bg-[#1E172B] border border-[#E4DFEC] dark:border-[#342A45] shadow-xl py-1.5 z-30 text-xs"
+                  >
                     <button
-                      onClick={() => onOpenInEditor(doc, false)}
-                      title="Edit PDF"
-                      className="h-9 px-2.5 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#4A1D5E] hover:text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
-                    >
-                      <FileEdit className="w-3.5 h-3.5 shrink-0" />
-                      <span>Edit</span>
-                    </button>
-
-                    <button
+                      type="button"
                       onClick={() => {
+                        setOpenMenuDocId(null);
+                        onOpenInEditor(doc, false);
+                      }}
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                    >
+                      <FileEdit className="w-4 h-4 text-[#0088FF]" />
+                      <span>Open / Edit PDF</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
+                        onOpenInEditor(doc, true);
+                      }}
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                    >
+                      <Eye className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                      <span>Read Mode</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
                         setRenamingDocId(doc.id);
                         setRenameValue(doc.name);
                       }}
-                      title="Rename Document"
-                      className="hidden sm:flex w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] items-center justify-center text-[#6E667D] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
                     >
-                      <Edit3 className="w-4 h-4" />
+                      <Edit3 className="w-4 h-4 text-[#6E667D]" />
+                      <span>Rename</span>
                     </button>
-
                     <button
-                      onClick={() => onDownloadDocument(doc)}
-                      title="Download PDF"
-                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#15803D] dark:text-[#4ADE80] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
+                      type="button"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
+                        onToggleStar(doc);
+                      }}
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
                     >
-                      <Download className="w-4 h-4" />
+                      <Star
+                        className={`w-4 h-4 ${
+                          doc.starred
+                            ? 'fill-[#D97706] text-[#D97706]'
+                            : 'text-[#D97706]'
+                        }`}
+                      />
+                      <span>{doc.starred ? 'Remove Star' : 'Star File'}</span>
                     </button>
-
                     <button
-                      onClick={() => onRequestDeleteDocument(doc)}
-                      title="Delete Document"
-                      className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center text-[#DC2626] hover:bg-[#DC2626]/10 cursor-pointer shrink-0"
+                      type="button"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
+                        onDownloadDocument(doc);
+                      }}
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                    >
+                      <Download className="w-4 h-4 text-[#15803D]" />
+                      <span>Download PDF</span>
+                    </button>
+                    <div className="my-1 border-t border-[#E4DFEC] dark:border-[#342A45]" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenMenuDocId(null);
+                        onRequestDeleteDocument(doc);
+                      }}
+                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#DC2626]/10 text-[#DC2626] font-semibold cursor-pointer"
                     >
                       <Trash2 className="w-4 h-4" />
+                      <span>Delete File</span>
                     </button>
                   </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 };
