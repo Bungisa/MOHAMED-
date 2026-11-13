@@ -202,6 +202,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [filteredPageUrls, setFilteredPageUrls] = useState<
     Record<number, string>
   >({});
+  const [originalPageUrls, setOriginalPageUrls] = useState<
+    Record<number, string>
+  >({});
+  const [isComparingOriginal, setIsComparingOriginal] = useState(false);
+  const [compareViewMode, setCompareViewMode] = useState<
+    'split' | 'original' | 'edited'
+  >('split');
+  const [compareSplitPercent, setCompareSplitPercent] = useState(50);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
 
   // Annotations & Undo/Redo History (tracks both overlay annotations and underlying PDF bytes)
@@ -315,17 +323,69 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setWorkspaceMode(initialReaderMode ? 'reader' : 'content-edit');
   }, [initialReaderMode]);
 
+  const zoomRef = useRef(zoom);
+  const isPinchingRef = useRef(false);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  // Smooth focal-point anchored zoom that scales ONLY the PDF content inside stageContainerRef
+  const applyPdfZoom = useCallback(
+    (targetZoom: number, focalClientX?: number, focalClientY?: number) => {
+      const clampedZoom = Math.max(
+        0.5,
+        Math.min(4.0, +targetZoom.toFixed(2))
+      );
+      const prevZoom = zoomRef.current;
+      if (Math.abs(clampedZoom - prevZoom) < 0.005) return;
+
+      const el = stageContainerRef.current;
+      if (el) {
+        const rect = el.getBoundingClientRect();
+        const focusX =
+          focalClientX !== undefined
+            ? focalClientX - rect.left
+            : rect.width / 2;
+        const focusY =
+          focalClientY !== undefined
+            ? focalClientY - rect.top
+            : rect.height / 2;
+
+        const contentX = el.scrollLeft + focusX;
+        const contentY = el.scrollTop + focusY;
+        const ratio = clampedZoom / prevZoom;
+
+        zoomRef.current = clampedZoom;
+        setZoom(clampedZoom);
+
+        requestAnimationFrame(() => {
+          const container = stageContainerRef.current;
+          if (!container) return;
+          container.scrollLeft = Math.max(0, contentX * ratio - focusX);
+          container.scrollTop = Math.max(0, contentY * ratio - focusY);
+        });
+      } else {
+        zoomRef.current = clampedZoom;
+        setZoom(clampedZoom);
+      }
+    },
+    []
+  );
+
   // Measure the available stage viewport so the whole PDF page always fits inside the screen
   useEffect(() => {
     const el = stageContainerRef.current;
     if (!el) return;
     const updateSize = () => {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 80 && rect.height > 80) {
-        setStageSize({
-          width: Math.floor(rect.width),
-          height: Math.floor(rect.height),
-        });
+      const w = el.clientWidth || Math.floor(el.getBoundingClientRect().width);
+      const h =
+        el.clientHeight || Math.floor(el.getBoundingClientRect().height);
+      if (w > 80 && h > 80) {
+        setStageSize((prev) =>
+          Math.abs(prev.width - w) > 1 || Math.abs(prev.height - h) > 1
+            ? { width: w, height: h }
+            : prev
+        );
       }
     };
     updateSize();
@@ -337,6 +397,72 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       window.removeEventListener('resize', updateSize);
     };
   }, [activeDocument]);
+
+  // Attach two-finger Pinch-to-Zoom and Ctrl/Cmd + Wheel Zoom strictly to the PDF Stage Container
+  useEffect(() => {
+    const el = stageContainerRef.current;
+    if (!el) return;
+
+    let pinchStartDist = 0;
+    let pinchStartZoom = 1;
+
+    const getTouchDist = (t1: Touch, t2: Touch) =>
+      Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+
+    const handleTouchStart = (e: TouchEvent) => {
+      if (e.touches.length === 2) {
+        isPinchingRef.current = true;
+        setActiveDrawStroke(null);
+        setRegionDragStart(null);
+        pinchStartDist = getTouchDist(e.touches[0], e.touches[1]);
+        pinchStartZoom = zoomRef.current;
+      }
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length === 2 && pinchStartDist > 10) {
+        e.preventDefault();
+        e.stopPropagation();
+        const currDist = getTouchDist(e.touches[0], e.touches[1]);
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+        const nextZoom = pinchStartZoom * (currDist / pinchStartDist);
+        applyPdfZoom(nextZoom, midX, midY);
+      }
+    };
+
+    const handleTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2) {
+        pinchStartDist = 0;
+        setTimeout(() => {
+          isPinchingRef.current = false;
+        }, 80);
+      }
+    };
+
+    const handleWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const delta = -e.deltaY * 0.008;
+        applyPdfZoom(zoomRef.current + delta, e.clientX, e.clientY);
+      }
+    };
+
+    el.addEventListener('touchstart', handleTouchStart, { passive: true });
+    el.addEventListener('touchmove', handleTouchMove, { passive: false });
+    el.addEventListener('touchend', handleTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', handleTouchEnd, { passive: true });
+    el.addEventListener('wheel', handleWheel, { passive: false });
+
+    return () => {
+      el.removeEventListener('touchstart', handleTouchStart);
+      el.removeEventListener('touchmove', handleTouchMove);
+      el.removeEventListener('touchend', handleTouchEnd);
+      el.removeEventListener('touchcancel', handleTouchEnd);
+      el.removeEventListener('wheel', handleWheel);
+    };
+  }, [applyPdfZoom, activeDocument]);
 
   // Apply Color Filter (OCV BLACK, Vivid Light, etc.) and Brightness Switch to rendered pages (prioritizing currentPage first for instant response)
   useEffect(() => {
@@ -409,35 +535,52 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     };
   }, [workingPdfBytes, currentPage, pages.length, embeddedImagesByPage]);
 
-  const renderAllPages = useCallback(async (pdfBytes: Uint8Array) => {
-    setIsLoadingPages(true);
-    setEmbeddedImagesByPage({});
-    try {
-      const allRendered = await renderAllPdfPages(
-        pdfBytes,
-        1.65,
-        (renderedSoFar, total) => {
-          setTotalExpectedPages(total);
-          setPages(renderedSoFar);
-          if (renderedSoFar.length >= 1) {
-            setIsLoadingPages(false);
+  const renderAllPages = useCallback(
+    async (pdfBytes: Uint8Array, captureAsOriginal = false) => {
+      setIsLoadingPages(true);
+      setEmbeddedImagesByPage({});
+      try {
+        const allRendered = await renderAllPdfPages(
+          pdfBytes,
+          1.65,
+          (renderedSoFar, total) => {
+            setTotalExpectedPages(total);
+            setPages(renderedSoFar);
+            if (captureAsOriginal) {
+              const origMap: Record<number, string> = {};
+              renderedSoFar.forEach((p) => {
+                origMap[p.pageNumber] = p.dataUrl;
+              });
+              setOriginalPageUrls(origMap);
+            }
+            if (renderedSoFar.length >= 1) {
+              setIsLoadingPages(false);
+            }
           }
+        );
+        setPages(allRendered);
+        if (captureAsOriginal) {
+          const origMap: Record<number, string> = {};
+          allRendered.forEach((p) => {
+            origMap[p.pageNumber] = p.dataUrl;
+          });
+          setOriginalPageUrls(origMap);
         }
-      );
-      setPages(allRendered);
-      setTotalExpectedPages(allRendered.length);
-      setCurrentPage((prev) =>
-        Math.max(1, Math.min(prev, allRendered.length || 1))
-      );
-    } catch (err) {
-      console.error('Failed to render PDF:', err);
-      setStatusMessage(
-        'Could not render this PDF file. It may be corrupted or unsupported.'
-      );
-    } finally {
-      setIsLoadingPages(false);
-    }
-  }, []);
+        setTotalExpectedPages(allRendered.length);
+        setCurrentPage((prev) =>
+          Math.max(1, Math.min(prev, allRendered.length || 1))
+        );
+      } catch (err) {
+        console.error('Failed to render PDF:', err);
+        setStatusMessage(
+          'Could not render this PDF file. It may be corrupted or unsupported.'
+        );
+      } finally {
+        setIsLoadingPages(false);
+      }
+    },
+    []
+  );
 
   const loadedDocIdRef = useRef<string | null>(null);
   const hasInitializedDocRef = useRef(false);
@@ -465,6 +608,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setEditingTextAnnId(null);
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
+    setIsComparingOriginal(false);
+    setCompareViewMode('split');
+    setCompareSplitPercent(50);
     setCurrentPage(1);
     setFitMode('fit-page');
     setZoom(1.0);
@@ -483,7 +629,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setPreparedBaseBytes(null);
     setCompressedPreviewBytes(null);
     setTotalExpectedPages(activeDocument.pageCount || 1);
-    renderAllPages(cloned).then(() => {
+    renderAllPages(cloned, true).then(() => {
       hasInitializedDocRef.current = true;
     });
   }, [activeDocument, renderAllPages]);
@@ -1064,6 +1210,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     e: React.PointerEvent<HTMLDivElement>,
     pageNumber: number
   ) => {
+    if (isPinchingRef.current) return;
     setCurrentPage(pageNumber);
     const overlayEl = pageOverlayRefs.current[pageNumber];
     if (isReaderMode || !overlayEl) return;
@@ -2182,28 +2329,17 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         onChange={handleReplaceSelectedImageUpload}
       />
 
-      {/* Non-intrusive Floating Status Banner at Top of Canvas */}
+      {/* Non-intrusive Floating Status Banner positioned BELOW the Top Header Bar (without any Undo button so Save is never covered) */}
       {statusMessage && (
-        <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-50 max-w-[92vw] sm:max-w-lg bg-[#14101B]/90 dark:bg-[#16111F]/95 text-white px-3.5 py-1.5 rounded-full shadow-lg border border-white/15 text-[11px] flex items-center justify-between gap-3 backdrop-blur-xs">
+        <div className="absolute top-14 left-1/2 -translate-x-1/2 z-40 max-w-[90vw] sm:max-w-md bg-[#14101B]/90 dark:bg-[#16111F]/95 text-white px-3.5 py-1.5 rounded-full shadow-lg border border-white/15 text-[11px] flex items-center justify-between gap-2.5 backdrop-blur-xs">
           <span className="truncate">{statusMessage}</span>
-          <div className="flex items-center gap-2 shrink-0">
-            {undoStack.length > 0 && (
-              <button
-                onClick={handleUndo}
-                className="px-2 py-0.5 rounded-full bg-white text-[#4A1D5E] font-bold flex items-center gap-1 hover:bg-neutral-100 cursor-pointer"
-              >
-                <Undo2 className="w-3 h-3" />
-                <span>Undo</span>
-              </button>
-            )}
-            <button
-              onClick={() => setStatusMessage(null)}
-              className="text-white/75 hover:text-white cursor-pointer"
-              title="Dismiss"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
+          <button
+            onClick={() => setStatusMessage(null)}
+            className="text-white/75 hover:text-white cursor-pointer shrink-0"
+            title="Dismiss"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -2325,18 +2461,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               Edit
             </button>
           </div>
-
-          {!isReaderMode && (
-            <button
-              type="button"
-              onClick={handleUndo}
-              disabled={undoStack.length === 0}
-              title="Undo"
-              className="w-8 h-8 rounded-lg flex items-center justify-center text-[#14101B] dark:text-[#F4F1F8] disabled:opacity-25 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
-            >
-              <Undo2 className="w-4 h-4" />
-            </button>
-          )}
 
           <button
             type="button"
@@ -2477,20 +2601,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </aside>
         )}
 
-        {/* Center Almost-Full-Screen PDF Canvas Stage */}
+        {/* Center Almost-Full-Screen PDF Canvas Stage (Zooms ONLY PDF contents inside this container) */}
         <div
           ref={stageContainerRef}
-          className="flex-1 overflow-auto px-1.5 py-2 sm:px-4 sm:py-3 flex flex-col items-center gap-3 bg-[#D8D8DC] dark:bg-[#09070D]"
+          data-pdf-zoom-stage="true"
+          className="flex-1 min-w-0 min-h-0 w-full h-full overflow-auto bg-[#D8D8DC] dark:bg-[#09070D] touch-pan-x touch-pan-y"
         >
-          {isLoadingPages && pages.length === 0 ? (
-            <div className="my-auto text-center space-y-2">
-              <div className="w-8 h-8 border-2 border-[#4A1D5E] dark:border-[#9D5CE5] border-t-transparent rounded-full animate-spin mx-auto" />
-              <p className="text-xs font-medium text-[#14101B] dark:text-[#A39BB5]">
-                Rendering PDF pages...
-              </p>
-            </div>
-          ) : (
-            pagesToDisplay.map((pageInfo) => {
+          <div className="min-w-full min-h-full w-max flex flex-col items-center justify-center px-1.5 py-2 sm:px-4 sm:py-3 gap-3 mx-auto">
+            {isLoadingPages && pages.length === 0 ? (
+              <div className="my-auto text-center space-y-2">
+                <div className="w-8 h-8 border-2 border-[#4A1D5E] dark:border-[#9D5CE5] border-t-transparent rounded-full animate-spin mx-auto" />
+                <p className="text-xs font-medium text-[#14101B] dark:text-[#A39BB5]">
+                  Rendering PDF pages...
+                </p>
+              </div>
+            ) : (
+              pagesToDisplay.map((pageInfo) => {
               const pageNum = pageInfo.pageNumber;
               const isCurrentPage = pageNum === currentPage;
               const pageAnns = annotations.filter(
@@ -3606,6 +3732,105 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         </React.Fragment>
                       );
                     })}
+
+                    {/* Original vs. Edited Document Comparison Overlay (Triggered by Bottom-Right Button after Undo) */}
+                    {isComparingOriginal && (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => {
+                          e.stopPropagation();
+                          if (compareViewMode !== 'split') return;
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          if (rect.width > 0) {
+                            const pct = Math.max(
+                              2,
+                              Math.min(
+                                98,
+                                ((e.clientX - rect.left) / rect.width) * 100
+                              )
+                            );
+                            setCompareSplitPercent(pct);
+                          }
+                          e.currentTarget.setPointerCapture(e.pointerId);
+                        }}
+                        onPointerMove={(e) => {
+                          if (
+                            compareViewMode !== 'split' ||
+                            (e.buttons === 0 && e.pointerType === 'mouse')
+                          ) {
+                            return;
+                          }
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          if (rect.width > 0) {
+                            const pct = Math.max(
+                              2,
+                              Math.min(
+                                98,
+                                ((e.clientX - rect.left) / rect.width) * 100
+                              )
+                            );
+                            setCompareSplitPercent(pct);
+                          }
+                        }}
+                        style={{ touchAction: 'none' }}
+                        className="absolute inset-0 z-50 select-none cursor-ew-resize overflow-hidden"
+                      >
+                        {/* Unmodified Original Document Layer */}
+                        {compareViewMode !== 'edited' && (
+                          <img
+                            src={
+                              originalPageUrls[pageNum] || pageInfo.dataUrl
+                            }
+                            alt={`Original Page ${pageNum}`}
+                            referrerPolicy="no-referrer"
+                            draggable={false}
+                            style={
+                              compareViewMode === 'split'
+                                ? {
+                                    clipPath: `inset(0 ${100 - compareSplitPercent}% 0 0)`,
+                                  }
+                                : undefined
+                            }
+                            className="absolute inset-0 w-full h-full block pointer-events-none bg-white"
+                          />
+                        )}
+
+                        {/* Labels for Original vs. Edited */}
+                        {compareViewMode === 'split' && (
+                          <>
+                            <span className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-md bg-[#14101B]/85 text-white text-[10px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
+                              Original
+                            </span>
+                            <span className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-md bg-[#003FE8]/90 text-white text-[10px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
+                              Edited
+                            </span>
+
+                            {/* Vertical Split Wipe Line & Grab Handle */}
+                            <div
+                              style={{ left: `${compareSplitPercent}%` }}
+                              className="absolute top-0 bottom-0 w-0.5 bg-[#003FE8] shadow-[0_0_8px_rgba(0,63,232,0.8)] -translate-x-1/2 pointer-events-none flex items-center justify-center"
+                            >
+                              <div className="w-8 h-8 rounded-full bg-[#003FE8] text-white border-2 border-white shadow-lg flex items-center justify-center text-xs font-bold">
+                                ↔
+                              </div>
+                            </div>
+                          </>
+                        )}
+
+                        {compareViewMode === 'original' && (
+                          <span className="absolute top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-[#14101B]/90 text-white text-[11px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
+                            Original Document (Before Edits)
+                          </span>
+                        )}
+
+                        {compareViewMode === 'edited' && (
+                          <span className="absolute top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-[#003FE8]/95 text-white text-[11px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
+                            Edited Document (Current)
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
 
                   {/* Subtle Page Indicator Below Page (when multiple pages exist) */}
@@ -3618,6 +3843,37 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               );
             })
           )}
+          </div>
+        </div>
+
+        {/* Stable Floating PDF-Only Zoom Controls on Bottom-Left of Stage */}
+        <div className="absolute bottom-3 left-3 z-30 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 py-1 shadow-md backdrop-blur-xs">
+          <button
+            type="button"
+            onClick={() => applyPdfZoom(zoom - 0.2)}
+            disabled={zoom <= 0.5}
+            title="Zoom out PDF content"
+            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+          >
+            <ZoomOut className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
+          </button>
+          <button
+            type="button"
+            onClick={() => applyPdfZoom(1.0)}
+            title="Reset PDF zoom to 100%"
+            className="px-2 py-0.5 text-[11px] font-mono font-bold text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button
+            type="button"
+            onClick={() => applyPdfZoom(zoom + 0.2)}
+            disabled={zoom >= 4.0}
+            title="Zoom in PDF content"
+            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+          >
+            <ZoomIn className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
+          </button>
         </div>
 
         {/* Top-Left "A4" Page Size Badge & Top-Right "1/9" + Up/Down Stepper on Stage (Matches Reference Screenshots) */}
@@ -3669,6 +3925,53 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
+        {/* Floating Original vs. Edited Mode Switcher Bar when Compare Mode is Active */}
+        {isComparingOriginal && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 p-1 rounded-full bg-[#14101B]/92 dark:bg-[#16111F]/95 border border-white/15 text-white shadow-xl backdrop-blur-xs">
+            <button
+              type="button"
+              onClick={() => setCompareViewMode('split')}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                compareViewMode === 'split'
+                  ? 'bg-[#003FE8] text-white'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              Split Compare
+            </button>
+            <button
+              type="button"
+              onClick={() => setCompareViewMode('original')}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                compareViewMode === 'original'
+                  ? 'bg-[#003FE8] text-white'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              Original
+            </button>
+            <button
+              type="button"
+              onClick={() => setCompareViewMode('edited')}
+              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                compareViewMode === 'edited'
+                  ? 'bg-[#003FE8] text-white'
+                  : 'text-white/75 hover:text-white'
+              }`}
+            >
+              Edited
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsComparingOriginal(false)}
+              title="Close Comparison"
+              className="w-6 h-6 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+
         {/* Floating Corner Controls on Bottom-Right of Grey Document Stage (Matches Reference Screenshot) */}
         <div className="absolute bottom-3 right-3 z-30 flex items-center gap-2">
           {undoStack.length > 0 && (
@@ -3684,19 +3987,24 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
           <button
             type="button"
-            onClick={() =>
-              setBottomPanelTab((prev) =>
-                prev === 'filter' ? 'none' : 'filter'
-              )
-            }
-            title="Color Filters (OCV BLACK, Vivid Light) & Brightness Switch"
+            onClick={() => {
+              setIsComparingOriginal((prev) => {
+                const next = !prev;
+                if (next) {
+                  setSelectedAnnId(null);
+                  setEditingTextAnnId(null);
+                  setSelectedEmbedded(null);
+                  setCompareViewMode('split');
+                  setCompareSplitPercent(50);
+                }
+                return next;
+              });
+            }}
+            title="Compare Original vs. Edited Document"
             className={`w-11 h-11 rounded-full shadow-lg flex items-center justify-center transition-colors cursor-pointer backdrop-blur-xs ${
-              bottomPanelTab === 'filter' ||
-              pageColorFilter !== 'original' ||
-              brightnessSwitchOn ||
-              pageBrightness !== 0
-                ? 'bg-[#4A1D5E] text-white ring-2 ring-white/60'
-                : 'bg-[#7E828A]/90 hover:bg-[#63676E] text-white'
+              isComparingOriginal
+                ? 'bg-[#003FE8] text-white ring-2 ring-white'
+                : 'bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
             }`}
           >
             <Contrast className="w-5 h-5" />
@@ -5012,9 +5320,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   <div className="flex items-center gap-0.5 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-1.5 py-0.5">
                     <button
                       type="button"
-                      onClick={() =>
-                        setZoom((z) => Math.max(0.5, +(z - 0.15).toFixed(2)))
-                      }
+                      onClick={() => applyPdfZoom(zoom - 0.2)}
                       className="p-0.5 rounded hover:bg-[#E4DFEC] cursor-pointer"
                     >
                       <ZoomOut className="w-3.5 h-3.5" />
@@ -5023,7 +5329,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       type="button"
                       onClick={() => {
                         setFitMode('fit-page');
-                        setZoom(1.0);
+                        applyPdfZoom(1.0);
                       }}
                       className="text-[11px] font-mono font-bold px-1 cursor-pointer"
                     >
@@ -5031,9 +5337,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() =>
-                        setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))
-                      }
+                      onClick={() => applyPdfZoom(zoom + 0.2)}
                       className="p-0.5 rounded hover:bg-[#E4DFEC] cursor-pointer"
                     >
                       <ZoomIn className="w-3.5 h-3.5" />
@@ -5103,9 +5407,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() =>
-                  setZoom((z) => Math.max(0.6, +(z - 0.15).toFixed(2)))
-                }
+                onClick={() => applyPdfZoom(zoom - 0.2)}
                 className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
                 title="Zoom Out"
               >
@@ -5117,7 +5419,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   setFitMode((m) =>
                     m === 'fit-page' ? 'fit-width' : 'fit-page'
                   );
-                  setZoom(1.0);
+                  applyPdfZoom(1.0);
                 }}
                 className="h-9 px-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
               >
@@ -5125,9 +5427,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  setZoom((z) => Math.min(2.5, +(z + 0.15).toFixed(2)))
-                }
+                onClick={() => applyPdfZoom(zoom + 0.2)}
                 className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
                 title="Zoom In"
               >

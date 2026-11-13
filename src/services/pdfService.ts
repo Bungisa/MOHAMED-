@@ -1985,6 +1985,7 @@ export async function removeWatermarksFromPdf(
   options: {
     preserveColor?: boolean;
     strength?: number; // -40 to +60, default 0
+    contrastBoost?: number; // -40 to +60, default +32 (enhances word darkness & sharpness)
     targetWatermarkRgb?: [number, number, number] | null;
     removeSolidBanners?: boolean;
     onProgress?: (currentPage: number, totalPages: number) => void;
@@ -1995,6 +1996,7 @@ export async function removeWatermarksFromPdf(
   );
   const preserveColor = options.preserveColor ?? true;
   const strength = options.strength ?? 0;
+  const contrastBoost = options.contrastBoost ?? 32;
 
   const cleanBytes = toCleanUint8Array(pdfBytes);
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(cleanBytes) });
@@ -2003,76 +2005,8 @@ export async function removeWatermarksFromPdf(
   const outPdf = await PDFDocument.create();
 
   try {
-    // Pass 1: If multi-page PDF (2+ pages), build a normalized consensus grid (360x480)
-    // across up to 4 pages to detect repeating static watermark regions.
-    const gridW = 360;
-    const gridH = 480;
-    let repeatingWatermarkGrid: Uint8Array | null = null;
-
-    if (totalPages >= 2) {
-      const sampleCount = Math.min(totalPages, 4);
-      const sampleGrids: Uint8Array[] = [];
-
-      for (let s = 1; s <= sampleCount; s++) {
-        const page = await pdf.getPage(s);
-        const vp = page.getViewport({ scale: 0.65 });
-        const c = document.createElement('canvas');
-        c.width = gridW;
-        c.height = gridH;
-        const cCtx = c.getContext('2d');
-        if (cCtx) {
-          cCtx.fillStyle = '#FFFFFF';
-          cCtx.fillRect(0, 0, gridW, gridH);
-          const tempCanvas = document.createElement('canvas');
-          tempCanvas.width = Math.max(1, Math.floor(vp.width));
-          tempCanvas.height = Math.max(1, Math.floor(vp.height));
-          const tCtx = tempCanvas.getContext('2d');
-          if (tCtx) {
-            tCtx.fillStyle = '#FFFFFF';
-            tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-            await page.render({
-              canvasContext: tCtx,
-              viewport: vp,
-              canvas: tempCanvas,
-            }).promise;
-            cCtx.drawImage(tempCanvas, 0, 0, gridW, gridH);
-          }
-          const imgD = cCtx.getImageData(0, 0, gridW, gridH).data;
-          const lumGrid = new Uint8Array(gridW * gridH);
-          for (let i = 0; i < gridW * gridH; i++) {
-            const idx = i * 4;
-            lumGrid[i] = Math.round(
-              0.299 * imgD[idx] + 0.587 * imgD[idx + 1] + 0.114 * imgD[idx + 2]
-            );
-          }
-          sampleGrids.push(lumGrid);
-        }
-      }
-
-      if (sampleGrids.length >= 2) {
-        repeatingWatermarkGrid = new Uint8Array(gridW * gridH);
-        for (let i = 0; i < gridW * gridH; i++) {
-          const baseL = sampleGrids[0][i];
-          // A repeating watermark pixel is non-white (< 242) and not deep black ink (> 95),
-          // and stays within ±14 luminance across all sampled pages
-          if (baseL > 95 && baseL < 242) {
-            let matchesAll = true;
-            for (let k = 1; k < sampleGrids.length; k++) {
-              if (Math.abs(sampleGrids[k][i] - baseL) > 14) {
-                matchesAll = false;
-                break;
-              }
-            }
-            if (matchesAll) {
-              repeatingWatermarkGrid[i] = 1;
-            }
-          }
-        }
-      }
-    }
-
-    // Pass 2: High-DPI render + Color-Preserving & Text-Preserving Watermark Removal per page
-    const renderScale = totalPages > 20 ? 1.65 : 2.0;
+    // High-DPI render + Multi-Scale Stroke-Preserving Watermark Removal & Quality Enhancement per page
+    const renderScale = totalPages > 25 ? 1.85 : 2.25;
 
     for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
       options.onProgress?.(pageNum, totalPages);
@@ -2101,45 +2035,17 @@ export async function removeWatermarksFromPdf(
       const imageData = ctx.getImageData(0, 0, w, h);
       const data = imageData.data;
 
-      // If multi-page repeating watermark consensus detected static watermark coordinates,
-      // gently lift those non-dark-ink repeating watermark pixels before unmixing
-      if (repeatingWatermarkGrid) {
-        for (let y = 0; y < h; y++) {
-          const gy = Math.min(gridH - 1, Math.floor((y / h) * gridH));
-          const rowOff = y * w;
-          for (let x = 0; x < w; x++) {
-            const gx = Math.min(gridW - 1, Math.floor((x / w) * gridW));
-            if (repeatingWatermarkGrid[gy * gridW + gx] === 1) {
-              const idx = (rowOff + x) * 4;
-              const lum =
-                0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
-              // Only lift if this specific high-res pixel is not a sharp dark character core (lum > 105)
-              if (lum > 105 && lum < 245) {
-                data[idx] = Math.min(255, Math.round(data[idx] + (255 - data[idx]) * 0.45));
-                data[idx + 1] = Math.min(
-                  255,
-                  Math.round(data[idx + 1] + (255 - data[idx + 1]) * 0.45)
-                );
-                data[idx + 2] = Math.min(
-                  255,
-                  Math.round(data[idx + 2] + (255 - data[idx + 2]) * 0.45)
-                );
-              }
-            }
-          }
-        }
-      }
-
       processWatermarkRemovalOnImageData(data, w, h, {
         preserveColor,
         strength,
+        contrastBoost,
         targetWatermarkRgb: options.targetWatermarkRgb ?? null,
-        removeSolidBanners: options.removeSolidBanners ?? !preserveColor,
+        removeSolidBanners: options.removeSolidBanners ?? false,
       });
 
       ctx.putImageData(imageData, 0, 0);
 
-      const cleanJpegUrl = canvas.toDataURL('image/jpeg', 0.96);
+      const cleanJpegUrl = canvas.toDataURL('image/jpeg', 0.97);
       const b64 = cleanJpegUrl.split(',')[1];
       const jpgBytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
       const embeddedJpg = await outPdf.embedJpg(jpgBytes);

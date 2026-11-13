@@ -139,6 +139,44 @@ export default function App() {
     }
   }, [preferences.theme]);
 
+  // Prevent browser-level viewport zoom (Ctrl+Wheel or multi-touch pinch on non-PDF UI) so the app shell stays 100% locked
+  useEffect(() => {
+    const preventBrowserWheelZoom = (e: WheelEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+      }
+    };
+    const preventSafariGestureZoom = (e: Event) => {
+      e.preventDefault();
+    };
+    const preventMultiTouchAppZoom = (e: TouchEvent) => {
+      if (e.touches.length > 1) {
+        const target = e.target as HTMLElement | null;
+        if (!target?.closest('[data-pdf-zoom-stage="true"]')) {
+          e.preventDefault();
+        }
+      }
+    };
+
+    window.addEventListener('wheel', preventBrowserWheelZoom, { passive: false });
+    window.addEventListener('gesturestart', preventSafariGestureZoom, {
+      passive: false,
+    });
+    window.addEventListener('gesturechange', preventSafariGestureZoom, {
+      passive: false,
+    });
+    document.addEventListener('touchmove', preventMultiTouchAppZoom, {
+      passive: false,
+    });
+
+    return () => {
+      window.removeEventListener('wheel', preventBrowserWheelZoom);
+      window.removeEventListener('gesturestart', preventSafariGestureZoom);
+      window.removeEventListener('gesturechange', preventSafariGestureZoom);
+      document.removeEventListener('touchmove', preventMultiTouchAppZoom);
+    };
+  }, []);
+
   const refreshVault = useCallback(async () => {
     const docs = await storageService.getAllDocuments();
     const flds = await storageService.getFolders();
@@ -893,8 +931,9 @@ export default function App() {
       try {
         const cleanedBytes = await removeWatermarksFromPdf(doc.pdfData, {
           preserveColor: true,
-          strength: 62,
-          removeSolidBanners: true,
+          strength: 6,
+          contrastBoost: 36,
+          removeSolidBanners: false,
         });
         await storageService.saveDocument({
           ...doc,

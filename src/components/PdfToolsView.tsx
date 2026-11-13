@@ -1371,6 +1371,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   // 8B. SMART COLOR-PRESERVING WATERMARK REMOVER STATE & HANDLERS
   const [wmRemovePreserveColor, setWmRemovePreserveColor] = useState(true);
   const [wmRemoveStrength, setWmRemoveStrength] = useState(0); // -30 (Gentle) to +45 (Max)
+  const [wmTextClarityBoost, setWmTextClarityBoost] = useState(32); // 0 to 60 (Darkens & sharpens faint words)
   const [wmRemoveSolidBanners, setWmRemoveSolidBanners] = useState(false);
   const [wmTargetRgb, setWmTargetRgb] = useState<[number, number, number] | null>(
     null
@@ -1397,9 +1398,9 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         const pageInfo = await renderPdfPage(
           sourceBytes,
           clampedPage,
-          1.75,
+          2.0,
           'image/jpeg',
-          0.95
+          0.96
         );
         if (cancelled) return;
         setWmOriginalPreviewUrl(pageInfo.dataUrl);
@@ -1407,7 +1408,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         const cleanedUrl = await applyImageEnhancements(pageInfo.dataUrl, {
           filter: wmRemovePreserveColor ? 'clean-watermark' : 'ocv-black',
           brightness: wmRemoveStrength,
-          contrast: 0,
+          contrast: wmTextClarityBoost,
           rotation: 0,
           targetWatermarkRgb: wmTargetRgb,
         });
@@ -1432,6 +1433,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     wmPreviewPage,
     wmRemovePreserveColor,
     wmRemoveStrength,
+    wmTextClarityBoost,
     wmTargetRgb,
   ]);
 
@@ -1491,10 +1493,11 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       const cleanedPdfBytes = await removeWatermarksFromPdf(sourceBytes, {
         preserveColor: wmRemovePreserveColor,
         strength: wmRemoveStrength,
+        contrastBoost: wmTextClarityBoost,
         targetWatermarkRgb: wmTargetRgb,
-        removeSolidBanners: wmRemoveSolidBanners || !wmRemovePreserveColor,
+        removeSolidBanners: wmRemoveSolidBanners,
         onProgress: (cur, tot) => {
-          setWmProgressText(`Cleaning watermark on page ${cur} of ${tot}...`);
+          setWmProgressText(`Cleaning & sharpening page ${cur} of ${tot}...`);
         },
       });
 
@@ -3794,34 +3797,36 @@ Status: Approved for Production Distribution`;
                 </div>
               </div>
 
-              {/* 2. Sensitivity / Threshold Fine-Tuning */}
-              <div className="space-y-2">
+              {/* 2. Sensitivity & Word Clarity Boost */}
+              <div className="space-y-2.5">
                 <div className="flex items-center justify-between">
                   <label className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    2. Watermark Sensitivity
+                    2. Watermark Removal &amp; Word Clarity
                   </label>
-                  <span className="text-xs font-mono font-bold text-[#15803D] dark:text-[#4ADE80]">
-                    {wmRemoveStrength > 0
-                      ? `+${wmRemoveStrength}`
-                      : wmRemoveStrength}
+                  <span className="text-[11px] font-mono font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    WM: {wmRemoveStrength > 0 ? `+${wmRemoveStrength}` : wmRemoveStrength} | Text: +{wmTextClarityBoost}%
                   </span>
                 </div>
 
                 <div className="flex items-center gap-1.5">
                   {(
                     [
-                      { label: 'Gentle', val: -18 },
-                      { label: 'Balanced', val: 0 },
-                      { label: 'Strong', val: 18 },
-                      { label: 'Deep Clean', val: 34 },
+                      { label: 'Gentle', val: -15, clarity: 28 },
+                      { label: 'Balanced HD', val: 0, clarity: 35 },
+                      { label: 'Strong', val: 15, clarity: 42 },
+                      { label: 'Max Clarity', val: 25, clarity: 55 },
                     ] as const
                   ).map((preset) => (
                     <button
                       key={preset.label}
                       type="button"
-                      onClick={() => setWmRemoveStrength(preset.val)}
-                      className={`flex-1 py-1.5 px-2 rounded-lg text-[11px] font-bold border cursor-pointer transition-colors ${
-                        wmRemoveStrength === preset.val
+                      onClick={() => {
+                        setWmRemoveStrength(preset.val);
+                        setWmTextClarityBoost(preset.clarity);
+                      }}
+                      className={`flex-1 py-1.5 px-1.5 rounded-lg text-[10px] font-bold border cursor-pointer transition-colors ${
+                        wmRemoveStrength === preset.val &&
+                        wmTextClarityBoost === preset.clarity
                           ? 'bg-[#15803D] text-white border-[#15803D]'
                           : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D]'
                       }`}
@@ -3831,15 +3836,39 @@ Status: Approved for Production Distribution`;
                   ))}
                 </div>
 
-                <input
-                  type="range"
-                  min={-35}
-                  max={50}
-                  step={3}
-                  value={wmRemoveStrength}
-                  onChange={(e) => setWmRemoveStrength(Number(e.target.value))}
-                  className="w-full accent-[#15803D] cursor-pointer"
-                />
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    <span>Watermark Removal Sensitivity</span>
+                    <span>{wmRemoveStrength}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={-30}
+                    max={45}
+                    step={3}
+                    value={wmRemoveStrength}
+                    onChange={(e) => setWmRemoveStrength(Number(e.target.value))}
+                    className="w-full accent-[#15803D] cursor-pointer"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    <span>Word Sharpness &amp; Ink Darkness Boost</span>
+                    <span>+{wmTextClarityBoost}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={60}
+                    step={4}
+                    value={wmTextClarityBoost}
+                    onChange={(e) =>
+                      setWmTextClarityBoost(Number(e.target.value))
+                    }
+                    className="w-full accent-[#0088FF] cursor-pointer"
+                  />
+                </div>
               </div>
 
               {/* 3. Target Watermark Tint Sampler & Solid Banner Option */}
