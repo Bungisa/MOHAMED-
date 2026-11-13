@@ -206,10 +206,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     Record<number, string>
   >({});
   const [isComparingOriginal, setIsComparingOriginal] = useState(false);
-  const [compareViewMode, setCompareViewMode] = useState<
-    'split' | 'original' | 'edited'
-  >('split');
-  const [compareSplitPercent, setCompareSplitPercent] = useState(50);
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
 
   // Annotations & Undo/Redo History (tracks both overlay annotations and underlying PDF bytes)
@@ -372,31 +368,28 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     []
   );
 
-  // Measure the available stage viewport so the whole PDF page always fits inside the screen
+  // Measure the available stage viewport without triggering scrollbar ResizeObserver oscillation loops
   useEffect(() => {
     const el = stageContainerRef.current;
     if (!el) return;
     const updateSize = () => {
-      const w = el.clientWidth || Math.floor(el.getBoundingClientRect().width);
+      const w = el.offsetWidth || Math.floor(el.getBoundingClientRect().width);
       const h =
-        el.clientHeight || Math.floor(el.getBoundingClientRect().height);
+        el.offsetHeight || Math.floor(el.getBoundingClientRect().height);
       if (w > 80 && h > 80) {
         setStageSize((prev) =>
-          Math.abs(prev.width - w) > 1 || Math.abs(prev.height - h) > 1
+          Math.abs(prev.width - w) > 20 || Math.abs(prev.height - h) > 20
             ? { width: w, height: h }
             : prev
         );
       }
     };
     updateSize();
-    const ro = new ResizeObserver(updateSize);
-    ro.observe(el);
     window.addEventListener('resize', updateSize);
     return () => {
-      ro.disconnect();
       window.removeEventListener('resize', updateSize);
     };
-  }, [activeDocument]);
+  }, [activeDocument?.id]);
 
   // Attach two-finger Pinch-to-Zoom and Ctrl/Cmd + Wheel Zoom strictly to the PDF Stage Container
   useEffect(() => {
@@ -609,8 +602,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
     setIsComparingOriginal(false);
-    setCompareViewMode('split');
-    setCompareSplitPercent(50);
     setCurrentPage(1);
     setFitMode('fit-page');
     setZoom(1.0);
@@ -1961,14 +1952,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     ]
   );
 
-  // Automatic background save (debounced 900ms) so any edits made are immediately saved in the Local Vault even if you press Back or switch tabs
+  const persistCurrentEditsRef = useRef(persistCurrentEditsToVault);
+  useEffect(() => {
+    persistCurrentEditsRef.current = persistCurrentEditsToVault;
+  }, [persistCurrentEditsToVault]);
+
+  // Automatic background save (debounced 900ms) triggered ONLY when actual user edits change
   useEffect(() => {
     if (!hasInitializedDocRef.current || !workingPdfBytes || !activeDocument) {
       return;
     }
     if (isApplyingFilter || isLoadingPages) return;
     const timer = setTimeout(() => {
-      persistCurrentEditsToVault({ silent: true }).catch(() => {});
+      persistCurrentEditsRef.current({ silent: true }).catch(() => {});
     }, 900);
     return () => clearTimeout(timer);
   }, [
@@ -1982,8 +1978,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     filteredPageUrls,
     isApplyingFilter,
     isLoadingPages,
-    activeDocument,
-    persistCurrentEditsToVault,
   ]);
 
   // Opens the Save Document Bottom Sheet (with Compress Now option) AND immediately persists the edited document to My Documents / Local Vault
@@ -2624,9 +2618,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               );
               const pageEmbeddedImgs = embeddedImagesByPage[pageNum] || [];
 
-              // Compute responsive dimensions so the PDF page fills almost the entire screen
-              const availW = Math.max(240, stageSize.width - 12);
-              const availH = Math.max(260, stageSize.height - 16);
+              // Compute responsive dimensions with safe padding margins so the page fits cleanly without scrollbar oscillation
+              const availW = Math.max(220, stageSize.width - 28);
+              const availH = Math.max(240, stageSize.height - 48);
               const fitPageScale = Math.min(
                 availW / pageInfo.width,
                 availH / pageInfo.height
@@ -2645,8 +2639,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               );
               // PDF.js rendered at 1.2x PDF points, so 1 PDF point = (finalScale * 1.2) CSS pixels
               const pdfPointToPx = finalScale * 1.2;
-              const displayPageSrc =
-                filteredPageUrls[pageNum] || pageInfo.dataUrl;
+              const displayPageSrc = isComparingOriginal
+                ? originalPageUrls[pageNum] || pageInfo.dataUrl
+                : filteredPageUrls[pageNum] || pageInfo.dataUrl;
 
               return (
                 <div
@@ -2963,8 +2958,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         </svg>
                       )}
 
-                    {/* Live Watermark Preview (automatically hidden when Watermark Remover filter is active) */}
-                    {watermarkText.trim() &&
+                    {/* Live Watermark Preview (automatically hidden when Watermark Remover filter or Original Compare is active) */}
+                    {!isComparingOriginal &&
+                      watermarkText.trim() &&
                       pageColorFilter !== 'clean-watermark' &&
                       pageColorFilter !== 'ocv-black' && (
                         <div
@@ -2978,7 +2974,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       )}
 
                     {/* Live Page Number Preview */}
-                    {addPageNumbers && (
+                    {!isComparingOriginal && addPageNumbers && (
                       <div
                         className={`absolute bottom-3 text-[11px] font-mono text-[#6E667D] pointer-events-none ${
                           pageNumberPosition === 'bottom-right'
@@ -2991,7 +2987,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     )}
 
                     {/* Interactive Overlay & Edited Native Elements */}
-                    {pageAnns.map((ann) => {
+                    {!isComparingOriginal &&
+                      pageAnns.map((ann) => {
                       const isSelected =
                         ann.id === selectedAnnId && !isReaderMode;
                       const isSilentRemovalMask =
@@ -3733,102 +3730,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       );
                     })}
 
-                    {/* Original vs. Edited Document Comparison Overlay (Triggered by Bottom-Right Button after Undo) */}
+                    {/* Non-blocking Original Document Badge when Compare Mode is Active */}
                     {isComparingOriginal && (
-                      <div
-                        onClick={(e) => e.stopPropagation()}
-                        onPointerDown={(e) => {
-                          e.stopPropagation();
-                          if (compareViewMode !== 'split') return;
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          if (rect.width > 0) {
-                            const pct = Math.max(
-                              2,
-                              Math.min(
-                                98,
-                                ((e.clientX - rect.left) / rect.width) * 100
-                              )
-                            );
-                            setCompareSplitPercent(pct);
-                          }
-                          e.currentTarget.setPointerCapture(e.pointerId);
-                        }}
-                        onPointerMove={(e) => {
-                          if (
-                            compareViewMode !== 'split' ||
-                            (e.buttons === 0 && e.pointerType === 'mouse')
-                          ) {
-                            return;
-                          }
-                          e.stopPropagation();
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          if (rect.width > 0) {
-                            const pct = Math.max(
-                              2,
-                              Math.min(
-                                98,
-                                ((e.clientX - rect.left) / rect.width) * 100
-                              )
-                            );
-                            setCompareSplitPercent(pct);
-                          }
-                        }}
-                        style={{ touchAction: 'none' }}
-                        className="absolute inset-0 z-50 select-none cursor-ew-resize overflow-hidden"
-                      >
-                        {/* Unmodified Original Document Layer */}
-                        {compareViewMode !== 'edited' && (
-                          <img
-                            src={
-                              originalPageUrls[pageNum] || pageInfo.dataUrl
-                            }
-                            alt={`Original Page ${pageNum}`}
-                            referrerPolicy="no-referrer"
-                            draggable={false}
-                            style={
-                              compareViewMode === 'split'
-                                ? {
-                                    clipPath: `inset(0 ${100 - compareSplitPercent}% 0 0)`,
-                                  }
-                                : undefined
-                            }
-                            className="absolute inset-0 w-full h-full block pointer-events-none bg-white"
-                          />
-                        )}
-
-                        {/* Labels for Original vs. Edited */}
-                        {compareViewMode === 'split' && (
-                          <>
-                            <span className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-md bg-[#14101B]/85 text-white text-[10px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
-                              Original
-                            </span>
-                            <span className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-md bg-[#003FE8]/90 text-white text-[10px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
-                              Edited
-                            </span>
-
-                            {/* Vertical Split Wipe Line & Grab Handle */}
-                            <div
-                              style={{ left: `${compareSplitPercent}%` }}
-                              className="absolute top-0 bottom-0 w-0.5 bg-[#003FE8] shadow-[0_0_8px_rgba(0,63,232,0.8)] -translate-x-1/2 pointer-events-none flex items-center justify-center"
-                            >
-                              <div className="w-8 h-8 rounded-full bg-[#003FE8] text-white border-2 border-white shadow-lg flex items-center justify-center text-xs font-bold">
-                                ↔
-                              </div>
-                            </div>
-                          </>
-                        )}
-
-                        {compareViewMode === 'original' && (
-                          <span className="absolute top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-[#14101B]/90 text-white text-[11px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
-                            Original Document (Before Edits)
-                          </span>
-                        )}
-
-                        {compareViewMode === 'edited' && (
-                          <span className="absolute top-2.5 left-1/2 -translate-x-1/2 px-3 py-1 rounded-full bg-[#003FE8]/95 text-white text-[11px] font-bold uppercase tracking-wider shadow-md pointer-events-none">
-                            Edited Document (Current)
-                          </span>
-                        )}
+                      <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-30 px-3 py-1 rounded-full bg-[#14101B]/90 text-white text-[11px] font-bold uppercase tracking-wider shadow-md pointer-events-none whitespace-nowrap">
+                        Original Document (Before Edits)
                       </div>
                     )}
                   </div>
@@ -3925,49 +3830,18 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
-        {/* Floating Original vs. Edited Mode Switcher Bar when Compare Mode is Active */}
+        {/* Floating Original vs. Edited Indicator Pill when Viewing Original */}
         {isComparingOriginal && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 p-1 rounded-full bg-[#14101B]/92 dark:bg-[#16111F]/95 border border-white/15 text-white shadow-xl backdrop-blur-xs">
-            <button
-              type="button"
-              onClick={() => setCompareViewMode('split')}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                compareViewMode === 'split'
-                  ? 'bg-[#003FE8] text-white'
-                  : 'text-white/75 hover:text-white'
-              }`}
-            >
-              Split Compare
-            </button>
-            <button
-              type="button"
-              onClick={() => setCompareViewMode('original')}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                compareViewMode === 'original'
-                  ? 'bg-[#003FE8] text-white'
-                  : 'text-white/75 hover:text-white'
-              }`}
-            >
-              Original
-            </button>
-            <button
-              type="button"
-              onClick={() => setCompareViewMode('edited')}
-              className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                compareViewMode === 'edited'
-                  ? 'bg-[#003FE8] text-white'
-                  : 'text-white/75 hover:text-white'
-              }`}
-            >
-              Edited
-            </button>
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#14101B]/95 dark:bg-[#16111F]/95 border border-white/15 text-white shadow-xl backdrop-blur-xs">
+            <span className="text-[11px] font-bold whitespace-nowrap">
+              Viewing Original
+            </span>
             <button
               type="button"
               onClick={() => setIsComparingOriginal(false)}
-              title="Close Comparison"
-              className="w-6 h-6 rounded-full flex items-center justify-center text-white/80 hover:text-white hover:bg-white/10 cursor-pointer"
+              className="px-2.5 py-0.5 rounded-full bg-[#003FE8] hover:bg-[#0035C4] text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
             >
-              <X className="w-3.5 h-3.5" />
+              Show Edited
             </button>
           </div>
         )}
@@ -3994,20 +3868,28 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   setSelectedAnnId(null);
                   setEditingTextAnnId(null);
                   setSelectedEmbedded(null);
-                  setCompareViewMode('split');
-                  setCompareSplitPercent(50);
+                  setStatusMessage(
+                    'Showing Original Document (before edits). Tap the button again to return to Edited Document.'
+                  );
+                } else {
+                  setStatusMessage('Showing Edited Document.');
                 }
                 return next;
               });
             }}
-            title="Compare Original vs. Edited Document"
-            className={`w-11 h-11 rounded-full shadow-lg flex items-center justify-center transition-colors cursor-pointer backdrop-blur-xs ${
+            title={
               isComparingOriginal
-                ? 'bg-[#003FE8] text-white ring-2 ring-white'
-                : 'bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
+                ? 'Switch back to Edited Document'
+                : 'Compare with Original Document (Before Edits)'
+            }
+            className={`h-11 rounded-full shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer backdrop-blur-xs ${
+              isComparingOriginal
+                ? 'px-3.5 bg-[#003FE8] text-white ring-2 ring-white font-bold text-xs'
+                : 'w-11 bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
             }`}
           >
-            <Contrast className="w-5 h-5" />
+            <Contrast className="w-5 h-5 shrink-0" />
+            {isComparingOriginal && <span>Original</span>}
           </button>
         </div>
 
@@ -4162,13 +4044,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       {/* =====================================================================
           BOTTOM GROUPED DOCUMENT EDITOR DOCK (Modeled after Reference Picture)
          ===================================================================== */}
-      <div className="shrink-0 bg-white dark:bg-[#16111F] border-t border-[#E4DFEC] dark:border-[#261F33] z-40 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
-        {/* Contextual Sub-Drawer: Appears right above the bottom icon strip when a tool tab is open OR an object on the page is selected */}
+      <div className="relative shrink-0 bg-white dark:bg-[#16111F] border-t border-[#E4DFEC] dark:border-[#261F33] z-40 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
+        {/* Contextual Sub-Drawer: Floats cleanly above the bottom icon strip so opening any tool never resizes or vibrates the PDF stage */}
         {(bottomPanelTab !== 'none' ||
           selectedAnnotation !== null ||
           selectedEmbedded !== null ||
           selectedPictureRegion !== null) && (
-          <div className="bg-[#FAF9FB] dark:bg-[#110D18] border-b border-[#E4DFEC] dark:border-[#261F33] px-3 py-2">
+          <div className="absolute bottom-full left-0 right-0 z-40 bg-[#FAF9FB]/98 dark:bg-[#110D18]/98 border-t border-b border-[#E4DFEC] dark:border-[#261F33] px-3 py-2 shadow-[0_-6px_18px_rgba(0,0,0,0.08)] backdrop-blur-xs">
             {/* 1. TEXT PANEL (or when a Text Box / Comment is selected on the canvas) */}
             {(bottomPanelTab === 'text' ||
               (bottomPanelTab === 'none' &&
@@ -4710,6 +4592,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         key={f.id}
                         type="button"
                         onClick={() => {
+                          setIsComparingOriginal(false);
                           setPageColorFilter(f.id);
                           if (f.id === 'clean-watermark') {
                             if (watermarkText) setWatermarkText('');
@@ -5459,6 +5342,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => {
+                    setIsComparingOriginal(false);
                     const nextTab = bottomPanelTab === item.id ? 'none' : item.id;
                     setBottomPanelTab(nextTab);
                     if (item.id === 'text' && bottomPanelTab !== 'text') {
