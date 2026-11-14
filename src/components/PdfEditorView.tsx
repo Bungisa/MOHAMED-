@@ -84,6 +84,14 @@ import {
   exportPdfAsJpegBytes,
   SaveCompressionQuality,
 } from '../services/pdfService';
+import {
+  CloudStorageModal,
+  CloudExportFilePayload,
+} from './CloudStorageModal';
+import {
+  googleDriveSignIn,
+  getGoogleDriveAccessToken,
+} from '../services/cloudStorageService';
 import { applyImageEnhancements } from '../services/imageProcessingService';
 
 interface PdfEditorViewProps {
@@ -241,6 +249,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [compressedPreviewBytes, setCompressedPreviewBytes] =
     useState<Uint8Array | null>(null);
   const [isCompressingPreview, setIsCompressingPreview] = useState(false);
+
+  // Cloud Storage Modal state (Google Drive & Dropbox Import / Export)
+  const [cloudModalState, setCloudModalState] = useState<{
+    isOpen: boolean;
+    mode: 'import' | 'export';
+    provider: 'google-drive' | 'dropbox';
+    exportPayloads: CloudExportFilePayload[];
+  }>({
+    isOpen: false,
+    mode: 'export',
+    provider: 'google-drive',
+    exportPayloads: [],
+  });
 
   // Embedded PDF Images (XObjects) indexed by pageNumber (1..N)
   const [embeddedImagesByPage, setEmbeddedImagesByPage] = useState<
@@ -2100,32 +2121,28 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           `Saved "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) to My Documents.`
         );
       } else if (destination === 'cloud' || destination === 'gdrive') {
-        const shareFile = new File(
-          [new Uint8Array(finalPdfBytes)],
-          finalPdfName,
-          {
-            type: 'application/pdf',
-          }
-        );
-        if (navigator.canShare && navigator.canShare({ files: [shareFile] })) {
-          try {
-            await navigator.share({
-              title: finalPdfName,
-              text:
-                destination === 'gdrive'
-                  ? 'Save to Google Drive'
-                  : 'Save to Cloud Storage',
-              files: [shareFile],
-            });
-          } catch {
-            downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
-          }
-        } else {
-          downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
-          setStatusMessage(
-            `Downloaded "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) ready for ${destination === 'gdrive' ? 'Google Drive' : 'Cloud'} upload.`
-          );
+        setShowSaveModal(false);
+        setShowCompressModal(false);
+        if (destination === 'gdrive') {
+          void getGoogleDriveAccessToken().then((token) => {
+            if (!token) {
+              void googleDriveSignIn().catch(() => {});
+            }
+          });
         }
+        setCloudModalState({
+          isOpen: true,
+          mode: 'export',
+          provider: destination === 'gdrive' ? 'google-drive' : 'dropbox',
+          exportPayloads: [
+            {
+              name: finalPdfName,
+              bytes: finalPdfBytes,
+              mimeType: 'application/pdf',
+            },
+          ],
+        });
+        return;
       } else if (destination === 'email') {
         downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
         const subject = encodeURIComponent(`Document: ${finalPdfName}`);
@@ -2293,7 +2310,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   return (
     <div
       ref={viewerContainerRef}
-      className="h-dvh w-full flex flex-col bg-[#D8D8DC] dark:bg-[#09070D] overflow-hidden relative select-none"
+      className="fixed inset-0 z-30 w-full h-full flex flex-col bg-[#D8D8DC] dark:bg-[#09070D] overflow-hidden overscroll-none select-none"
     >
       <input
         ref={pdfUploadInputRef}
@@ -3752,13 +3769,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         </div>
 
         {/* Stable Floating PDF-Only Zoom Controls on Bottom-Left of Stage */}
-        <div className="absolute bottom-3 left-3 z-30 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 py-1 shadow-md backdrop-blur-xs">
+        <div className="absolute bottom-3 left-3 z-30 h-9 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 shadow-md backdrop-blur-xs select-none">
           <button
             type="button"
             onClick={() => applyPdfZoom(zoom - 0.2)}
             disabled={zoom <= 0.5}
             title="Zoom out PDF content"
-            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
           >
             <ZoomOut className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
           </button>
@@ -3766,7 +3783,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             type="button"
             onClick={() => applyPdfZoom(1.0)}
             title="Reset PDF zoom to 100%"
-            className="px-2 py-0.5 text-[11px] font-mono font-bold text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer"
+            className="w-12 py-0.5 text-[11px] font-mono font-bold tabular-nums text-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer shrink-0"
           >
             {Math.round(zoom * 100)}%
           </button>
@@ -3775,7 +3792,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             onClick={() => applyPdfZoom(zoom + 0.2)}
             disabled={zoom >= 4.0}
             title="Zoom in PDF content"
-            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
           >
             <ZoomIn className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
           </button>
@@ -3846,16 +3863,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </div>
         )}
 
-        {/* Floating Corner Controls on Bottom-Right of Grey Document Stage (Matches Reference Screenshot) */}
-        <div className="absolute bottom-3 right-3 z-30 flex items-center gap-2">
+        {/* Floating Corner Controls on Bottom-Right of Grey Document Stage (Static Positions & Fixed Sizes) */}
+        <div className="absolute bottom-3 right-3 z-30 flex items-center gap-2 select-none">
           {undoStack.length > 0 && (
             <button
               type="button"
               onClick={handleUndo}
               title="Undo last change (Ctrl+Z)"
-              className="h-10 px-3.5 rounded-full bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white text-xs font-bold shadow-lg flex items-center gap-1.5 cursor-pointer backdrop-blur-xs"
+              className="h-10 px-3.5 rounded-full bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white text-xs font-bold tabular-nums shadow-lg flex items-center gap-1.5 cursor-pointer backdrop-blur-xs shrink-0"
             >
-              <Undo2 className="w-4 h-4" />
+              <Undo2 className="w-4 h-4 shrink-0" />
               <span>Undo ({undoStack.length})</span>
             </button>
           )}
@@ -3882,14 +3899,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 ? 'Switch back to Edited Document'
                 : 'Compare with Original Document (Before Edits)'
             }
-            className={`h-11 rounded-full shadow-lg flex items-center justify-center gap-1.5 transition-colors cursor-pointer backdrop-blur-xs ${
+            className={`w-11 h-11 rounded-full shadow-lg flex items-center justify-center cursor-pointer backdrop-blur-xs shrink-0 ${
               isComparingOriginal
-                ? 'px-3.5 bg-[#003FE8] text-white ring-2 ring-white font-bold text-xs'
-                : 'w-11 bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
+                ? 'bg-[#003FE8] text-white ring-2 ring-white'
+                : 'bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
             }`}
           >
             <Contrast className="w-5 h-5 shrink-0" />
-            {isComparingOriginal && <span>Original</span>}
           </button>
         </div>
 
@@ -4044,13 +4060,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       {/* =====================================================================
           BOTTOM GROUPED DOCUMENT EDITOR DOCK (Modeled after Reference Picture)
          ===================================================================== */}
-      <div className="relative shrink-0 bg-white dark:bg-[#16111F] border-t border-[#E4DFEC] dark:border-[#261F33] z-40 shadow-[0_-4px_20px_rgba(0,0,0,0.06)]">
-        {/* Contextual Sub-Drawer: Floats cleanly above the bottom icon strip so opening any tool never resizes or vibrates the PDF stage */}
-        {(bottomPanelTab !== 'none' ||
-          selectedAnnotation !== null ||
-          selectedEmbedded !== null ||
-          selectedPictureRegion !== null) && (
-          <div className="absolute bottom-full left-0 right-0 z-40 bg-[#FAF9FB]/98 dark:bg-[#110D18]/98 border-t border-b border-[#E4DFEC] dark:border-[#261F33] px-3 py-2 shadow-[0_-6px_18px_rgba(0,0,0,0.08)] backdrop-blur-xs">
+      <div className="shrink-0 bg-white dark:bg-[#16111F] border-t border-[#E4DFEC] dark:border-[#261F33] z-40 select-none">
+        {/* Static Fixed-Height Contextual Tool Strip: Always 44px (h-11) in Edit Mode so the bottom icons & stage never shift */}
+        {!isReaderMode && (
+          <div className="h-11 px-3 flex items-center bg-[#FAF9FB] dark:bg-[#110D18] border-b border-[#E4DFEC] dark:border-[#261F33] overflow-hidden shrink-0">
             {/* 1. TEXT PANEL (or when a Text Box / Comment is selected on the canvas) */}
             {(bottomPanelTab === 'text' ||
               (bottomPanelTab === 'none' &&
@@ -4407,16 +4420,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               </div>
             )}
 
-            {/* 2. PICTURES & BOXES PANEL (or when an Embedded Picture / Box / Region is selected) */}
+            {/* 2. PICTURES & BOXES PANEL (Default static bar when 'pictures' or 'none' is active and no text box is selected) */}
             {(bottomPanelTab === 'pictures' ||
               (bottomPanelTab === 'none' &&
-                (selectedEmbedded !== null ||
-                  selectedPictureRegion !== null ||
-                  selectedAnnotation?.type === 'image' ||
-                  selectedAnnotation?.type === 'rectangle' ||
-                  selectedAnnotation?.type === 'circle' ||
-                  selectedAnnotation?.type === 'whiteout'))) && (
-              <div className="flex items-center justify-between gap-2 overflow-x-auto">
+                selectedAnnotation?.type !== 'text' &&
+                selectedAnnotation?.type !== 'comment')) && (
+              <div className="w-full flex items-center justify-between gap-2 overflow-x-auto">
                 <div className="flex items-center gap-1.5 shrink-0">
                   <button
                     type="button"
@@ -5319,8 +5328,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             </div>
           </div>
         ) : (
-          /* Edit Mode: 6-Button Grid that fits 100% of any Phone Screen without horizontal clipping */
-          <div className="px-1.5 py-1.5 grid grid-cols-6 items-center gap-1 bg-white dark:bg-[#16111F]">
+          /* Edit Mode: Static 6-Button Grid locked at 60px height with zero layout/font shifts */
+          <div className="h-[60px] px-1.5 grid grid-cols-6 items-center gap-1 bg-white dark:bg-[#16111F] shrink-0 select-none">
             {(
               [
                 { id: 'text', label: 'Text', icon: Type },
@@ -5334,6 +5343,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               const Icon = item.icon;
               const isActive =
                 bottomPanelTab === item.id ||
+                (item.id === 'pictures' &&
+                  bottomPanelTab === 'none' &&
+                  selectedAnnotation?.type !== 'text' &&
+                  selectedAnnotation?.type !== 'comment') ||
+                (item.id === 'text' &&
+                  bottomPanelTab === 'none' &&
+                  (selectedAnnotation?.type === 'text' ||
+                    selectedAnnotation?.type === 'comment')) ||
                 (item.id === 'more' &&
                   (bottomPanelTab === 'watermark' ||
                     bottomPanelTab === 'copy'));
@@ -5343,8 +5360,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                   type="button"
                   onClick={() => {
                     setIsComparingOriginal(false);
-                    const nextTab = bottomPanelTab === item.id ? 'none' : item.id;
-                    setBottomPanelTab(nextTab);
+                    setBottomPanelTab(item.id);
                     if (item.id === 'text' && bottomPanelTab !== 'text') {
                       setWorkspaceMode('annotate');
                       const hasTextOnPage = annotations.some(
@@ -5375,14 +5391,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       setActiveTool('highlight');
                     }
                   }}
-                  className={`min-h-[48px] flex flex-col items-center justify-center py-1 px-1 rounded-xl transition-colors cursor-pointer ${
+                  className={`h-12 flex flex-col items-center justify-center py-1 px-1 rounded-xl font-semibold cursor-pointer select-none ${
                     isActive
-                      ? 'text-[#4A1D5E] dark:text-[#D5B3FF] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20'
+                      ? 'text-[#4A1D5E] dark:text-[#D5B3FF] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20'
                       : 'text-[#5A5565] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
                   }`}
                 >
-                  <Icon className="w-5 h-5 mb-0.5 stroke-[1.8] shrink-0" />
-                  <span className="text-[11px] leading-tight truncate max-w-full">
+                  <Icon className="w-5 h-5 mb-0.5 stroke-[1.8] shrink-0 pointer-events-none" />
+                  <span className="text-[11px] leading-tight truncate max-w-full pointer-events-none">
                     {item.label}
                   </span>
                 </button>
@@ -5730,10 +5746,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 className="flex flex-col items-center gap-2 group cursor-pointer"
               >
                 <div className="w-12 h-12 rounded-full border border-neutral-200 dark:border-[#261F33] flex items-center justify-center shadow-xs group-hover:scale-105 transition-transform bg-white dark:bg-[#1E172B]">
-                  <CloudUpload className="w-5 h-5 text-[#0284C7]" />
+                  <CloudUpload className="w-5 h-5 text-[#0061FF]" />
                 </div>
                 <span className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-tight">
-                  Save to Cloud
+                  Save to Dropbox
                 </span>
               </button>
 
@@ -5924,6 +5940,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Cloud Import & Export Modal (Google Drive & Dropbox) */}
+      <CloudStorageModal
+        isOpen={cloudModalState.isOpen}
+        initialMode={cloudModalState.mode}
+        initialProvider={cloudModalState.provider}
+        exportPayloads={cloudModalState.exportPayloads}
+        onClose={() =>
+          setCloudModalState((prev) => ({ ...prev, isOpen: false }))
+        }
+        onImportFiles={async (files) => {
+          onUploadNewPdf(files);
+        }}
+        onOpenLocalFilePicker={() => pdfUploadInputRef.current?.click()}
+        onToast={(msg) => setStatusMessage(msg)}
+      />
     </div>
   );
 };

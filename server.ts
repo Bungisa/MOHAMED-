@@ -219,6 +219,144 @@ async function startServer() {
     res.sendFile(path.join(__dirname, 'public', '.well-known', 'assetlinks.json'));
   });
 
+  // =========================================================================
+  // DROPBOX 3P OAUTH 2.0 ENDPOINTS (Popup Flow for Iframe Environment)
+  // =========================================================================
+  const getDropboxRedirectUri = (req: express.Request): string => {
+    const queryOrigin = typeof req.query.origin === 'string' ? req.query.origin.trim() : '';
+    const base = (queryOrigin || process.env.APP_URL || `${req.protocol}://${req.get('host')}`).replace(/\/+$/, '');
+    return `${base}/auth/callback`;
+  };
+
+  app.get('/api/dropbox/auth-url', (req, res) => {
+    const clientId = (process.env.DROPBOX_CLIENT_ID || process.env.CLIENT_ID || '').trim();
+    const redirectUri = getDropboxRedirectUri(req);
+
+    if (!clientId) {
+      res.status(400).json({
+        configured: false,
+        redirectUri,
+        error: 'Dropbox Client ID (DROPBOX_CLIENT_ID or CLIENT_ID) is not configured in environment variables.',
+      });
+      return;
+    }
+
+    const stateObj = Buffer.from(JSON.stringify({ redirectUri })).toString('base64url');
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      token_access_type: 'online',
+      state: stateObj,
+    });
+
+    const authUrl = `https://www.dropbox.com/oauth2/authorize?${params.toString()}`;
+    res.json({ configured: true, url: authUrl, redirectUri });
+  });
+
+  const handleDropboxCallback = async (req: express.Request, res: express.Response) => {
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const errorParam = typeof req.query.error === 'string' ? req.query.error : '';
+    const stateParam = typeof req.query.state === 'string' ? req.query.state : '';
+
+    if (errorParam || !code) {
+      res.status(200).send(`<!DOCTYPE html>
+<html>
+  <head><title>Dropbox Authentication</title></head>
+  <body style="font-family: system-ui, sans-serif; padding: 24px; text-align: center;">
+    <script>
+      if (window.opener) {
+        window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', provider: 'dropbox', error: ${JSON.stringify(errorParam || 'Authorization cancelled')} }, '*');
+        window.close();
+      }
+    </script>
+    <p>Authentication cancelled. You may close this window.</p>
+  </body>
+</html>`);
+      return;
+    }
+
+    try {
+      const clientId = (process.env.DROPBOX_CLIENT_ID || process.env.CLIENT_ID || '').trim();
+      const clientSecret = (process.env.DROPBOX_CLIENT_SECRET || process.env.CLIENT_SECRET || '').trim();
+      let redirectUri = getDropboxRedirectUri(req);
+
+      if (stateParam) {
+        try {
+          const decoded = JSON.parse(Buffer.from(stateParam, 'base64url').toString('utf8'));
+          if (decoded && typeof decoded.redirectUri === 'string') {
+            redirectUri = decoded.redirectUri;
+          }
+        } catch {
+          // Ignore malformed state
+        }
+      }
+
+      const tokenRes = await fetch('https://api.dropboxapi.com/oauth2/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams({
+          code,
+          grant_type: 'authorization_code',
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+        }).toString(),
+      });
+
+      const tokenData = (await tokenRes.json()) as {
+        access_token?: string;
+        error_description?: string;
+        error?: string;
+      };
+
+      if (!tokenRes.ok || !tokenData.access_token) {
+        const msg = tokenData.error_description || tokenData.error || 'Failed to exchange Dropbox code for token';
+        res.status(200).send(`<!DOCTYPE html>
+<html>
+  <head><title>Dropbox Authentication Error</title></head>
+  <body style="font-family: system-ui, sans-serif; padding: 24px; text-align: center;">
+    <script>
+      if (window.opener) {
+        window.opener.postMessage({ type: 'OAUTH_AUTH_ERROR', provider: 'dropbox', error: ${JSON.stringify(msg)} }, '*');
+        window.close();
+      }
+    </script>
+    <p>${msg}</p>
+  </body>
+</html>`);
+        return;
+      }
+
+      res.status(200).send(`<!DOCTYPE html>
+<html>
+  <head><title>Dropbox Connected</title></head>
+  <body style="font-family: system-ui, sans-serif; padding: 24px; text-align: center;">
+    <script>
+      if (window.opener) {
+        window.opener.postMessage({
+          type: 'OAUTH_AUTH_SUCCESS',
+          provider: 'dropbox',
+          accessToken: ${JSON.stringify(tokenData.access_token)}
+        }, '*');
+        window.close();
+      } else {
+        window.location.href = '/';
+      }
+    </script>
+    <p>Dropbox authentication successful. This window will close automatically.</p>
+  </body>
+</html>`);
+    } catch (err) {
+      console.error('Dropbox callback error:', err);
+      res.status(500).send('Dropbox authentication failed.');
+    }
+  };
+
+  app.get(['/auth/callback', '/auth/callback/', '/auth/dropbox/callback', '/auth/dropbox/callback/'], handleDropboxCallback);
+
   // Serve Google Play Console compliant Privacy Policy page at /privacy-policy, /privacy, and /privacy-policy.html
   const servePrivacyPolicy = (_req: express.Request, res: express.Response) => {
     res.setHeader('Content-Type', 'text/html; charset=utf-8');

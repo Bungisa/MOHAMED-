@@ -24,6 +24,9 @@ import {
   Square,
   X,
   Loader2,
+  Cloud,
+  CloudUpload,
+  HardDrive,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -32,6 +35,14 @@ import {
 } from '../types/document';
 import { formatBytes } from '../services/storageService';
 import { renderPdfPage } from '../services/pdfService';
+import {
+  CloudStorageModal,
+  CloudExportFilePayload,
+} from './CloudStorageModal';
+import {
+  googleDriveSignIn,
+  getGoogleDriveAccessToken,
+} from '../services/cloudStorageService';
 
 interface DashboardViewProps {
   documents: StoredDocument[];
@@ -170,6 +181,22 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [batchBusyLabel, setBatchBusyLabel] = useState<string | null>(null);
+
+  // Cloud Import / Export Modal & Plus (+) Upload Chooser state
+  const [showPlusSourceMenu, setShowPlusSourceMenu] = useState(false);
+  const [cloudModalState, setCloudModalState] = useState<{
+    isOpen: boolean;
+    mode: 'import' | 'export';
+    provider: 'google-drive' | 'dropbox';
+    exportPayloads: CloudExportFilePayload[];
+    allowProviderSwitch?: boolean;
+  }>({
+    isOpen: false,
+    mode: 'import',
+    provider: 'google-drive',
+    exportPayloads: [],
+    allowProviderSwitch: false,
+  });
 
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
@@ -388,7 +415,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
       {/* Quick PDF & Word Tools (Single Horizontal Row of 8 Core Tools) */}
       <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-4 sm:p-5 space-y-3.5">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
             Quick PDF &amp; Word Tools
           </h2>
@@ -797,6 +824,61 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         type="button"
                         onClick={() => {
                           setOpenMenuDocId(null);
+                          void getGoogleDriveAccessToken().then((token) => {
+                            if (!token) {
+                              void googleDriveSignIn().catch(() => {});
+                            }
+                          });
+                          setCloudModalState({
+                            isOpen: true,
+                            mode: 'export',
+                            provider: 'google-drive',
+                            exportPayloads: [
+                              {
+                                name: doc.name.toLowerCase().endsWith('.pdf')
+                                  ? doc.name
+                                  : `${doc.name}.pdf`,
+                                bytes: doc.pdfData,
+                                mimeType: 'application/pdf',
+                              },
+                            ],
+                            allowProviderSwitch: false,
+                          });
+                        }}
+                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] font-semibold cursor-pointer"
+                      >
+                        <CloudUpload className="w-4 h-4 text-[#4285F4]" />
+                        <span>Export to Google Drive</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuDocId(null);
+                          setCloudModalState({
+                            isOpen: true,
+                            mode: 'export',
+                            provider: 'dropbox',
+                            exportPayloads: [
+                              {
+                                name: doc.name.toLowerCase().endsWith('.pdf')
+                                  ? doc.name
+                                  : `${doc.name}.pdf`,
+                                bytes: doc.pdfData,
+                                mimeType: 'application/pdf',
+                              },
+                            ],
+                            allowProviderSwitch: false,
+                          });
+                        }}
+                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] font-semibold cursor-pointer"
+                      >
+                        <CloudUpload className="w-4 h-4 text-[#0061FF]" />
+                        <span>Export to Dropbox</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuDocId(null);
                           onDownloadDocument(doc);
                         }}
                         className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
@@ -954,7 +1036,36 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </button>
 
-            {/* 6. Download Selected PDFs */}
+            {/* 6. Export Selected PDFs to Cloud (Google Drive / Dropbox) */}
+            <button
+              type="button"
+              disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
+              onClick={() => {
+                if (selectedDocuments.length < 1) return;
+                setCloudModalState({
+                  isOpen: true,
+                  mode: 'export',
+                  provider: 'google-drive',
+                  exportPayloads: selectedDocuments.map((d) => ({
+                    name: d.name.toLowerCase().endsWith('.pdf')
+                      ? d.name
+                      : `${d.name}.pdf`,
+                    bytes: d.pdfData,
+                    mimeType: 'application/pdf',
+                  })),
+                  allowProviderSwitch: true,
+                });
+              }}
+              title="Export selected PDFs to Google Drive or Dropbox"
+              className="p-2 rounded-xl bg-white/10 hover:bg-white/20 disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
+            >
+              <CloudUpload className="w-4 h-4 text-sky-300" />
+              <span className="text-[10px] font-semibold leading-tight text-center">
+                Cloud Export
+              </span>
+            </button>
+
+            {/* 7. Download Selected PDFs */}
             <button
               type="button"
               disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
@@ -973,7 +1084,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </span>
             </button>
 
-            {/* 7. Delete Selected PDFs */}
+            {/* 8. Delete Selected PDFs */}
             <button
               type="button"
               disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
@@ -990,7 +1101,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 }
               }}
               title="Delete all selected PDFs"
-              className="p-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all col-span-2 sm:col-span-1"
+              className="p-2 rounded-xl bg-[#DC2626] hover:bg-[#B91C1C] disabled:opacity-40 text-white flex flex-col items-center justify-center gap-1 cursor-pointer transition-all"
             >
               <Trash2 className="w-4 h-4" />
               <span className="text-[10px] font-bold leading-tight text-center">
@@ -1000,30 +1111,133 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           </div>
         </div>
       ) : (
-        /* Floating Bottom-Right Dual-Action Blue Pill Button matching image_597cb37c.png: [ 📷 | + ] */
-        <div className="fixed bottom-6 right-6 z-40 rounded-full bg-[#0088FF] text-white shadow-xl flex items-center overflow-hidden border border-white/15">
-          <button
-            type="button"
-            onClick={() => onNavigate('scanner')}
-            title="Scan with Full-Screen Camera"
-            aria-label="Scan Document with Camera"
-            className="h-13 pl-5 pr-4 hover:bg-[#0077E6] active:bg-[#0066CC] transition-colors flex items-center justify-center cursor-pointer"
-          >
-            <Camera className="w-6 h-6 text-white" />
-          </button>
-          <div className="w-px h-6 bg-white/40 shrink-0" />
-          <button
-            type="button"
-            onClick={() => pdfInputRef.current?.click()}
-            disabled={isUploading}
-            title="Import or Open PDF / Document"
-            aria-label="Import Document"
-            className="h-13 pl-4 pr-5 hover:bg-[#0077E6] active:bg-[#0066CC] disabled:opacity-60 transition-colors flex items-center justify-center cursor-pointer"
-          >
-            <Plus className="w-6 h-6 text-white stroke-[2.5]" />
-          </button>
+        /* Floating Bottom-Right Dual-Action Blue Pill Button: [ 📷 | + ] with Internal Storage / Google Drive / Dropbox Chooser */
+        <div className="fixed bottom-6 right-6 z-40 flex flex-col items-end gap-2">
+          {showPlusSourceMenu && (
+            <div className="w-60 rounded-2xl bg-white dark:bg-[#1E172B] border border-[#E4DFEC] dark:border-[#342A45] shadow-2xl p-2 space-y-1 text-xs animate-in fade-in slide-in-from-bottom-2 duration-150">
+              <div className="px-2.5 py-1 flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-[#6E667D] dark:text-[#A39BB5]">
+                <span>Import Document From</span>
+                <button
+                  type="button"
+                  onClick={() => setShowPlusSourceMenu(false)}
+                  className="p-0.5 rounded hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPlusSourceMenu(false);
+                  pdfInputRef.current?.click();
+                }}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-2.5 font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer text-left"
+              >
+                <HardDrive className="w-4 h-4 text-[#15803D] shrink-0" />
+                <div>
+                  <p className="text-xs font-bold">Internal Storage</p>
+                  <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    Browse PDFs, Word &amp; images on device
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPlusSourceMenu(false);
+                  void getGoogleDriveAccessToken().then((token) => {
+                    if (!token) {
+                      void googleDriveSignIn().catch(() => {});
+                    }
+                  });
+                  setCloudModalState({
+                    isOpen: true,
+                    mode: 'import',
+                    provider: 'google-drive',
+                    exportPayloads: [],
+                    allowProviderSwitch: false,
+                  });
+                }}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-2.5 font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer text-left"
+              >
+                <Cloud className="w-4 h-4 text-[#4285F4] shrink-0" />
+                <div>
+                  <p className="text-xs font-bold">Google Drive</p>
+                  <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    Sign in &amp; import from Google Drive
+                  </p>
+                </div>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowPlusSourceMenu(false);
+                  setCloudModalState({
+                    isOpen: true,
+                    mode: 'import',
+                    provider: 'dropbox',
+                    exportPayloads: [],
+                    allowProviderSwitch: false,
+                  });
+                }}
+                className="w-full px-3 py-2.5 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-2.5 font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer text-left"
+              >
+                <Cloud className="w-4 h-4 text-[#0061FF] shrink-0" />
+                <div>
+                  <p className="text-xs font-bold">Dropbox</p>
+                  <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    Sign in &amp; import from Dropbox
+                  </p>
+                </div>
+              </button>
+            </div>
+          )}
+
+          <div className="rounded-full bg-[#0088FF] text-white shadow-xl flex items-center overflow-hidden border border-white/15">
+            <button
+              type="button"
+              onClick={() => onNavigate('scanner')}
+              title="Scan with Full-Screen Camera"
+              aria-label="Scan Document with Camera"
+              className="h-13 pl-5 pr-4 hover:bg-[#0077E6] active:bg-[#0066CC] transition-colors flex items-center justify-center cursor-pointer"
+            >
+              <Camera className="w-6 h-6 text-white" />
+            </button>
+            <div className="w-px h-6 bg-white/40 shrink-0" />
+            <button
+              type="button"
+              onClick={() => setShowPlusSourceMenu((prev) => !prev)}
+              disabled={isUploading}
+              title="Import from Internal Storage, Google Drive, or Dropbox"
+              aria-label="Import Document"
+              className="h-13 pl-4 pr-5 hover:bg-[#0077E6] active:bg-[#0066CC] disabled:opacity-60 transition-colors flex items-center justify-center cursor-pointer"
+            >
+              <Plus className="w-6 h-6 text-white stroke-[2.5]" />
+            </button>
+          </div>
         </div>
       )}
+
+      {/* Cloud Import / Export Modal (Google Drive & Dropbox) */}
+      <CloudStorageModal
+        isOpen={cloudModalState.isOpen}
+        initialMode={cloudModalState.mode}
+        initialProvider={cloudModalState.provider}
+        exportPayloads={cloudModalState.exportPayloads}
+        allowProviderSwitch={cloudModalState.allowProviderSwitch}
+        onClose={() =>
+          setCloudModalState((prev) => ({ ...prev, isOpen: false }))
+        }
+        onImportFiles={async (files) => {
+          setIsUploading(true);
+          try {
+            await onUploadPdfFiles(files, true, false);
+          } finally {
+            setIsUploading(false);
+          }
+        }}
+        onOpenLocalFilePicker={() => pdfInputRef.current?.click()}
+      />
     </div>
   );
 };
