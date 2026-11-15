@@ -2,6 +2,7 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getAuth,
   signInWithPopup,
+  signInWithCredential,
   GoogleAuthProvider,
   onAuthStateChanged,
   User,
@@ -28,8 +29,180 @@ let isSigningInGoogle = false;
 
 // Strictly in-memory token cache (never stored in localStorage or sessionStorage)
 let cachedGoogleAccessToken: string | null = null;
+let cachedGoogleFallbackUser: User | null = null;
 let cachedDropboxAccessToken: string | null = null;
 let cachedDropboxAccountName: string | null = null;
+
+type GisOAuth2Namespace = {
+  initTokenClient: (config: {
+    client_id: string;
+    scope: string;
+    prompt?: string;
+    callback: (response: {
+      access_token?: string;
+      error?: string;
+      error_description?: string;
+    }) => void;
+    error_callback?: (err: { type?: string; message?: string }) => void;
+  }) => { requestAccessToken: (overrideConfig?: { prompt?: string }) => void };
+};
+
+function getGisOAuth2Sync(): GisOAuth2Namespace | null {
+  if (typeof window === 'undefined') return null;
+  const win = window as unknown as {
+    google?: { accounts?: { oauth2?: GisOAuth2Namespace } };
+  };
+  return win.google?.accounts?.oauth2 || null;
+}
+
+// Preload Google Identity Services script so GIS client is ready synchronously on click
+let gisScriptPromise: Promise<void> | null = null;
+function ensureGisClientLoaded(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve();
+  if (getGisOAuth2Sync()) {
+    return Promise.resolve();
+  }
+  if (gisScriptPromise) return gisScriptPromise;
+  gisScriptPromise = new Promise<void>((resolve, reject) => {
+    const existing = document.querySelector(
+      'script[src="https://accounts.google.com/gsi/client"]'
+    );
+    if (existing) {
+      existing.addEventListener('load', () => resolve());
+      existing.addEventListener('error', () =>
+        reject(new Error('Failed to load Google Identity Services script.'))
+      );
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve();
+    script.onerror = () => {
+      gisScriptPromise = null;
+      reject(new Error('Failed to load Google Identity Services script.'));
+    };
+    document.head.appendChild(script);
+  });
+  return gisScriptPromise;
+}
+
+if (typeof window !== 'undefined') {
+  void ensureGisClientLoaded().catch(() => {});
+}
+
+async function signInWithGoogleIdentityServices(): Promise<{
+  user: User;
+  accessToken: string;
+} | null> {
+  const clientId = firebaseConfig.oAuthClientId;
+  if (!clientId) {
+    throw new Error(
+      `Domain "${window.location.hostname}" is not yet authorized in Firebase Console (Project: ${firebaseConfig.projectId} → Authentication → Settings → Authorized domains).`
+    );
+  }
+
+  let oauth2 = getGisOAuth2Sync();
+  if (!oauth2) {
+    await ensureGisClientLoaded();
+    oauth2 = getGisOAuth2Sync();
+  }
+  if (!oauth2) {
+    throw new Error('Google Identity Services client unavailable.');
+  }
+
+  const accessToken = await new Promise<string | null>((resolve, reject) => {
+    const tokenClient = oauth2!.initTokenClient({
+      client_id: clientId,
+      scope: SCOPES.join(' '),
+      prompt: 'select_account',
+      callback: (response) => {
+        if (response.error) {
+          if (
+            response.error === 'access_denied' ||
+            response.error === 'popup_closed_by_user'
+          ) {
+            resolve(null);
+            return;
+          }
+          reject(
+            new Error(
+              response.error_description ||
+                response.error ||
+                'Google Drive authorization failed.'
+            )
+          );
+          return;
+        }
+        resolve(response.access_token || null);
+      },
+      error_callback: (err) => {
+        if (
+          err?.type === 'popup_closed' ||
+          err?.type === 'popup_failed_to_open'
+        ) {
+          resolve(null);
+          return;
+        }
+        resolve(null);
+      },
+    });
+    tokenClient.requestAccessToken({ prompt: 'select_account' });
+  });
+
+  if (!accessToken) {
+    return null;
+  }
+
+  cachedGoogleAccessToken = accessToken;
+
+  // Exchange the Google OAuth accessToken with Firebase Auth over REST (no third-party iframe needed)
+  try {
+    const firebaseCred = GoogleAuthProvider.credential(null, accessToken);
+    const userCred = await signInWithCredential(auth, firebaseCred);
+    cachedGoogleFallbackUser = userCred.user;
+    return { user: userCred.user, accessToken };
+  } catch {
+    // Fallback: Fetch user profile via Drive v3 about endpoint (uses already-granted drive.readonly scope)
+  }
+
+  let displayName = 'Google Drive User';
+  let email = '';
+  let photoURL: string | null = null;
+  try {
+    const aboutRes = await fetch(
+      'https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress,photoLink)',
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      }
+    );
+    if (aboutRes.ok) {
+      const aboutData = (await aboutRes.json()) as {
+        user?: {
+          displayName?: string;
+          emailAddress?: string;
+          photoLink?: string;
+        };
+      };
+      if (aboutData.user?.displayName) displayName = aboutData.user.displayName;
+      if (aboutData.user?.emailAddress) email = aboutData.user.emailAddress;
+      if (aboutData.user?.photoLink) photoURL = aboutData.user.photoLink;
+    }
+  } catch {
+    // Non-fatal; fallback display name is used
+  }
+
+  const fallbackUser = {
+    uid: email || 'google-drive-user',
+    displayName,
+    email,
+    photoURL,
+  } as unknown as User;
+
+  cachedGoogleFallbackUser = fallbackUser;
+  return { user: fallbackUser, accessToken };
+}
 
 export interface CloudFileEntry {
   id: string;
@@ -54,8 +227,12 @@ export const initGoogleDriveAuth = (
         cachedGoogleAccessToken = null;
         if (onAuthFailure) onAuthFailure();
       }
+    } else if (cachedGoogleAccessToken && cachedGoogleFallbackUser) {
+      if (onAuthSuccess)
+        onAuthSuccess(cachedGoogleFallbackUser, cachedGoogleAccessToken);
     } else {
       cachedGoogleAccessToken = null;
+      cachedGoogleFallbackUser = null;
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -76,15 +253,63 @@ export const googleDriveSignIn = async (): Promise<{
   inFlightGoogleSignInPromise = (async () => {
     try {
       isSigningInGoogle = true;
+
+      // Inside a cross-origin iframe (such as AI Studio preview), third-party storage partitioning
+      // blocks Firebase Auth's hidden firebaseapp.com iframe relay and triggers false-positive
+      // auth/popup-closed-by-user errors. Use Google Identity Services + signInWithCredential
+      // directly when in an iframe and GIS is ready.
+      const isInIframe =
+        typeof window !== 'undefined' && window.self !== window.top;
+      if (
+        isInIframe &&
+        firebaseConfig.oAuthClientId &&
+        Boolean(getGisOAuth2Sync())
+      ) {
+        return await signInWithGoogleIdentityServices();
+      }
+
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (!credential?.accessToken) {
         throw new Error('Failed to get Google Drive access token from sign-in.');
       }
       cachedGoogleAccessToken = credential.accessToken;
+      cachedGoogleFallbackUser = result.user;
       return { user: result.user, accessToken: cachedGoogleAccessToken };
-    } catch (error) {
-      console.error('Google Drive sign-in error:', error);
+    } catch (error: unknown) {
+      const errCode =
+        error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code)
+          : '';
+      const errMsg = error instanceof Error ? error.message : String(error);
+
+      // User closed the popup or duplicate popup was cancelled: return null cleanly without throwing or console.error
+      if (
+        errCode === 'auth/popup-closed-by-user' ||
+        errCode === 'auth/cancelled-popup-request' ||
+        errMsg.includes('auth/popup-closed-by-user') ||
+        errMsg.includes('auth/cancelled-popup-request')
+      ) {
+        return null;
+      }
+
+      if (
+        errCode === 'auth/unauthorized-domain' ||
+        errCode === 'auth/popup-blocked' ||
+        errCode === 'auth/operation-not-supported-in-this-environment' ||
+        errMsg.includes('auth/unauthorized-domain')
+      ) {
+        try {
+          return await signInWithGoogleIdentityServices();
+        } catch (gisErr: unknown) {
+          const gisMsg =
+            gisErr instanceof Error ? gisErr.message : String(gisErr);
+          throw new Error(
+            `${gisMsg} (Ensure "${window.location.hostname}" is added under Firebase Console → Project "${firebaseConfig.projectId}" → Authentication → Settings → Authorized domains).`
+          );
+        }
+      }
+
       throw error;
     } finally {
       isSigningInGoogle = false;
@@ -94,17 +319,22 @@ export const googleDriveSignIn = async (): Promise<{
   return inFlightGoogleSignInPromise;
 };
 
+export const getGoogleDriveAccessTokenSync = (): string | null => {
+  return cachedGoogleAccessToken;
+};
+
 export const getGoogleDriveAccessToken = async (): Promise<string | null> => {
   return cachedGoogleAccessToken;
 };
 
 export const getCurrentGoogleUser = (): User | null => {
-  return auth.currentUser;
+  return auth.currentUser || cachedGoogleFallbackUser;
 };
 
 export const googleDriveSignOut = async (): Promise<void> => {
   await auth.signOut();
   cachedGoogleAccessToken = null;
+  cachedGoogleFallbackUser = null;
 };
 
 /**

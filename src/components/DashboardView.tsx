@@ -41,7 +41,7 @@ import {
 } from './CloudStorageModal';
 import {
   googleDriveSignIn,
-  getGoogleDriveAccessToken,
+  getGoogleDriveAccessTokenSync,
 } from '../services/cloudStorageService';
 
 interface DashboardViewProps {
@@ -824,11 +824,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         type="button"
                         onClick={() => {
                           setOpenMenuDocId(null);
-                          void getGoogleDriveAccessToken().then((token) => {
-                            if (!token) {
-                              void googleDriveSignIn().catch(() => {});
-                            }
-                          });
+                          if (!getGoogleDriveAccessTokenSync()) {
+                            void googleDriveSignIn().catch(() => {});
+                          }
                           setCloudModalState({
                             isOpen: true,
                             mode: 'export',
@@ -1145,11 +1143,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 type="button"
                 onClick={() => {
                   setShowPlusSourceMenu(false);
-                  void getGoogleDriveAccessToken().then((token) => {
-                    if (!token) {
-                      void googleDriveSignIn().catch(() => {});
-                    }
-                  });
+                  if (!getGoogleDriveAccessTokenSync()) {
+                    void googleDriveSignIn().catch(() => {});
+                  }
                   setCloudModalState({
                     isOpen: true,
                     mode: 'import',

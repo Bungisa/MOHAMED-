@@ -96,10 +96,10 @@ async function renderSingleLoadedPdfPage(
       );
       const itemW = Math.max(20, item.width || item.str.length * (fontH * 0.52));
 
-      const normX = Math.max(0, Math.min(0.96, tx / pageW));
-      const normY = Math.max(0, Math.min(0.96, 1 - (ty + fontH) / pageH));
+      const normX = Math.max(0, Math.min(0.99, tx / pageW));
+      const normY = Math.max(0, Math.min(0.992, 1 - (ty + fontH) / pageH));
       const normW = Math.max(0.03, Math.min(1 - normX, itemW / pageW));
-      const normH = Math.max(0.018, Math.min(1 - normY, (fontH * 1.35) / pageH));
+      const normH = Math.max(0.018, Math.min(1 - normY, (fontH * 1.48) / pageH));
 
       // Merge with previous block if on the exact same line and horizontally adjacent
       const prev = nativeTextBlocks[nativeTextBlocks.length - 1];
@@ -1872,6 +1872,154 @@ export async function reconstructBackgroundPatchFromDataUrl(
       resolve(patchCanvas.toDataURL('image/png'));
     };
     img.onerror = () => resolve('');
+    img.src = sourceDataUrl;
+  });
+}
+
+/**
+ * Automatically detects the normalized bounding box `{ x, y, width, height }` of a printed
+ * footer/header line (including any underline beneath it, such as "For More Past Papers Visit www.senkolink.ac.tz")
+ * in a rendered page Data URL.
+ * - If `targetY` is provided (e.g. user clicked at `targetY`), locks onto the printed line band around `targetY`.
+ * - If `targetY` is omitted, scans the bottom 15% footer zone (`y = 0.85 .. 0.992`) to find the bottom-most footer line.
+ */
+export async function detectFooterOrLineRectInDataUrl(
+  sourceDataUrl: string,
+  targetY?: number
+): Promise<{ x: number; y: number; width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      const w = img.width;
+      const h = img.height;
+      if (w < 40 || h < 40) {
+        resolve(null);
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(null);
+        return;
+      }
+      ctx.drawImage(img, 0, 0);
+      const data = ctx.getImageData(0, 0, w, h).data;
+
+      const yMinNorm =
+        targetY !== undefined ? Math.max(0.01, targetY - 0.04) : 0.855;
+      const yMaxNorm =
+        targetY !== undefined ? Math.min(0.995, targetY + 0.04) : 0.994;
+
+      const yStart = Math.max(0, Math.floor(yMinNorm * h));
+      const yEnd = Math.min(h - 1, Math.ceil(yMaxNorm * h));
+      const xLeftMargin = Math.floor(w * 0.04);
+      const xRightMargin = Math.ceil(w * 0.96);
+
+      // Compute dark ink pixel count per row in [yStart .. yEnd]
+      const rowInkCount = new Int32Array(h);
+      for (let y = yStart; y <= yEnd; y++) {
+        let cnt = 0;
+        const rowOff = y * w;
+        for (let x = xLeftMargin; x <= xRightMargin; x++) {
+          const idx = (rowOff + x) * 4;
+          const lum = (77 * data[idx] + 150 * data[idx + 1] + 29 * data[idx + 2]) >> 8;
+          if (lum < 165) cnt++;
+        }
+        rowInkCount[y] = cnt;
+      }
+
+      const minRowInk = Math.max(6, Math.floor(w * 0.012));
+
+      // Find contiguous row bands with ink (bridging small 1-5px gaps between text baseline and underline)
+      const maxGapRows = Math.max(4, Math.round(h * 0.007));
+      const bands: { y0: number; y1: number; totalInk: number }[] = [];
+      let curBand: { y0: number; y1: number; totalInk: number } | null = null;
+
+      for (let y = yStart; y <= yEnd; y++) {
+        if (rowInkCount[y] >= minRowInk) {
+          if (!curBand) {
+            curBand = { y0: y, y1: y, totalInk: rowInkCount[y] };
+          } else if (y - curBand.y1 <= maxGapRows) {
+            curBand.y1 = y;
+            curBand.totalInk += rowInkCount[y];
+          } else {
+            bands.push(curBand);
+            curBand = { y0: y, y1: y, totalInk: rowInkCount[y] };
+          }
+        }
+      }
+      if (curBand) bands.push(curBand);
+
+      if (bands.length === 0) {
+        if (targetY !== undefined) {
+          resolve({
+            x: 0.06,
+            y: Math.max(0.01, Math.min(0.96, targetY - 0.016)),
+            width: 0.88,
+            height: 0.034,
+          });
+        } else {
+          resolve({ x: 0.06, y: 0.935, width: 0.88, height: 0.045 });
+        }
+        return;
+      }
+
+      // If targetY was given, pick the band closest to targetY; otherwise pick the bottom-most band
+      let chosen = bands[bands.length - 1];
+      if (targetY !== undefined) {
+        const targetPxY = targetY * h;
+        let bestDist = Infinity;
+        for (const b of bands) {
+          const midY = (b.y0 + b.y1) / 2;
+          const dist =
+            targetPxY >= b.y0 && targetPxY <= b.y1
+              ? 0
+              : Math.min(Math.abs(targetPxY - b.y0), Math.abs(targetPxY - b.y1));
+          if (dist < bestDist || (dist === bestDist && Math.abs(targetPxY - midY) < bestDist)) {
+            bestDist = dist;
+            chosen = b;
+          }
+        }
+      }
+
+      // Find horizontal ink span [minX .. maxX] inside the chosen band
+      let minX = w;
+      let maxX = 0;
+      for (let y = chosen.y0; y <= chosen.y1; y++) {
+        const rowOff = y * w;
+        for (let x = xLeftMargin; x <= xRightMargin; x++) {
+          const idx = (rowOff + x) * 4;
+          const lum = (77 * data[idx] + 150 * data[idx + 1] + 29 * data[idx + 2]) >> 8;
+          if (lum < 165) {
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+          }
+        }
+      }
+
+      if (minX >= maxX) {
+        minX = Math.floor(w * 0.08);
+        maxX = Math.ceil(w * 0.92);
+      }
+
+      const padX = Math.round(w * 0.012);
+      const padY = Math.round(h * 0.005);
+      const rx0 = Math.max(0, (minX - padX) / w);
+      const ry0 = Math.max(0, (chosen.y0 - padY) / h);
+      const rx1 = Math.min(1, (maxX + padX) / w);
+      const ry1 = Math.min(1, (chosen.y1 + padY) / h);
+
+      resolve({
+        x: rx0,
+        y: ry0,
+        width: Math.max(0.15, rx1 - rx0),
+        height: Math.max(0.022, ry1 - ry0),
+      });
+    };
+    img.onerror = () => resolve(null);
     img.src = sourceDataUrl;
   });
 }

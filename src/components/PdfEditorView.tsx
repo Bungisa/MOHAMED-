@@ -79,6 +79,7 @@ import {
   removeEmbeddedPdfImageFromPage,
   cropRegionFromDataUrl,
   reconstructBackgroundPatchFromDataUrl,
+  detectFooterOrLineRectInDataUrl,
   EmbeddedPdfImageInfo,
   compressPdfWithOptions,
   exportPdfAsJpegBytes,
@@ -90,7 +91,7 @@ import {
 } from './CloudStorageModal';
 import {
   googleDriveSignIn,
-  getGoogleDriveAccessToken,
+  getGoogleDriveAccessTokenSync,
 } from '../services/cloudStorageService';
 import { applyImageEnhancements } from '../services/imageProcessingService';
 
@@ -748,15 +749,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       setSelectedAnnId(existing.id);
       setSelectedEmbedded(null);
       setSelectedPictureRegion(null);
+      setBottomPanelTab('text');
       return;
     }
 
     const targetPage = pages[block.pageNumber - 1];
+    // Expand origRect slightly downward & horizontally so any underline right below a footer (e.g. www.senkolink.ac.tz) is cleanly covered
+    const padX = Math.max(0, block.x - 0.006);
+    const padY = Math.max(0, block.y - 0.004);
     const origRect = {
-      x: block.x,
-      y: block.y,
-      width: block.width,
-      height: block.height,
+      x: padX,
+      y: padY,
+      width: Math.min(1 - padX, block.width + 0.012),
+      height: Math.min(1 - padY, block.height + 0.012),
     };
     const origBgDataUrl = targetPage
       ? await reconstructBackgroundPatchFromDataUrl(
@@ -772,8 +777,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       type: 'text',
       x: block.x,
       y: block.y,
-      width: Math.max(0.18, block.width + 0.04),
-      height: Math.max(0.032, block.height + 0.01),
+      width: Math.max(0.18, Math.min(1 - block.x, block.width + 0.04)),
+      height: Math.max(0.028, Math.min(1 - block.y, block.height + 0.012)),
       text: block.text,
       fontSize: block.fontSize,
       fontWeight: 'normal',
@@ -791,9 +796,232 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setSelectedAnnId(newId);
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
+    setBottomPanelTab('text');
     setStatusMessage(
-      `Selected PDF text on Page ${block.pageNumber}. Edit inline, drag handles to move/resize, or click Delete to remove while preserving the background.`
+      `Selected text on Page ${block.pageNumber}. Type in the bottom bar to edit, tap "Apply to All Pages" to update every page, or tap Delete.`
     );
+  };
+
+  // Apply the currently selected text/footer edit or removal across ALL pages of the document
+  const handleApplySelectedToAllPages = async (mode: 'sync' | 'remove' = 'sync') => {
+    const targetAnn = annotations.find((a) => a.id === selectedAnnId);
+    if (!targetAnn && !selectedPictureRegion) return;
+
+    const baseRect =
+      targetAnn?.origRect ||
+      (targetAnn
+        ? {
+            x: targetAnn.x,
+            y: targetAnn.y,
+            width: targetAnn.width,
+            height: targetAnn.height,
+          }
+        : selectedPictureRegion
+          ? {
+              x: selectedPictureRegion.x,
+              y: selectedPictureRegion.y,
+              width: selectedPictureRegion.width,
+              height: selectedPictureRegion.height,
+            }
+          : null);
+    if (!baseRect) return;
+
+    setIsLoadingPages(true);
+    try {
+      const updatedAnns: AnnotationElement[] = annotations.filter((a) => {
+        // Remove previous annotations occupying the same vertical footer/header strip so we don't stack duplicates
+        const targetRect = a.origRect || a;
+        const sameBand =
+          Math.abs(targetRect.y - baseRect.y) < 0.028 &&
+          Math.abs(targetRect.x - baseRect.x) < 0.08;
+        return !sameBand;
+      });
+
+      for (const p of pages) {
+        // Check if this page has a native text block at the same vertical position
+        const matchingBlock = p.nativeTextBlocks.find(
+          (b) => Math.abs(b.y - baseRect.y) < 0.028
+        );
+        const pageRect = matchingBlock
+          ? {
+              x: Math.max(0, matchingBlock.x - 0.006),
+              y: Math.max(0, matchingBlock.y - 0.004),
+              width: Math.min(1, matchingBlock.width + 0.012),
+              height: Math.min(1, matchingBlock.height + 0.012),
+            }
+          : baseRect;
+
+        const bgDataUrl = await reconstructBackgroundPatchFromDataUrl(
+          p.dataUrl,
+          pageRect
+        );
+
+        if (mode === 'remove' || (targetAnn && !targetAnn.text?.trim() && targetAnn.type === 'text')) {
+          updatedAnns.push({
+            id: `footer-clean-${p.pageNumber}-${Date.now()}`,
+            pageNumber: p.pageNumber,
+            type: bgDataUrl ? 'image' : 'whiteout',
+            x: pageRect.x,
+            y: pageRect.y,
+            width: pageRect.width,
+            height: pageRect.height,
+            color: '#FFFFFF',
+            imageDataUrl: bgDataUrl || undefined,
+            opacity: 1,
+            replacesNativeTextId:
+              matchingBlock?.id || `footer-band-${p.pageNumber}`,
+            origRect: pageRect,
+            origBgDataUrl: bgDataUrl || undefined,
+            isBackgroundRestorePatch: true,
+            createdAt: new Date().toISOString(),
+          });
+        } else if (targetAnn) {
+          updatedAnns.push({
+            ...targetAnn,
+            id:
+              p.pageNumber === targetAnn.pageNumber
+                ? targetAnn.id
+                : `allpages-${p.pageNumber}-${Date.now()}`,
+            pageNumber: p.pageNumber,
+            x: matchingBlock ? matchingBlock.x : targetAnn.x,
+            y: matchingBlock ? matchingBlock.y : targetAnn.y,
+            replacesNativeTextId:
+              matchingBlock?.id || `footer-band-${p.pageNumber}`,
+            origRect: pageRect,
+            origBgDataUrl: bgDataUrl || undefined,
+          });
+        }
+      }
+
+      pushAnnotationsWithUndo(updatedAnns);
+      if (mode === 'remove') {
+        setSelectedAnnId(null);
+        setSelectedPictureRegion(null);
+        setStatusMessage(
+          `Removed footer/text across all ${pages.length} pages and restored clean paper background.`
+        );
+      } else {
+        setStatusMessage(
+          `Applied text/footer update across all ${pages.length} pages.`
+        );
+      }
+    } finally {
+      setIsLoadingPages(false);
+    }
+  };
+
+  // Automatically locate the bottom footer (whether native PDF text or rasterized inside a scanned image, like www.senkolink.ac.tz)
+  // and either open it for inline editing or remove it across all pages
+  const handleEditOrRemoveFooterAllPages = async (
+    mode: 'edit' | 'remove',
+    targetClickY?: number
+  ) => {
+    const activeP = pages[currentPage - 1];
+    if (!activeP) return;
+
+    // 1. Check if there is a native text block in the footer zone
+    const footerBlocks = activeP.nativeTextBlocks
+      .filter((b) =>
+        targetClickY !== undefined
+          ? Math.abs(b.y + b.height / 2 - targetClickY) < 0.035
+          : b.y >= 0.84
+      )
+      .sort((a, b) => b.y - a.y);
+
+    if (footerBlocks.length > 0 && mode === 'edit') {
+      await handleSelectNativeTextBlock(footerBlocks[0]);
+      return;
+    }
+
+    setIsLoadingPages(true);
+    try {
+      const detectedRect = await detectFooterOrLineRectInDataUrl(
+        activeP.dataUrl,
+        targetClickY
+      );
+      const baseRect = detectedRect || {
+        x: 0.06,
+        y: targetClickY ? Math.max(0.01, targetClickY - 0.018) : 0.935,
+        width: 0.88,
+        height: 0.042,
+      };
+
+      if (mode === 'edit') {
+        const bgDataUrl = await reconstructBackgroundPatchFromDataUrl(
+          activeP.dataUrl,
+          baseRect
+        );
+        const newId = `edit-footer-${currentPage}-${Date.now()}`;
+        const newAnn: AnnotationElement = {
+          id: newId,
+          pageNumber: currentPage,
+          type: 'text',
+          x: baseRect.x,
+          y: baseRect.y,
+          width: baseRect.width,
+          height: Math.max(0.032, baseRect.height),
+          text: '',
+          fontSize: 12,
+          fontWeight: 'bold',
+          fontStyle: 'normal',
+          backgroundColor: 'transparent',
+          color: '#14101B',
+          opacity: 1,
+          replacesNativeTextId: `raster-footer-${currentPage}-${Math.round(baseRect.y * 100)}`,
+          origRect: baseRect,
+          origBgDataUrl: bgDataUrl || undefined,
+          createdAt: new Date().toISOString(),
+        };
+        pushAnnotationsWithUndo([...annotations, newAnn]);
+        setSelectedAnnId(newId);
+        setSelectedEmbedded(null);
+        setSelectedPictureRegion(null);
+        setBottomPanelTab('text');
+        setStatusMessage(
+          'Footer selected & original footer cleared! Type replacement text in the bottom bar (or leave blank) and tap "Apply to All Pages".'
+        );
+      } else {
+        // Remove the detected bottom footer across ALL pages
+        const nextAnns = [...annotations];
+        for (const p of pages) {
+          const pDetected =
+            p.pageNumber === currentPage
+              ? baseRect
+              : (await detectFooterOrLineRectInDataUrl(
+                  p.dataUrl,
+                  baseRect.y + baseRect.height / 2
+                )) || baseRect;
+          const bgDataUrl = await reconstructBackgroundPatchFromDataUrl(
+            p.dataUrl,
+            pDetected
+          );
+          nextAnns.push({
+            id: `remove-footer-${p.pageNumber}-${Date.now()}`,
+            pageNumber: p.pageNumber,
+            type: bgDataUrl ? 'image' : 'whiteout',
+            x: pDetected.x,
+            y: pDetected.y,
+            width: pDetected.width,
+            height: pDetected.height,
+            color: '#FFFFFF',
+            imageDataUrl: bgDataUrl || undefined,
+            opacity: 1,
+            replacesNativeTextId: `raster-footer-${p.pageNumber}`,
+            origRect: pDetected,
+            origBgDataUrl: bgDataUrl || undefined,
+            isBackgroundRestorePatch: true,
+            createdAt: new Date().toISOString(),
+          });
+        }
+        pushAnnotationsWithUndo(nextAnns);
+        setSelectedAnnId(null);
+        setStatusMessage(
+          `Removed bottom footer across all ${pages.length} pages and restored clean paper background.`
+        );
+      }
+    } finally {
+      setIsLoadingPages(false);
+    }
   };
 
   // Delete an existing Native PDF Text Block or Unlocked Object while leaving the background as it was before
@@ -937,12 +1165,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     const overlayEl = pageOverlayRefs.current[pageNumber];
     if (isReaderMode || !overlayEl) return;
 
+    const rect = overlayEl.getBoundingClientRect();
+    const rawClickX = (e.clientX - rect.left) / rect.width;
+    const rawClickY = (e.clientY - rect.top) / rect.height;
+
     if (
       activeTool === 'select' ||
       activeTool === 'select-picture' ||
       activeTool === 'draw'
     ) {
       if (e.target === overlayEl && !regionDragStart) {
+        // If user clicked in the bottom footer zone (e.g. "For More Past Papers Visit www.senkolink.ac.tz")
+        // on a scanned page where no native text block intercepted the click, auto-select that footer line for editing/removal!
+        if (activeTool === 'select' && rawClickY >= 0.84) {
+          void handleEditOrRemoveFooterAllPages('edit', rawClickY);
+          return;
+        }
         setSelectedAnnId(null);
         setSelectedEmbedded(null);
       }
@@ -953,15 +1191,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       return;
     }
 
-    const rect = overlayEl.getBoundingClientRect();
-    const clickX = Math.max(
-      0.02,
-      Math.min(0.85, (e.clientX - rect.left) / rect.width)
-    );
-    const clickY = Math.max(
-      0.02,
-      Math.min(0.88, (e.clientY - rect.top) / rect.height)
-    );
+    const clickX = Math.max(0.01, Math.min(0.92, rawClickX));
+    const clickY = Math.max(0.01, Math.min(0.975, rawClickY));
 
     const newId = `ann-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     let defaultW = 0.24;
@@ -1479,7 +1710,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       if (target && (target.type === 'text' || target.type === 'comment')) {
         const lineCount = Math.max(1, (target.text || '').split('\n').length);
         const minNeededHeight = Math.min(
-          0.95 - target.y,
+          0.995 - target.y,
           Math.max(target.height, (nextSize / 720) * (lineCount + 0.65))
         );
         updateSelectedAnnotation({
@@ -2124,11 +2355,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         setShowSaveModal(false);
         setShowCompressModal(false);
         if (destination === 'gdrive') {
-          void getGoogleDriveAccessToken().then((token) => {
-            if (!token) {
-              void googleDriveSignIn().catch(() => {});
-            }
-          });
+          if (!getGoogleDriveAccessTokenSync()) {
+            void googleDriveSignIn().catch(() => {});
+          }
         }
         setCloudModalState({
           isOpen: true,
@@ -2701,8 +2930,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       className="w-full h-full block pointer-events-none"
                     />
 
-                    {/* iLovePDF Content Edit Mode: Clickable Existing Native PDF Text Blocks */}
-                    {workspaceMode === 'content-edit' &&
+                    {/* iLovePDF Content Edit Mode: Clickable Existing Native PDF Text & Footer Blocks */}
+                    {!isReaderMode &&
                       activeTool === 'select' &&
                       pageInfo.nativeTextBlocks.map((block) => {
                         const alreadyEdited = annotations.some(
@@ -2716,14 +2945,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                               e.stopPropagation();
                               handleSelectNativeTextBlock(block);
                             }}
-                            title="Click to edit, enlarge font size, move, or delete this PDF text"
+                            title="Click to edit, enlarge font size, move, or delete this PDF text / footer"
                             style={{
                               left: `${block.x * 100}%`,
                               top: `${block.y * 100}%`,
                               width: `${block.width * 100}%`,
                               height: `${block.height * 100}%`,
                             }}
-                            className="absolute border border-transparent hover:border-[#4A1D5E]/60 hover:bg-[#4A1D5E]/5 rounded-xs cursor-text transition-colors z-10"
+                            className="absolute border border-transparent hover:border-[#4A1D5E]/60 hover:bg-[#4A1D5E]/5 rounded-xs cursor-text transition-colors z-20"
                           />
                         );
                       })}
@@ -2744,10 +2973,15 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                           const itemLabel =
                             emb.label ||
                             `${emb.kind === 'box' ? 'Box' : 'Picture'} #${idx + 1}`;
-                          // When the user has chosen Add Text or another annotation tool, allow clicking directly through pictures so text boxes can be placed over pictures!
+                          const isFullPageBackgroundScan =
+                            emb.normWidth > 0.85 && emb.normHeight > 0.85;
+                          // Full-page background scans only intercept clicks when user explicitly picked "Drag-Select Area" ('select-picture')
+                          // so clicking text or footers on a scanned page is never blocked by the full-page background!
                           const allowClickThroughForTool =
-                            activeTool !== 'select' &&
-                            activeTool !== 'select-picture';
+                            (activeTool !== 'select' &&
+                              activeTool !== 'select-picture') ||
+                            (isFullPageBackgroundScan &&
+                              activeTool !== 'select-picture');
                           return (
                             <div
                               key={emb.key}
@@ -4098,21 +4332,56 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     <span>Tap Page to Place</span>
                   </button>
 
+                  {/* 1-Tap Footer Edit & Remove across All Pages */}
+                  <button
+                    type="button"
+                    onClick={() => void handleEditOrRemoveFooterAllPages('edit')}
+                    className="px-2.5 py-1 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] border border-[#4A1D5E]/30 text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    title="Select and edit the bottom footer on the page"
+                  >
+                    <FileEdit className="w-3.5 h-3.5" />
+                    <span>Edit Bottom Footer</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleEditOrRemoveFooterAllPages('remove')}
+                    className="px-2.5 py-1 rounded-lg bg-[#DC2626]/10 text-[#DC2626] border border-[#DC2626]/30 text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    title="Remove the bottom footer across all pages at once"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    <span>Remove Footer (All Pages)</span>
+                  </button>
+
                   {/* Live Text Input right in the bottom bar with "Type here" placeholder (never requires deleting placeholder text) */}
                   {(selectedAnnotation?.type === 'text' ||
                     selectedAnnotation?.type === 'comment') && (
-                    <div className="flex items-center gap-1 bg-white dark:bg-[#16111F] border-2 border-[#2563EB] rounded-lg px-2 py-0.5">
-                      <Pencil className="w-3 h-3 text-[#2563EB] shrink-0" />
-                      <input
-                        type="text"
-                        value={selectedAnnotation.text || ''}
-                        onChange={(e) =>
-                          updateSelectedAnnotation({ text: e.target.value })
-                        }
-                        placeholder="Type here"
-                        className="w-36 sm:w-48 text-xs font-medium bg-transparent focus:outline-none text-[#14101B] dark:text-[#F4F1F8]"
-                      />
-                    </div>
+                    <>
+                      <div className="flex items-center gap-1 bg-white dark:bg-[#16111F] border-2 border-[#2563EB] rounded-lg px-2 py-0.5">
+                        <Pencil className="w-3 h-3 text-[#2563EB] shrink-0" />
+                        <input
+                          type="text"
+                          value={selectedAnnotation.text || ''}
+                          onChange={(e) =>
+                            updateSelectedAnnotation({ text: e.target.value })
+                          }
+                          placeholder="Type here"
+                          className="w-36 sm:w-48 text-xs font-medium bg-transparent focus:outline-none text-[#14101B] dark:text-[#F4F1F8]"
+                        />
+                      </div>
+
+                      {pages.length > 1 && (
+                        <button
+                          type="button"
+                          onClick={() => void handleApplySelectedToAllPages('sync')}
+                          className="px-2.5 py-1 rounded-lg bg-[#15803D] hover:bg-[#166534] text-white text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap shadow-xs"
+                          title="Apply this text / footer edit to the same position on every page"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Apply to All {pages.length} Pages</span>
+                        </button>
+                      )}
+                    </>
                   )}
 
                   {/* Quick 4-Way Nudge Buttons for Moving Written Text Precisely */}
@@ -4631,6 +4900,27 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       </button>
                     );
                   })}
+
+                  {/* Quick 1-Tap Remove Footer (All Pages) right inside the Filter bar too */}
+                  <button
+                    type="button"
+                    onClick={() => void handleEditOrRemoveFooterAllPages('remove')}
+                    className="px-2.5 py-1 rounded-lg bg-[#DC2626]/10 text-[#DC2626] border border-[#DC2626]/30 text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    title="Erase the bottom footer across all pages"
+                  >
+                    <Eraser className="w-3.5 h-3.5" />
+                    <span>Clean Footer (All Pages)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => void handleEditOrRemoveFooterAllPages('edit')}
+                    className="px-2.5 py-1 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] border border-[#4A1D5E]/30 text-xs font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap"
+                    title="Edit the bottom footer text across all pages"
+                  >
+                    <FileEdit className="w-3.5 h-3.5" />
+                    <span>Edit Footer</span>
+                  </button>
 
                   {/* When Watermark Clean (Color) or OCV BLACK is selected, provide one-tap Watermark Removal Strength presets */}
                   {(pageColorFilter === 'clean-watermark' ||
@@ -5362,15 +5652,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     setIsComparingOriginal(false);
                     setBottomPanelTab(item.id);
                     if (item.id === 'text' && bottomPanelTab !== 'text') {
-                      setWorkspaceMode('annotate');
-                      const hasTextOnPage = annotations.some(
-                        (a) => a.pageNumber === currentPage && a.type === 'text'
+                      setWorkspaceMode('content-edit');
+                      setActiveTool('select');
+                      setStatusMessage(
+                        'Tap any text or bottom footer on the page to edit/delete it, or tap "+ Add Text Box".'
                       );
-                      if (!hasTextOnPage) {
-                        handleQuickAddDefaultTextBox(currentPage);
-                      } else {
-                        setActiveTool('select');
-                      }
                     } else if (
                       item.id === 'pictures' &&
                       bottomPanelTab !== 'pictures'

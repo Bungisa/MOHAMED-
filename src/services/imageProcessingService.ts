@@ -782,20 +782,24 @@ export function processWatermarkRemovalOnImageData(
     removeSolidBanners?: boolean;
   }
 ): void {
+  const preserveColor = options.preserveColor ?? true;
   const strength = clamp(options.strength ?? 0, -50, 60);
   const contrastBoost = clamp(options.contrastBoost ?? 30, -40, 60);
   const targetRgb = options.targetWatermarkRgb ?? null;
   const targetColorTolerance = clamp(48 + strength * 0.55, 24, 88);
 
   const pixelCount = w * h;
-  const gray = new Uint8Array(pixelCount);
+  const rawLum = new Uint8Array(pixelCount);
+  const effGray = new Uint8Array(pixelCount);
+  const chromaArr = new Uint8Array(pixelCount);
+  const minChArr = new Uint8Array(pixelCount);
   const integral = new Float64Array((w + 1) * (h + 1));
 
-  // Pass 1: Build effective luminance & 2D integral image (exact B&W Scan foundation + chromatic watermark bleaching).
-  // Colored watermarks & colored banners (blue, red, purple, cyan, green) have chroma = max(R,G,B) - min(R,G,B) > 16.
-  // By lifting colored pixels toward 255 in `gray`, colored watermarks and solid colored banners (including any white
-  // text inside them) are raised above the ink cutoff and bleached cleanly to white with zero border outlines,
-  // while neutral black/grey document words (chroma <= 16) keep their exact luminance.
+  // Pass 1: Compute perceptual luminance, chroma, minimum channel, and effective watermark luminance.
+  // - Semi-transparent colored watermarks (like light blue/purple/pink/cyan stamps over white paper)
+  //   have elevated min(R,G,B) >= 112 and lum >= 136 because they transmit white paper underneath.
+  // - Genuine colored drawings, Coat of Arms emblems, and diagrams (green, red, gold, blue)
+  //   have strong pigment absorption in at least one channel (min(R,G,B) < 112) and are preserved in full color!
   for (let y = 0; y < h; y++) {
     let rowSum = 0;
     const rowOff = y * w;
@@ -806,10 +810,14 @@ export function processWatermarkRemovalOnImageData(
       const g = data[idx + 1];
       const b = data[idx + 2];
 
-      const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
+      const lum = (77 * r + 150 * g + 29 * b) >> 8;
       const maxC = Math.max(r, g, b);
       const minC = Math.min(r, g, b);
       const chroma = maxC - minC;
+
+      rawLum[pIdx] = lum;
+      chromaArr[pIdx] = chroma;
+      minChArr[pIdx] = minC;
 
       let effPx = lum;
 
@@ -824,33 +832,48 @@ export function processWatermarkRemovalOnImageData(
         }
       }
 
-      // Bleach colored watermarks & colored banners (blue, purple, red, green stamps/boxes/diagonal text)
-      if (chroma > 16) {
-        effPx = Math.min(255, Math.round(lum + (chroma - 12) * 0.85));
+      if (options.removeSolidBanners) {
+        // In aggressive monochrome OCV B&W mode, also bleach colored banners
+        if (chroma > 18 && minC >= 75) {
+          effPx = Math.min(255, Math.round(lum + (chroma - 12) * 0.9));
+        }
+      } else {
+        // In Color-Preserving mode: only lift pastel/semi-transparent watermark tints (minC >= 112 && lum >= 136)
+        // so saturated drawings/emblems (Coat of Arms gold, green, red, blue where minC < 112) stay 100% intact!
+        if (chroma > 14 && minC >= 112 && lum >= 136) {
+          const pastelWeight = Math.min(1, (minC - 108) / 52);
+          effPx = Math.min(
+            255,
+            Math.round(lum + (chroma - 10) * 0.95 * pastelWeight)
+          );
+        }
       }
 
-      gray[pIdx] = effPx;
+      effGray[pIdx] = effPx;
       rowSum += effPx;
       integral[(y + 1) * (w + 1) + (x + 1)] =
         integral[y * (w + 1) + (x + 1)] + rowSum;
     }
   }
 
-  // Pass 2: Local Adaptive Thresholding (powered by the exact B&W Scan local mean engine)
-  // In B&W Scan: radius = Math.max(12, Math.floor(Math.min(w, h) / 32)), bias = 12 - strength * 0.25, cutoff = 165.
-  // A pixel is kept as document text/line ONLY when `px < localMean - bias && px < maxLumCutoff`.
-  // - Inside any watermark (grey or colored) or solid watermark banner, either `px >= maxLumCutoff` OR
-  //   `localMean` drops close to `px` so `px < localMean - bias` is false -> erased to clean white (252).
-  // - Narrow document words & table lines have `px < localMean - bias && px < maxLumCutoff` -> rendered as crisp dark ink!
-  const radius = Math.max(12, Math.floor(Math.min(w, h) / 32));
-  const bias = clamp(12 - strength * 0.25, 5, 26);
-  const maxLumCutoff = clamp(165 - strength * 0.55, 118, 182);
-  const inkDarkness = clamp(Math.round(18 - contrastBoost * 0.12), 8, 22);
+  // Pass 2: Stroke-Preserving & Drawing-Preserving Watermark Unmixing
+  // - Uses 3x3 neighborhood minimum (`min3x3Eff`, `min3x3Lum`) to detect 1px anti-aliased edges of
+  //   text characters and drawing lines so letter strokes are NEVER shaved thin.
+  // - Uses continuous tonal mapping on foreground pixels instead of flat binary snapping (18 vs 252)
+  //   so drawings, emblems, and diagrams retain all internal shading and line detail.
+  const radius = Math.max(14, Math.floor(Math.min(w, h) / 30));
+  const bias = clamp(11 - strength * 0.22, 4, 24);
+  const maxLumCutoff = clamp(168 - strength * 0.5, 124, 186);
+  const inkFloor = clamp(Math.round(14 - contrastBoost * 0.1), 6, 20);
+  // Stroke gamma < 1.0 enriches/thickens anti-aliased letter edges so words look bold and crisp, never thin
+  const strokeGamma = clamp(0.82 - contrastBoost * 0.003, 0.65, 0.95);
 
   for (let y = 0; y < h; y++) {
     const y1 = Math.max(0, y - radius);
     const y2 = Math.min(h - 1, y + radius);
     const rowOff = y * w;
+    const ym1 = Math.max(0, y - 1) * w;
+    const yp1 = Math.min(h - 1, y + 1) * w;
 
     for (let x = 0; x < w; x++) {
       const x1 = Math.max(0, x - radius);
@@ -865,25 +888,85 @@ export function processWatermarkRemovalOnImageData(
       const localMean = sum / count;
       const pIndex = rowOff + x;
       const idx = pIndex * 4;
-      const px = gray[pIndex];
+
+      const lum = rawLum[pIndex];
+      const effPx = effGray[pIndex];
+      const chroma = chromaArr[pIndex];
+      const minC = minChArr[pIndex];
+
+      // 3x3 neighborhood minimum to protect 1-pixel anti-aliased edges of words and fine drawing lines
+      const xm1 = Math.max(0, x - 1);
+      const xp1 = Math.min(w - 1, x + 1);
+      const min3x3Eff = Math.min(
+        effGray[ym1 + xm1],
+        effGray[ym1 + x],
+        effGray[ym1 + xp1],
+        effGray[rowOff + xm1],
+        effPx,
+        effGray[rowOff + xp1],
+        effGray[yp1 + xm1],
+        effGray[yp1 + x],
+        effGray[yp1 + xp1]
+      );
+      const min3x3Lum = Math.min(
+        rawLum[ym1 + xm1],
+        rawLum[ym1 + x],
+        rawLum[ym1 + xp1],
+        rawLum[rowOff + xm1],
+        lum,
+        rawLum[rowOff + xp1],
+        rawLum[yp1 + xm1],
+        rawLum[yp1 + x],
+        rawLum[yp1 + xp1]
+      );
 
       const threshold = Math.min(localMean - bias, maxLumCutoff);
 
-      if (px < threshold) {
-        // Genuine document word / character stroke / table line -> crisp dark ink (same as B&W Scan)
-        const margin = threshold - px;
-        const val =
-          margin >= 3
-            ? inkDarkness
-            : Math.round(252 - (margin / 3) * (252 - inkDarkness));
-        data[idx] = val;
-        data[idx + 1] = val;
-        data[idx + 2] = val;
+      // Protect saturated colored drawings/emblems (e.g., gold/yellow/red/green/blue in Coat of Arms)
+      const isRichColorDrawing =
+        preserveColor && chroma >= 24 && minC < 112 && lum < 218;
+
+      // Protect 1px anti-aliased edges directly attached to dark text strokes or drawing lines
+      const isAntiAliasedStrokeEdge =
+        min3x3Eff < Math.min(130, threshold - 6) &&
+        min3x3Lum < 126 &&
+        effPx < Math.min(206, localMean - 4);
+
+      if (effPx < threshold || isRichColorDrawing || isAntiAliasedStrokeEdge) {
+        if (preserveColor && (isRichColorDrawing || (chroma >= 20 && minC < 110))) {
+          // Preserve true RGB color of drawings, emblems, stamps, and colored ink while gently crispening contrast
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+          const cBoost = 1.08;
+          const avg = (r + g + b) / 3;
+          data[idx] = clamp(Math.round(avg + (r - avg) * cBoost), 0, 255);
+          data[idx + 1] = clamp(Math.round(avg + (g - avg) * cBoost), 0, 255);
+          data[idx + 2] = clamp(Math.round(avg + (b - avg) * cBoost), 0, 255);
+        } else {
+          // Neutral document words, table lines, and monochrome drawing shading:
+          // Map smoothly from [inkFloor .. ceiling] using strokeGamma so:
+          // 1) Anti-aliased word edges are darkened/strengthened (words never look thin!)
+          // 2) Internal shading inside drawings/emblems stays distinct (never crushed to a solid black blob!)
+          const ceiling = isAntiAliasedStrokeEdge
+            ? Math.max(threshold + 36, 204)
+            : Math.max(threshold + 14, 180);
+          const norm = clamp((effPx - 20) / Math.max(24, ceiling - 20), 0, 1);
+          const curved = Math.pow(norm, strokeGamma);
+          const outVal = clamp(
+            Math.round(inkFloor + curved * (246 - inkFloor)),
+            inkFloor,
+            248
+          );
+          data[idx] = outVal;
+          data[idx + 1] = outVal;
+          data[idx + 2] = outVal;
+        }
       } else {
-        // Watermark / background -> clean white paper
-        data[idx] = 252;
-        data[idx + 1] = 252;
-        data[idx + 2] = 252;
+        // Watermark or paper background -> clean white paper
+        data[idx] = 255;
+        data[idx + 1] = 255;
+        data[idx + 2] = 255;
       }
     }
   }
@@ -983,49 +1066,14 @@ export async function applyImageEnhancements(
   const brightnessOffset = (options.brightness + extraBrightness) * 1.8;
 
   if (options.filter === 'bw') {
-    const gray = new Uint8Array(w * h);
-    const integral = new Float64Array((w + 1) * (h + 1));
-
-    for (let y = 0; y < h; y++) {
-      let rowSum = 0;
-      for (let x = 0; x < w; x++) {
-        const idx = (y * w + x) * 4;
-        const r = data[idx];
-        const g = data[idx + 1];
-        const b = data[idx + 2];
-        const lum = Math.round(0.299 * r + 0.587 * g + 0.114 * b);
-        gray[y * w + x] = lum;
-        rowSum += lum;
-        integral[(y + 1) * (w + 1) + (x + 1)] =
-          integral[y * (w + 1) + (x + 1)] + rowSum;
-      }
-    }
-
-    const radius = Math.max(12, Math.floor(Math.min(w, h) / 32));
-    const bias = 12 - options.brightness * 0.25;
-
-    for (let y = 0; y < h; y++) {
-      for (let x = 0; x < w; x++) {
-        const x1 = Math.max(0, x - radius);
-        const x2 = Math.min(w - 1, x + radius);
-        const y1 = Math.max(0, y - radius);
-        const y2 = Math.min(h - 1, y + radius);
-        const count = (x2 - x1 + 1) * (y2 - y1 + 1);
-        const sum =
-          integral[(y2 + 1) * (w + 1) + (x2 + 1)] -
-          integral[y1 * (w + 1) + (x2 + 1)] -
-          integral[(y2 + 1) * (w + 1) + x1] +
-          integral[y1 * (w + 1) + x1];
-        const localMean = sum / count;
-        const pIndex = y * w + x;
-        const idx = pIndex * 4;
-        const px = gray[pIndex];
-        const val = px < localMean - bias && px < 165 ? 18 : 252;
-        data[idx] = val;
-        data[idx + 1] = val;
-        data[idx + 2] = val;
-      }
-    }
+    // High-Clarity B&W Scan that preserves anti-aliased word stroke thickness and drawing shading
+    processWatermarkRemovalOnImageData(data, w, h, {
+      preserveColor: false,
+      strength: options.brightness,
+      contrastBoost: Math.max(25, options.contrast + 25),
+      targetWatermarkRgb: options.targetWatermarkRgb,
+      removeSolidBanners: false,
+    });
   } else {
     for (let i = 0; i < data.length; i += 4) {
       let r = data[i];
