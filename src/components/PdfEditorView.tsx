@@ -94,6 +94,13 @@ import {
   getGoogleDriveAccessTokenSync,
 } from '../services/cloudStorageService';
 import { applyImageEnhancements } from '../services/imageProcessingService';
+import { SUPPORTED_DOCUMENT_ACCEPT } from '../services/advancedPdfToolsService';
+import {
+  parseHtmlIntoWordBlocks,
+  plainTextToWordBlocks,
+  sanitizeHtmlForReader,
+  wordBlocksToCleanHtml,
+} from '../services/wordConversionService';
 
 interface PdfEditorViewProps {
   activeDocument: StoredDocument | null;
@@ -178,6 +185,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     initialReaderMode ? 'reader' : 'content-edit'
   );
   const isReaderMode = workspaceMode === 'reader';
+  const [isHtmlReflowMode, setIsHtmlReflowMode] = useState<boolean>(() =>
+    Boolean(
+      initialReaderMode &&
+        activeDocument?.sourceFormat &&
+        ['html', 'htm', 'xhtml', 'epub', 'kpf', 'mobi', 'fb2'].includes(
+          activeDocument.sourceFormat.toLowerCase()
+        )
+    )
+  );
+  const [htmlReflowTheme, setHtmlReflowTheme] = useState<
+    'paper' | 'sepia' | 'night'
+  >('paper');
+  const [htmlReflowFontSize, setHtmlReflowFontSize] = useState<number>(16);
+  const [htmlReflowSubMode, setHtmlReflowSubMode] = useState<
+    'reflow' | 'webpage'
+  >('reflow');
 
   // Active grouped bottom drawer tab ('none' keeps the PDF in almost-full-screen view by default)
   const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('none');
@@ -2480,7 +2503,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         <input
           ref={pdfUploadInputRef}
           type="file"
-          accept="application/pdf"
+          accept={SUPPORTED_DOCUMENT_ACCEPT}
           className="hidden"
           onChange={(e) => {
             if (e.target.files && e.target.files.length > 0) {
@@ -2494,10 +2517,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           <FileEdit className="w-10 h-10 text-[#4A1D5E] dark:text-[#D5B3FF] mx-auto" />
           <div className="space-y-1 max-w-md mx-auto">
             <h1 className="text-xl font-bold text-[#14101B] dark:text-[#F4F1F8]">
-              Open a PDF in the Editor & Content Studio
+              Open PDF, EPUB, KPF, HTML, Word or Office Document
             </h1>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Upload a PDF from your device or select any stored document from your local vault below.
+              Upload any <code>.pdf</code>, <code>.epub</code>, <code>.kpf</code>,{' '}
+              <code>.html</code>, <code>.docx</code>, <code>.odt</code>,{' '}
+              <code>.xlsx</code>, or <code>.pptx</code> file from your device or
+              select a document from your local vault below.
             </p>
           </div>
           <button
@@ -2505,7 +2531,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
           >
             <FileUp className="w-4 h-4" />
-            <span>Upload PDF File</span>
+            <span>Open Document (.PDF, .EPUB, .KPF, .HTML, .DOCX...)</span>
           </button>
         </div>
 
@@ -2536,6 +2562,20 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     );
   }
 
+  const docBaseTitle = activeDocument.name.replace(/\.pdf$/i, '');
+  const resolvedReaderHtml =
+    activeDocument.rawHtmlContent && activeDocument.rawHtmlContent.trim()
+      ? activeDocument.rawHtmlContent
+      : wordBlocksToCleanHtml(
+          plainTextToWordBlocks(
+            activeDocument.ocrText ||
+              pages.map((p) => p.extractedText).join('\n\n') ||
+              docBaseTitle
+          ),
+          docBaseTitle
+        );
+  const resolvedReaderBlocks = parseHtmlIntoWordBlocks(resolvedReaderHtml);
+
   return (
     <div
       ref={viewerContainerRef}
@@ -2544,7 +2584,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       <input
         ref={pdfUploadInputRef}
         type="file"
-        accept="application/pdf"
+        accept={SUPPORTED_DOCUMENT_ACCEPT}
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
@@ -2664,6 +2704,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           <span className="text-xs sm:text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
             {activeDocument.name}
           </span>
+          {activeDocument.sourceFormat && (
+            <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded bg-[#0D9488]/15 text-[#0D9488] dark:text-[#5EEAD4] text-[10px] font-extrabold uppercase shrink-0">
+              {activeDocument.sourceFormat}
+            </span>
+          )}
           {pages.length > 0 && (
             <span className="text-[11px] font-mono font-semibold text-[#6E667D] dark:text-[#A39BB5] shrink-0">
               ({currentPage}/{pages.length})
@@ -2671,18 +2716,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
-        {/* Right: Read/Edit Switch + Undo + Share + Prominent Save Button */}
+        {/* Right: Read / HTML Reader / Edit Switch + Share + Prominent Save Button */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          {/* Clean Read / Edit Toggle */}
+          {/* Clean Read / HTML Reader / Edit Toggle */}
           <div className="flex items-center p-0.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47]">
             <button
               type="button"
               onClick={() => {
                 setWorkspaceMode('reader');
+                setIsHtmlReflowMode(false);
                 setBottomPanelTab('none');
               }}
               className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                isReaderMode
+                isReaderMode && !isHtmlReflowMode
                   ? 'bg-[#003FE8] text-white shadow-xs'
                   : 'text-[#6E667D] dark:text-[#A39BB5]'
               }`}
@@ -2691,7 +2737,26 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             </button>
             <button
               type="button"
-              onClick={() => setWorkspaceMode('content-edit')}
+              onClick={() => {
+                setWorkspaceMode('reader');
+                setIsHtmlReflowMode(true);
+                setBottomPanelTab('none');
+              }}
+              title="Reflowable HTML & eBook Reader Mode"
+              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                isReaderMode && isHtmlReflowMode
+                  ? 'bg-[#0D9488] text-white shadow-xs'
+                  : 'text-[#6E667D] dark:text-[#A39BB5]'
+              }`}
+            >
+              HTML Reader
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsHtmlReflowMode(false);
+                setWorkspaceMode('content-edit');
+              }}
               className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
                 !isReaderMode
                   ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] shadow-xs'
@@ -2847,6 +2912,203 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           data-pdf-zoom-stage="true"
           className="flex-1 min-w-0 min-h-0 w-full h-full overflow-auto bg-[#D8D8DC] dark:bg-[#09070D] touch-pan-x touch-pan-y"
         >
+          {isReaderMode && isHtmlReflowMode ? (
+            <div className="max-w-4xl mx-auto p-3 sm:p-6 space-y-3 select-text">
+              {/* Reflow / Webpage Reader Controls Bar */}
+              <div className="sticky top-2 z-20 p-2.5 rounded-2xl bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border border-[#E4DFEC] dark:border-[#261F33] shadow-md flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <span className="px-2 py-0.5 rounded-md bg-[#0D9488] text-white text-[10px] font-extrabold uppercase">
+                    {(activeDocument.sourceFormat || 'HTML').toUpperCase()} READER
+                  </span>
+                  <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <button
+                      type="button"
+                      onClick={() => setHtmlReflowSubMode('reflow')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                        htmlReflowSubMode === 'reflow'
+                          ? 'bg-[#0D9488] text-white'
+                          : 'text-[#6E667D]'
+                      }`}
+                    >
+                      Reflow eBook
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHtmlReflowSubMode('webpage')}
+                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                        htmlReflowSubMode === 'webpage'
+                          ? 'bg-[#0D9488] text-white'
+                          : 'text-[#6E667D]'
+                      }`}
+                    >
+                      Webpage View
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  {(
+                    [
+                      { id: 'paper', label: 'Paper' },
+                      { id: 'sepia', label: 'Sepia' },
+                      { id: 'night', label: 'Night' },
+                    ] as const
+                  ).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setHtmlReflowTheme(t.id)}
+                      className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        htmlReflowTheme === t.id
+                          ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
+                          : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D]'
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHtmlReflowFontSize((s) => Math.max(12, s - 1))
+                    }
+                    className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
+                  >
+                    A-
+                  </button>
+                  <span className="text-[11px] font-mono font-bold text-[#6E667D]">
+                    {htmlReflowFontSize}px
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setHtmlReflowFontSize((s) => Math.min(28, s + 1))
+                    }
+                    className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
+                  >
+                    A+
+                  </button>
+                </div>
+              </div>
+
+              {htmlReflowSubMode === 'webpage' ? (
+                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[75vh] shadow-md">
+                  <iframe
+                    title="Webpage HTML Reader"
+                    sandbox=""
+                    srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;color:#14101B;max-width:820px;margin:0 auto;padding:24px;line-height:1.65;}h1,h2,h3{color:#2D123B;}table{width:100%;border-collapse:collapse;margin:14px 0;}th,td{border:1px solid #CBD5E1;padding:8px 10px;text-align:left;}th{background:#F1F5F9;}</style></head><body>${sanitizeHtmlForReader(
+                      resolvedReaderHtml,
+                      docBaseTitle
+                    )}</body></html>`}
+                    className="w-full h-full border-0 bg-white"
+                  />
+                </div>
+              ) : (
+                <div
+                  style={{
+                    fontSize: `${htmlReflowFontSize}px`,
+                    lineHeight: 1.75,
+                  }}
+                  className={`rounded-2xl border p-6 sm:p-10 shadow-md space-y-4 font-serif transition-colors ${
+                    htmlReflowTheme === 'sepia'
+                      ? 'bg-[#F6EFE2] text-[#2B2218] border-[#DFD2BA]'
+                      : htmlReflowTheme === 'night'
+                        ? 'bg-[#111318] text-[#E4E2E8] border-[#262936]'
+                        : 'bg-white text-[#14101B] border-[#E4DFEC]'
+                  }`}
+                >
+                  {resolvedReaderBlocks.map((blk, idx) => {
+                    if (blk.type === 'h1') {
+                      return (
+                        <h1
+                          key={idx}
+                          style={{ fontSize: `${htmlReflowFontSize + 8}px` }}
+                          className="font-bold pb-2 border-b border-current/15"
+                        >
+                          {blk.text}
+                        </h1>
+                      );
+                    }
+                    if (blk.type === 'h2') {
+                      return (
+                        <h2
+                          key={idx}
+                          style={{ fontSize: `${htmlReflowFontSize + 4}px` }}
+                          className="font-bold pt-3"
+                        >
+                          {blk.text}
+                        </h2>
+                      );
+                    }
+                    if (blk.type === 'h3') {
+                      return (
+                        <h3
+                          key={idx}
+                          style={{ fontSize: `${htmlReflowFontSize + 2}px` }}
+                          className="font-semibold pt-2"
+                        >
+                          {blk.text}
+                        </h3>
+                      );
+                    }
+                    if (blk.type === 'li') {
+                      return (
+                        <div key={idx} className="pl-4 flex items-start gap-2">
+                          <span className="text-[#0D9488] font-bold">•</span>
+                          <span>
+                            {(blk.text || '').replace(
+                              /^(\*|-|\u2022|\d+\.)\s+/,
+                              ''
+                            )}
+                          </span>
+                        </div>
+                      );
+                    }
+                    if (blk.type === 'table' && blk.rows) {
+                      return (
+                        <div key={idx} className="overflow-x-auto my-3">
+                          <table className="w-full border-collapse text-left">
+                            <tbody>
+                              {blk.rows.map((r, rIdx) => (
+                                <tr
+                                  key={rIdx}
+                                  className={
+                                    rIdx === 0
+                                      ? 'font-bold bg-current/10'
+                                      : 'border-t border-current/15'
+                                  }
+                                >
+                                  {r.map((c, cIdx) => (
+                                    <td
+                                      key={cIdx}
+                                      className="p-2.5 border border-current/20"
+                                    >
+                                      {c}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    }
+                    return (
+                      <p
+                        key={idx}
+                        className={`${blk.bold ? 'font-bold' : ''} ${
+                          blk.italic ? 'italic opacity-90' : ''
+                        }`}
+                      >
+                        {blk.text}
+                      </p>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : (
           <div className="min-w-full min-h-full w-max flex flex-col items-center justify-center px-1.5 py-2 sm:px-4 sm:py-3 gap-3 mx-auto">
             {isLoadingPages && pages.length === 0 ? (
               <div className="my-auto text-center space-y-2">
@@ -4000,6 +4262,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             })
           )}
           </div>
+          )}
         </div>
 
         {/* Stable Floating PDF-Only Zoom Controls on Bottom-Left of Stage */}

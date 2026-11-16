@@ -56,6 +56,7 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
+  BookOpen,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -90,6 +91,10 @@ import {
   PdfToWordMode,
 } from '../services/wordConversionService';
 import { formatBytes } from '../services/storageService';
+import {
+  convertAnyUploadedFileToPdfAndHtml,
+  SUPPORTED_DOCUMENT_ACCEPT,
+} from '../services/advancedPdfToolsService';
 import { ExtendedPdfToolsWorkspaces } from './ExtendedPdfToolsWorkspaces';
 import { PdfToolCustomIcon } from './PdfToolCustomIcons';
 
@@ -258,6 +263,16 @@ export const PDF_TOOLS_CATALOG: PdfCatalogToolItem[] = [
     categories: ['Convert PDF'],
     icon: Globe,
     badgeColor: 'bg-[#FFFBEB] text-[#B45309] dark:bg-[#B45309]/20 dark:text-[#FCD34D]',
+  },
+  {
+    id: 'html-reader',
+    label: 'HTML & eBook Reader',
+    description:
+      'Read HTML webpages, EPUB, KPF, MOBI, FB2, Word, ODT, and PDFs in a reflowable eBook & Web Reader with themes, TOC & Read Aloud.',
+    categories: ['PDF Intelligence', 'Edit PDF', 'Convert PDF'],
+    icon: BookOpen,
+    badgeColor: 'bg-[#ECFEFF] text-[#0891B2] dark:bg-[#0891B2]/20 dark:text-[#67E8F9]',
+    isNew: true,
   },
   {
     id: 'unlock-pdf',
@@ -1897,7 +1912,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
     setConvertedWordPdfResult(null);
     try {
       const parsed = await parseUploadedWordFile(file);
-      const baseName = file.name.replace(/\.(docx|doc|rtf|txt)$/i, '');
+      const baseName = file.name.replace(/\.[^.]+$/, '');
       setWordFileName(baseName || 'Converted_Word_Document');
       setWordBlocks(parsed.blocks);
       setWordPlainText(parsed.plainText);
@@ -1926,6 +1941,10 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         updatedAt: new Date().toISOString(),
         lastOpenedAt: new Date().toISOString(),
         pdfData: pdfBytes,
+        ocrText: parsed.plainText,
+        rawHtmlContent: parsed.htmlPreview,
+        sourceFormat:
+          file.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || 'docx',
       };
       await onSaveNewDocument(newDoc);
       setConvertedWordPdfResult({
@@ -2191,34 +2210,37 @@ Status: Approved for Production Distribution`;
       case 'img-to-pdf':
         return 'image/png,image/jpeg,image/webp,.jpg,.jpeg,.png,.webp';
       case 'word-to-pdf':
-        return '.docx,.doc,.rtf,.txt,.md,.html,.htm,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/html,application/rtf';
+        return '.docx,.doc,.odt,.epub,.kpf,.mobi,.fb2,.rtf,.txt,.md,.html,.htm,.xhtml,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,text/plain,text/html,application/rtf';
       case 'ppt-to-pdf':
-        return '.pptx,.ppt,.pdf,.txt,.md,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,text/plain';
+        return '.pptx,.ppt,.odp,.pdf,.txt,.md,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,text/plain';
       case 'excel-to-pdf':
-        return '.csv,.tsv,.xlsx,.xls,.txt,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain';
+        return '.csv,.tsv,.xlsx,.xls,.ods,.txt,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain';
       case 'html-to-pdf':
-        return '.html,.htm,.xhtml,.txt,.md,text/html,text/plain';
+      case 'html-reader':
+        return SUPPORTED_DOCUMENT_ACCEPT;
       default:
-        return 'application/pdf,.pdf';
+        return SUPPORTED_DOCUMENT_ACCEPT;
     }
   };
 
   const getToolUploadLabel = (toolId: ToolId): string => {
     switch (toolId) {
       case 'merge-pdf':
-        return 'Upload PDFs to Merge';
+        return 'Upload PDFs / Docs to Merge';
       case 'img-to-pdf':
         return 'Upload JPG / Photos';
       case 'word-to-pdf':
-        return 'Upload Word (.DOCX/.DOC)';
+        return 'Upload Word / EPUB / KPF';
       case 'ppt-to-pdf':
         return 'Upload PowerPoint / File';
       case 'excel-to-pdf':
         return 'Upload Excel / CSV';
       case 'html-to-pdf':
-        return 'Upload HTML File';
+        return 'Upload HTML / eBook File';
+      case 'html-reader':
+        return 'Open HTML / EPUB / KPF / PDF';
       default:
-        return 'Upload PDF File';
+        return 'Upload PDF / Document';
     }
   };
 
@@ -2244,7 +2266,8 @@ Status: Approved for Production Distribution`;
     if (
       activeTool === 'ppt-to-pdf' ||
       activeTool === 'excel-to-pdf' ||
-      activeTool === 'html-to-pdf'
+      activeTool === 'html-to-pdf' ||
+      activeTool === 'html-reader'
     ) {
       const clonedFile = new File(
         [await first.arrayBuffer()],
@@ -2255,67 +2278,30 @@ Status: Approved for Production Distribution`;
       return;
     }
 
-    // Standard PDF upload for any PDF tool: save directly to vault & set as selectedDocId immediately
+    // Standard PDF or multi-format document (.epub, .kpf, .html, .docx, .odt, .xlsx, .pptx, .pdf) upload for any PDF tool
     try {
       setIsBusy(true);
       let latestDoc: StoredDocument | null = null;
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        const buf = new Uint8Array(await f.arrayBuffer());
-        const isPdfMagic =
-          buf.length >= 4 &&
-          buf[0] === 0x25 &&
-          buf[1] === 0x50 &&
-          buf[2] === 0x44 &&
-          buf[3] === 0x46;
-
-        if (isPdfMagic) {
-          const pageCount = await getPdfPageCount(buf);
-          const newDoc: StoredDocument = {
-            id: `doc-tool-up-${Date.now()}-${i}`,
-            name: f.name.toLowerCase().endsWith('.pdf')
-              ? f.name
-              : `${f.name}.pdf`,
-            category: 'Reports',
-            starred: false,
-            sizeBytes: buf.byteLength,
-            pageCount,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: buf,
-          };
-          await onSaveNewDocument(newDoc);
-          latestDoc = newDoc;
-        } else {
-          // Non-PDF file uploaded while on a PDF tool: convert cleanly via parseUploadedWordFile
-          const parsed = await parseUploadedWordFile(f);
-          const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
-            parsed.blocks,
-            {
-              pageSize: 'A4',
-              fontFamily: 'helvetica',
-              baseFontSize: 11.5,
-              lineSpacing: 1.4,
-              addPageNumbers: true,
-            }
-          );
-          const baseName = f.name.replace(/\.[^.]+$/, '') || 'Converted_Document';
-          const newDoc: StoredDocument = {
-            id: `doc-tool-conv-${Date.now()}-${i}`,
-            name: `${baseName}.pdf`,
-            category: 'Reports',
-            starred: false,
-            sizeBytes: pdfBytes.byteLength,
-            pageCount,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: pdfBytes,
-          };
-          await onSaveNewDocument(newDoc);
-          latestDoc = newDoc;
-        }
+        const converted = await convertAnyUploadedFileToPdfAndHtml(f);
+        const newDoc: StoredDocument = {
+          id: `doc-tool-up-${Date.now()}-${i}`,
+          name: converted.outputPdfName,
+          category: 'Reports',
+          starred: false,
+          sizeBytes: converted.pdfBytes.byteLength,
+          pageCount: converted.pageCount,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastOpenedAt: new Date().toISOString(),
+          pdfData: converted.pdfBytes,
+          ocrText: converted.extractedText,
+          rawHtmlContent: converted.rawHtmlContent,
+          sourceFormat: converted.sourceFormat,
+        };
+        await onSaveNewDocument(newDoc);
+        latestDoc = newDoc;
       }
       if (latestDoc) {
         setSelectedDocId(latestDoc.id);
@@ -2323,7 +2309,7 @@ Status: Approved for Production Distribution`;
           onOpenInEditor(latestDoc);
         } else {
           setFeedback(
-            `Uploaded "${first.name}" and loaded into ${activeCatalogMeta.label}.`
+            `Uploaded "${first.name}" (${latestDoc.sourceFormat?.toUpperCase() || 'PDF'}) and loaded into ${activeCatalogMeta.label}.`
           );
         }
       }

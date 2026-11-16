@@ -42,6 +42,8 @@ import {
   plainTextToWordBlocks,
   generatePdfFromWordBlocks,
   parseHtmlIntoWordBlocks,
+  sanitizeHtmlForReader,
+  wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
 import {
   addPageNumbersToPdf,
@@ -76,6 +78,8 @@ import {
   KindleKpfChapter,
   parseUploadedSpreadsheetFile,
   parseUploadedPresentationFile,
+  convertAnyUploadedFileToPdfAndHtml,
+  SUPPORTED_DOCUMENT_ACCEPT,
 } from '../services/advancedPdfToolsService';
 import { formatBytes } from '../services/storageService';
 
@@ -793,13 +797,119 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   };
 
   const handleUploadHtmlFile = async (file: File) => {
-    const text = await file.text();
-    if (text.trim()) {
-      const base = file.name.replace(/\.(html?|xhtml|txt|md)$/i, '');
-      setHtmlFileName(base || 'Webpage_Converted');
-      setHtmlSourceInput(text);
-      await buildPdfFromHtmlMarkup(text, file.name, false);
+    setIsBusy(true);
+    setFeedback(null);
+    try {
+      const converted = await convertAnyUploadedFileToPdfAndHtml(file);
+      const base =
+        file.name.replace(/\.[^.]+$/, '') || 'Document_Converted';
+      setHtmlFileName(base);
+      setHtmlSourceInput(converted.rawHtmlContent);
+      setHtmlReaderFormatBadge(converted.sourceFormat.toUpperCase());
+
+      const newDoc: StoredDocument = {
+        id: `doc-html-${Date.now()}`,
+        name: converted.outputPdfName,
+        category: 'Reports',
+        starred: false,
+        sizeBytes: converted.pdfBytes.byteLength,
+        pageCount: converted.pageCount,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: converted.pdfBytes,
+        ocrText: converted.extractedText,
+        sourceFormat: converted.sourceFormat,
+        rawHtmlContent: converted.rawHtmlContent,
+      };
+      await onSaveNewDocument(newDoc);
+      setConvertedHtmlPdfResult({
+        bytes: converted.pdfBytes,
+        name: converted.outputPdfName,
+        pageCount: converted.pageCount,
+        doc: newDoc,
+      });
+      setFeedback(
+        `Loaded "${file.name}" (${converted.sourceFormat.toUpperCase()}) into Reader & converted to "${converted.outputPdfName}" (${converted.pageCount} ${
+          converted.pageCount === 1 ? 'page' : 'pages'
+        }, ${formatBytes(converted.pdfBytes.byteLength)}).`
+      );
+    } catch {
+      const text = await file.text();
+      if (text.trim()) {
+        const base = file.name.replace(/\.[^.]+$/, '');
+        setHtmlFileName(base || 'Webpage_Converted');
+        setHtmlSourceInput(text);
+        await buildPdfFromHtmlMarkup(text, file.name, false);
+      }
+    } finally {
+      setIsBusy(false);
     }
+  };
+
+  // HTML & eBook Reader state
+  const [htmlReaderViewMode, setHtmlReaderViewMode] = useState<
+    'reflow' | 'webpage' | 'source'
+  >('reflow');
+  const [htmlReaderTheme, setHtmlReaderTheme] = useState<
+    'paper' | 'sepia' | 'dusk' | 'night'
+  >('paper');
+  const [htmlReaderFontFamily, setHtmlReaderFontFamily] = useState<
+    'serif' | 'sans' | 'mono'
+  >('serif');
+  const [htmlReaderFontSize, setHtmlReaderFontSize] = useState<number>(16);
+  const [htmlReaderLineHeight, setHtmlReaderLineHeight] =
+    useState<number>(1.75);
+  const [htmlReaderSearchQuery, setHtmlReaderSearchQuery] =
+    useState<string>('');
+  const [htmlReaderFormatBadge, setHtmlReaderFormatBadge] =
+    useState<string>('HTML');
+  const [htmlReaderSpeaking, setHtmlReaderSpeaking] = useState<boolean>(false);
+  const readerContentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (activeTool !== 'html-reader' || !selectedDoc) return;
+    const base = selectedDoc.name.replace(/\.pdf$/i, '');
+    setHtmlFileName(base);
+    setHtmlReaderFormatBadge(
+      (selectedDoc.sourceFormat || 'html').toUpperCase()
+    );
+    if (selectedDoc.rawHtmlContent && selectedDoc.rawHtmlContent.trim()) {
+      setHtmlSourceInput(selectedDoc.rawHtmlContent);
+    } else if (selectedDoc.ocrText && selectedDoc.ocrText.trim()) {
+      const blocks = plainTextToWordBlocks(selectedDoc.ocrText);
+      setHtmlSourceInput(wordBlocksToCleanHtml(blocks, base));
+    } else {
+      extractAllPdfText(selectedDoc.pdfData)
+        .then((pages) => {
+          const joined = pages
+            .map((p) => `# Page ${p.pageNumber}\n${p.text}`)
+            .join('\n\n');
+          const blocks = plainTextToWordBlocks(joined || base);
+          setHtmlSourceInput(wordBlocksToCleanHtml(blocks, base));
+        })
+        .catch(() => {
+          // keep default
+        });
+    }
+  }, [activeTool, selectedDoc?.id]);
+
+  const toggleHtmlReaderReadAloud = (plainTextToRead: string) => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (htmlReaderSpeaking) {
+      window.speechSynthesis.cancel();
+      setHtmlReaderSpeaking(false);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(
+      plainTextToRead.slice(0, 12000)
+    );
+    utterance.rate = 1.0;
+    utterance.onend = () => setHtmlReaderSpeaking(false);
+    utterance.onerror = () => setHtmlReaderSpeaking(false);
+    setHtmlReaderSpeaking(true);
+    window.speechSynthesis.speak(utterance);
   };
 
   useEffect(() => {
@@ -808,7 +918,10 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       importSpreadsheetFileAndConvert(externalUploadedFile);
     } else if (activeTool === 'ppt-to-pdf') {
       handleUploadPptOrOutlineFile(externalUploadedFile);
-    } else if (activeTool === 'html-to-pdf') {
+    } else if (
+      activeTool === 'html-to-pdf' ||
+      activeTool === 'html-reader'
+    ) {
       handleUploadHtmlFile(externalUploadedFile);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -3795,6 +3908,528 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                 {activeKpfChapterIdx + 1} of {Math.max(1, kpfChapters.length)}
               </span>
             </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 20. HTML & EBOOK READER WORKSPACE (.HTML, .HTM, .XHTML, .EPUB, .KPF, .MOBI, .FB2, .DOCX, .ODT, .MD)
+  if (activeTool === 'html-reader') {
+    const readerBlocks = parseHtmlIntoWordBlocks(htmlSourceInput);
+    const readerHeadings = readerBlocks
+      .map((blk, bIdx) => ({ blk, bIdx }))
+      .filter(
+        ({ blk }) =>
+          (blk.type === 'h1' || blk.type === 'h2' || blk.type === 'h3') &&
+          Boolean(blk.text?.trim())
+      );
+    const filteredBlocks = htmlReaderSearchQuery.trim()
+      ? readerBlocks.filter((b) => {
+          const q = htmlReaderSearchQuery.trim().toLowerCase();
+          if (b.text && b.text.toLowerCase().includes(q)) return true;
+          if (
+            b.rows &&
+            b.rows.some((r) => r.some((c) => c.toLowerCase().includes(q)))
+          )
+            return true;
+          return false;
+        })
+      : readerBlocks;
+
+    const totalWordCount = readerBlocks
+      .map((b) =>
+        b.rows ? b.rows.map((r) => r.join(' ')).join(' ') : b.text || ''
+      )
+      .join(' ')
+      .split(/\s+/)
+      .filter(Boolean).length;
+    const estReadMin = Math.max(1, Math.round(totalWordCount / 200));
+
+    const themeClasses =
+      htmlReaderTheme === 'sepia'
+        ? 'bg-[#F6EFE2] text-[#2B2218] border-[#DFD2BA]'
+        : htmlReaderTheme === 'dusk'
+          ? 'bg-[#1E2430] text-[#E2E8F0] border-[#334155]'
+          : htmlReaderTheme === 'night'
+            ? 'bg-[#111318] text-[#E4E2E8] border-[#262936]'
+            : 'bg-white text-[#14101B] border-[#E4DFEC]';
+
+    const fontClass =
+      htmlReaderFontFamily === 'serif'
+        ? 'font-serif'
+        : htmlReaderFontFamily === 'mono'
+          ? 'font-mono'
+          : 'font-sans';
+
+    const fullHtmlDocument = /<html\b/i.test(htmlSourceInput)
+      ? htmlSourceInput
+      : `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>${htmlFileName}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; color: #14101B; max-width: 820px; margin: 0 auto; padding: 28px; line-height: 1.65; }
+    h1, h2, h3 { color: #2D123B; margin-top: 1.3em; margin-bottom: 0.45em; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
+    th, td { border: 1px solid #CBD5E1; padding: 8px 10px; text-align: left; }
+    th { background: #F1F5F9; font-weight: 700; }
+    blockquote { border-left: 4px solid #4A1D5E; margin: 12px 0; padding-left: 14px; color: #4B4458; font-style: italic; }
+    pre, code { background: #F8FAFC; border-radius: 6px; padding: 2px 6px; font-family: monospace; }
+    img { max-width: 100%; height: auto; border-radius: 8px; }
+  </style>
+</head>
+<body>
+${sanitizeHtmlForReader(htmlSourceInput, htmlFileName)}
+</body>
+</html>`;
+
+    return (
+      <div className="space-y-5">
+        {/* Header & Primary Action Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="px-2 py-0.5 rounded-md bg-[#0D9488] text-white text-[11px] font-extrabold tracking-wider">
+                {htmlReaderFormatBadge || 'HTML'} READER
+              </span>
+              <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                HTML, Webpage &amp; eBook Reader (.HTML, .EPUB, .KPF, .DOCX, .ODT)
+              </h2>
+            </div>
+            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+              Open and read <code>.html</code>, <code>.htm</code>,{' '}
+              <code>.xhtml</code>, <code>.epub</code>, <code>.kpf</code>,{' '}
+              <code>.mobi</code>, <code>.fb2</code>, <code>.docx</code>,{' '}
+              <code>.odt</code>, <code>.md</code>, or <code>.json</code> files
+              with customizable typography, chapters, Read Aloud TTS, and 1-click
+              PDF export.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="px-3.5 py-2 rounded-xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs">
+              <Upload className="w-3.5 h-3.5" />
+              <span>Open .HTML / .EPUB / .KPF / File</span>
+              <input
+                type="file"
+                accept={SUPPORTED_DOCUMENT_ACCEPT}
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    e.target.value = '';
+                    await handleUploadHtmlFile(f);
+                  }
+                }}
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={handleConvertHtmlToPdf}
+              disabled={isBusy}
+              className="px-4 py-2 rounded-xl bg-[#4A1D5E] hover:bg-[#3B174B] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>{isBusy ? 'Converting...' : 'Export as PDF'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const cleanName = `${htmlFileName.replace(/\.(html?|pdf)$/i, '') || 'Document'}.html`;
+                downloadBytesAsFile(
+                  new TextEncoder().encode(fullHtmlDocument),
+                  cleanName,
+                  'text/html'
+                );
+                setFeedback(`Downloaded HTML document "${cleanName}".`);
+              }}
+              className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Code2 className="w-3.5 h-3.5 text-[#0D9488]" />
+              <span>Save .HTML</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Reader Toolbar: View Switcher + Theme + Font Size + Font Family + Search + Read Aloud */}
+        <div className="p-3.5 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] flex flex-wrap items-center justify-between gap-3">
+          {/* 3-Mode View Switcher */}
+          <div className="inline-flex items-center p-1 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+            {(
+              [
+                { id: 'reflow', label: 'Reflowable Reader' },
+                { id: 'webpage', label: 'Webpage View' },
+                { id: 'source', label: 'HTML Code Editor' },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setHtmlReaderViewMode(tab.id)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                  htmlReaderViewMode === tab.id
+                    ? 'bg-[#0D9488] text-white'
+                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Theme + Font Controls */}
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Theme Pills */}
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+              {(
+                [
+                  { id: 'paper', label: 'Paper', dot: 'bg-white border-gray-300' },
+                  { id: 'sepia', label: 'Sepia', dot: 'bg-[#F6EFE2] border-amber-300' },
+                  { id: 'dusk', label: 'Dusk', dot: 'bg-[#1E2430] border-slate-600' },
+                  { id: 'night', label: 'Night', dot: 'bg-[#111318] border-gray-700' },
+                ] as const
+              ).map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setHtmlReaderTheme(t.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 cursor-pointer ${
+                    htmlReaderTheme === t.id
+                      ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
+                      : 'text-[#6E667D] dark:text-[#A39BB5]'
+                  }`}
+                >
+                  <span className={`w-2.5 h-2.5 rounded-full border ${t.dot}`} />
+                  <span>{t.label}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Font Family */}
+            <div className="inline-flex items-center p-1 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+              {(
+                [
+                  { id: 'serif', label: 'Serif' },
+                  { id: 'sans', label: 'Sans' },
+                  { id: 'mono', label: 'Mono' },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setHtmlReaderFontFamily(f.id)}
+                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                    htmlReaderFontFamily === f.id
+                      ? 'bg-[#14101B] text-white dark:bg-white dark:text-[#0D0A12]'
+                      : 'text-[#6E667D] dark:text-[#A39BB5]'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Font Size A- / A+ */}
+            <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+              <button
+                type="button"
+                onClick={() =>
+                  setHtmlReaderFontSize((s) => Math.max(12, s - 1))
+                }
+                className="px-2.5 py-1 rounded-lg text-xs font-extrabold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                title="Decrease Font Size"
+              >
+                A-
+              </button>
+              <span className="px-1.5 text-[11px] font-mono font-bold text-[#6E667D]">
+                {htmlReaderFontSize}px
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setHtmlReaderFontSize((s) => Math.min(28, s + 1))
+                }
+                className="px-2.5 py-1 rounded-lg text-xs font-extrabold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                title="Increase Font Size"
+              >
+                A+
+              </button>
+            </div>
+
+            {/* Line Spacing */}
+            <select
+              value={String(htmlReaderLineHeight)}
+              onChange={(e) => setHtmlReaderLineHeight(Number(e.target.value))}
+              className="px-2.5 py-1.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-bold"
+              title="Line Spacing"
+            >
+              <option value="1.45">Compact (1.45x)</option>
+              <option value="1.75">Comfort (1.75x)</option>
+              <option value="2.05">Wide (2.05x)</option>
+            </select>
+
+            {/* Read Aloud TTS Button */}
+            <button
+              type="button"
+              onClick={() => {
+                const allPlainText = readerBlocks
+                  .map((b) =>
+                    b.rows
+                      ? b.rows.map((r) => r.join(' ')).join('. ')
+                      : b.text || ''
+                  )
+                  .join('. ');
+                toggleHtmlReaderReadAloud(allPlainText);
+              }}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer ${
+                htmlReaderSpeaking
+                  ? 'bg-[#DC2626] text-white'
+                  : 'bg-[#0D9488]/15 text-[#0D9488] dark:text-[#5EEAD4]'
+              }`}
+            >
+              <Play className="w-3.5 h-3.5 fill-current" />
+              <span>{htmlReaderSpeaking ? 'Stop Reading' : 'Read Aloud'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Search & Stats Bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 text-xs text-[#6E667D] dark:text-[#A39BB5] font-mono">
+            <span className="font-bold text-[#14101B] dark:text-[#F4F1F8]">
+              {htmlFileName}
+            </span>
+            <span>·</span>
+            <span>{readerBlocks.length} blocks</span>
+            <span>·</span>
+            <span>{totalWordCount} words</span>
+            <span>·</span>
+            <span>~{estReadMin} min read</span>
+          </div>
+
+          <div className="flex items-center gap-2 w-full sm:w-72">
+            <input
+              type="search"
+              value={htmlReaderSearchQuery}
+              onChange={(e) => setHtmlReaderSearchQuery(e.target.value)}
+              placeholder="Search inside HTML / eBook..."
+              className="w-full px-3 py-1.5 text-xs rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]"
+            />
+          </div>
+        </div>
+
+        {/* Main Reader Body: TOC Sidebar + Active Reader View */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+          {/* Left: Chapters & Headings Outline (Table of Contents) */}
+          <div className="lg:col-span-3 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] p-3.5 space-y-2 max-h-[520px] overflow-y-auto">
+            <div className="flex items-center justify-between pb-1 border-b border-[#E4DFEC] dark:border-[#261F33]">
+              <span className="text-xs font-bold uppercase tracking-wider text-[#6E667D]">
+                Outline / Chapters ({readerHeadings.length})
+              </span>
+            </div>
+            {readerHeadings.length === 0 ? (
+              <p className="text-xs text-[#6E667D] py-2">
+                No headings detected. All paragraphs are shown in the reader.
+              </p>
+            ) : (
+              readerHeadings.map(({ blk, bIdx }, idx) => (
+                <button
+                  key={`${bIdx}-${idx}`}
+                  type="button"
+                  onClick={() => {
+                    setHtmlReaderViewMode('reflow');
+                    const targetEl = readerContentRef.current?.querySelector(
+                      `[data-reader-block="${bIdx}"]`
+                    );
+                    if (targetEl) {
+                      targetEl.scrollIntoView({
+                        behavior: 'smooth',
+                        block: 'start',
+                      });
+                    }
+                  }}
+                  className={`w-full text-left px-2.5 py-2 rounded-xl text-xs hover:bg-[#0D9488]/10 transition-colors cursor-pointer truncate ${
+                    blk.type === 'h1'
+                      ? 'font-bold text-[#14101B] dark:text-[#F4F1F8]'
+                      : blk.type === 'h2'
+                        ? 'pl-4 font-semibold text-[#4B4458] dark:text-[#C5BED4]'
+                        : 'pl-6 text-[#6E667D] dark:text-[#A39BB5]'
+                  }`}
+                >
+                  {blk.text}
+                </button>
+              ))
+            )}
+          </div>
+
+          {/* Right: Active View (Reflowable Reader | Webpage Iframe | HTML Source Editor) */}
+          <div className="lg:col-span-9">
+            {htmlReaderViewMode === 'reflow' && (
+              <div
+                ref={readerContentRef}
+                style={{
+                  fontSize: `${htmlReaderFontSize}px`,
+                  lineHeight: htmlReaderLineHeight,
+                }}
+                className={`rounded-2xl border p-6 sm:p-8 max-h-[520px] overflow-y-auto shadow-xs space-y-4 transition-colors ${themeClasses} ${fontClass}`}
+              >
+                {filteredBlocks.length === 0 ? (
+                  <p className="text-sm opacity-70">
+                    No matching content found for &ldquo;{htmlReaderSearchQuery}&rdquo;.
+                  </p>
+                ) : (
+                  filteredBlocks.map((blk, idx) => {
+                    if (blk.type === 'h1') {
+                      return (
+                        <h1
+                          key={idx}
+                          data-reader-block={idx}
+                          style={{ fontSize: `${htmlReaderFontSize + 8}px` }}
+                          className="font-bold tracking-tight pt-2 pb-1 border-b border-current/15"
+                        >
+                          {blk.text}
+                        </h1>
+                      );
+                    }
+                    if (blk.type === 'h2') {
+                      return (
+                        <h2
+                          key={idx}
+                          data-reader-block={idx}
+                          style={{ fontSize: `${htmlReaderFontSize + 4}px` }}
+                          className="font-bold pt-3"
+                        >
+                          {blk.text}
+                        </h2>
+                      );
+                    }
+                    if (blk.type === 'h3') {
+                      return (
+                        <h3
+                          key={idx}
+                          data-reader-block={idx}
+                          style={{ fontSize: `${htmlReaderFontSize + 2}px` }}
+                          className="font-semibold pt-2"
+                        >
+                          {blk.text}
+                        </h3>
+                      );
+                    }
+                    if (blk.type === 'li') {
+                      return (
+                        <div
+                          key={idx}
+                          data-reader-block={idx}
+                          className="pl-4 flex items-start gap-2"
+                        >
+                          <span className="text-[#0D9488] font-bold">•</span>
+                          <span>
+                            {(blk.text || '').replace(
+                              /^(\*|-|\u2022|\d+\.)\s+/,
+                              ''
+                            )}
+                          </span>
+                        </div>
+                      );
+                    }
+                    if (blk.type === 'table' && blk.rows) {
+                      return (
+                        <div
+                          key={idx}
+                          data-reader-block={idx}
+                          className="overflow-x-auto my-3"
+                        >
+                          <table className="w-full border-collapse text-left">
+                            <tbody>
+                              {blk.rows.map((row, rIdx) => (
+                                <tr
+                                  key={rIdx}
+                                  className={
+                                    rIdx === 0
+                                      ? 'font-bold bg-current/10'
+                                      : 'border-t border-current/15'
+                                  }
+                                >
+                                  {row.map((cell, cIdx) => (
+                                    <td
+                                      key={cIdx}
+                                      className="p-2.5 border border-current/20"
+                                      style={{
+                                        fontSize: `${Math.max(12, htmlReaderFontSize - 2)}px`,
+                                      }}
+                                    >
+                                      {cell}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    }
+                    if (blk.type === 'image' && blk.imageDataUrl) {
+                      return (
+                        <figure
+                          key={idx}
+                          data-reader-block={idx}
+                          className="my-3 flex justify-center"
+                        >
+                          <img
+                            src={blk.imageDataUrl}
+                            alt="Document figure"
+                            className="max-w-full max-h-96 rounded-xl border border-current/15"
+                          />
+                        </figure>
+                      );
+                    }
+                    return (
+                      <p
+                        key={idx}
+                        data-reader-block={idx}
+                        className={`${blk.bold ? 'font-bold' : ''} ${
+                          blk.italic ? 'italic opacity-90' : ''
+                        }`}
+                      >
+                        {blk.text}
+                      </p>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {htmlReaderViewMode === 'webpage' && (
+              <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[520px] shadow-xs">
+                <iframe
+                  title="HTML Reader Webpage Preview"
+                  sandbox=""
+                  srcDoc={fullHtmlDocument}
+                  className="w-full h-full border-0 bg-white"
+                />
+              </div>
+            )}
+
+            {htmlReaderViewMode === 'source' && (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs text-[#6E667D]">
+                  <span>
+                    Edit HTML markup below — changes immediately update the
+                    Reflowable Reader, Webpage View, and PDF Export:
+                  </span>
+                </div>
+                <textarea
+                  rows={18}
+                  value={htmlSourceInput}
+                  onChange={(e) => setHtmlSourceInput(e.target.value)}
+                  className="w-full h-[490px] p-4 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs leading-relaxed"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -34,6 +34,7 @@ import {
 import { formatBytes } from '../services/storageService';
 import { renderPdfPage } from '../services/pdfService';
 import { formatRelativeTime } from './DashboardView';
+import { SUPPORTED_DOCUMENT_ACCEPT } from '../services/advancedPdfToolsService';
 
 interface DocumentsLibraryViewProps {
   documents: StoredDocument[];
@@ -309,7 +310,7 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
             <span>Open File</span>
             <input
               type="file"
-              accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/rtf,image/png,image/jpeg,image/webp"
+              accept={SUPPORTED_DOCUMENT_ACCEPT}
               multiple
               className="hidden"
               onChange={(e) => {

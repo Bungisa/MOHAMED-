@@ -15,18 +15,13 @@ import {
   seedInitialDocumentsIfEmpty,
 } from './services/storageService';
 import {
-  getPdfPageCount,
   downloadBytesAsFile,
-  createPdfFromImages,
   mergePdfs,
   compressPdfDocument,
   removeWatermarksFromPdf,
 } from './services/pdfService';
 import { formatBytes } from './services/storageService';
-import {
-  parseUploadedWordFile,
-  generatePdfFromWordBlocks,
-} from './services/wordConversionService';
+import { convertAnyUploadedFileToPdfAndHtml } from './services/advancedPdfToolsService';
 import { Layout } from './components/Layout';
 import { DashboardView } from './components/DashboardView';
 import { ScannerView } from './components/ScannerView';
@@ -47,6 +42,7 @@ import {
   FileText,
   ScanText,
   Scissors,
+  BookOpen,
 } from 'lucide-react';
 
 export default function App() {
@@ -292,134 +288,41 @@ export default function App() {
         continue;
       }
 
-      const lower = file.name.toLowerCase();
-      const mime = (file.type || '').toLowerCase();
-
       try {
-        const buf = await file.arrayBuffer();
-        const rawBytes = new Uint8Array(buf);
-
-        // Check if file is a PDF (by %PDF- magic header, extension, or MIME)
-        const isPdfMagic =
-          rawBytes.length >= 5 &&
-          rawBytes[0] === 0x25 && // %
-          rawBytes[1] === 0x50 && // P
-          rawBytes[2] === 0x44 && // D
-          rawBytes[3] === 0x46; // F
-
-        const isPdf =
-          mime === 'application/pdf' || lower.endsWith('.pdf') || isPdfMagic;
-
-        const isImage =
-          !isPdfMagic &&
-          (mime.startsWith('image/') || /\.(png|jpe?g|webp)$/i.test(lower));
-
-        const isWordOrText =
-          !isPdf &&
-          !isImage &&
-          (/\.(docx?|rtf|txt|md|csv|odt|html?|xhtml)$/i.test(lower) ||
-            mime.includes('word') ||
-            mime.includes('officedocument') ||
-            mime.includes('rtf') ||
-            mime.includes('html') ||
-            mime.startsWith('text/'));
-
-        if (isPdf) {
-          if (!isPdfMagic) {
-            showToast(
-              `Cannot open "${file.name}": File does not have a valid PDF header (%PDF-) or is corrupted.`,
-              'error'
-            );
-            continue;
-          }
-          const pageCount = await getPdfPageCount(rawBytes);
-          if (!pageCount || pageCount < 1) {
-            showToast(
-              `Cannot open "${file.name}": PDF contains 0 readable pages or is corrupted.`,
-              'error'
-            );
-            continue;
-          }
-          const newDoc: StoredDocument = {
-            id: `doc-upload-${Date.now()}-${i}`,
-            name: file.name.toLowerCase().endsWith('.pdf')
-              ? file.name
-              : `${file.name}.pdf`,
-            category: 'Other',
-            starred: false,
-            sizeBytes: rawBytes.byteLength,
-            pageCount,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: rawBytes,
-          };
-          await storageService.saveDocument(newDoc);
-          lastAdded = newDoc;
-        } else if (isImage) {
-          const dataUrl = await new Promise<string>((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result || ''));
-            reader.onerror = () => reject(new Error('Image read error'));
-            reader.readAsDataURL(file);
-          });
-          const pdfBytes = await createPdfFromImages([dataUrl], {
-            pageSize: 'A4',
-            marginPt: 18,
-          });
-          const pageCount = await getPdfPageCount(pdfBytes);
-          const cleanName = file.name.replace(/\.[^.]+$/, '') + '.pdf';
-          const newDoc: StoredDocument = {
-            id: `doc-img-${Date.now()}-${i}`,
-            name: cleanName,
-            category: 'Scans',
-            starred: false,
-            sizeBytes: pdfBytes.byteLength,
-            pageCount,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: pdfBytes,
-          };
-          await storageService.saveDocument(newDoc);
-          lastAdded = newDoc;
-        } else if (isWordOrText) {
-          const parsed = await parseUploadedWordFile(file);
-          const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
-            parsed.blocks,
-            {
-              pageSize: 'A4',
-              fontFamily: 'helvetica',
-              baseFontSize: 11,
-              lineSpacing: 1.35,
-              addPageNumbers: true,
-            }
-          );
-          const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
-          const newDoc: StoredDocument = {
-            id: `doc-word-${Date.now()}-${i}`,
-            name: `${baseTitle}.pdf`,
-            category: 'Reports',
-            starred: false,
-            sizeBytes: pdfBytes.byteLength,
-            pageCount,
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString(),
-            lastOpenedAt: new Date().toISOString(),
-            pdfData: pdfBytes,
-            ocrText: parsed.plainText,
-          };
-          await storageService.saveDocument(newDoc);
-          lastAdded = newDoc;
-        } else {
+        const converted = await convertAnyUploadedFileToPdfAndHtml(file);
+        if (!converted.pageCount || converted.pageCount < 1) {
           showToast(
-            `Unsupported file "${file.name}": Please select a valid PDF document (.pdf).`,
+            `Cannot open "${file.name}": File contains 0 readable pages or is corrupted.`,
             'error'
           );
+          continue;
         }
+        const category =
+          converted.sourceFormat === 'image'
+            ? 'Scans'
+            : converted.sourceFormat === 'pdf'
+              ? 'Other'
+              : 'Reports';
+        const newDoc: StoredDocument = {
+          id: `doc-upload-${Date.now()}-${i}`,
+          name: converted.outputPdfName,
+          category,
+          starred: false,
+          sizeBytes: converted.pdfBytes.byteLength,
+          pageCount: converted.pageCount,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastOpenedAt: new Date().toISOString(),
+          pdfData: converted.pdfBytes,
+          ocrText: converted.extractedText,
+          rawHtmlContent: converted.rawHtmlContent,
+          sourceFormat: converted.sourceFormat,
+        };
+        await storageService.saveDocument(newDoc);
+        lastAdded = newDoc;
       } catch {
         showToast(
-          `Failed to open "${file.name}". The PDF file appears corrupted, password-locked, or unsupported.`,
+          `Failed to open "${file.name}". The file appears corrupted, password-locked, or unsupported.`,
           'error'
         );
       }
@@ -1203,6 +1106,27 @@ export default function App() {
                   </span>
                   <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
                     Edit text, add signatures, highlight, whiteout & remove watermarks
+                  </p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => {
+                  const doc = openWithPromptDoc;
+                  setOpenWithPromptDoc(null);
+                  handleOpenToolForDocument(doc, 'html-reader');
+                }}
+                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+              >
+                <div className="w-10 h-10 rounded-lg bg-[#0891B2]/10 text-[#0891B2] flex items-center justify-center shrink-0">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    HTML &amp; eBook Reader (.HTML / .EPUB / .KPF)
+                  </span>
+                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                    Reflowable eBook &amp; web reader with Paper/Sepia/Night themes, TOC &amp; Read Aloud
                   </p>
                 </div>
               </button>

@@ -442,9 +442,452 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
   return blocks;
 }
 
+function escapeHtmlText(str: string): string {
+  return (str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 /**
- * Parses an uploaded Word, HTML, RTF, Markdown, or Text file (.docx, .doc, .html, .htm, .rtf, .txt, .md)
- * into structured blocks and plain editable text for preview and PDF generation.
+ * Converts structured WordContentBlock[] into clean, semantic HTML for the HTML & eBook Reader.
+ */
+export function wordBlocksToCleanHtml(
+  blocks: WordContentBlock[],
+  docTitle?: string
+): string {
+  const parts: string[] = [];
+  if (
+    docTitle &&
+    (!blocks[0] ||
+      (blocks[0].text || '').toLowerCase() !== docTitle.toLowerCase())
+  ) {
+    parts.push(`<h1>${escapeHtmlText(docTitle)}</h1>`);
+  }
+
+  let inList = false;
+  const flushList = () => {
+    if (inList) {
+      parts.push('</ul>');
+      inList = false;
+    }
+  };
+
+  for (const b of blocks) {
+    if (b.type === 'li') {
+      if (!inList) {
+        parts.push('<ul>');
+        inList = true;
+      }
+      const cleanItem = (b.text || '').replace(/^(\*|-|\u2022|\d+\.)\s+/, '');
+      parts.push(`<li>${escapeHtmlText(cleanItem)}</li>`);
+      continue;
+    }
+
+    flushList();
+
+    if (b.type === 'h1' || b.type === 'h2' || b.type === 'h3') {
+      parts.push(`<${b.type}>${escapeHtmlText(b.text || '')}</${b.type}>`);
+    } else if (b.type === 'table' && b.rows && b.rows.length > 0) {
+      parts.push('<table>');
+      b.rows.forEach((row, rIdx) => {
+        const tag = rIdx === 0 ? 'th' : 'td';
+        const cells = row
+          .map((c) => `<${tag}>${escapeHtmlText(c)}</${tag}>`)
+          .join('');
+        parts.push(`<tr>${cells}</tr>`);
+      });
+      parts.push('</table>');
+    } else if (b.type === 'image' && b.imageDataUrl) {
+      parts.push(
+        `<figure><img src="${b.imageDataUrl}" alt="Embedded figure" /></figure>`
+      );
+    } else if (b.text && b.text.trim()) {
+      let inner = escapeHtmlText(b.text);
+      if (b.bold) inner = `<strong>${inner}</strong>`;
+      if (b.italic) inner = `<em>${inner}</em>`;
+      parts.push(`<p>${inner}</p>`);
+    }
+  }
+  flushList();
+
+  return parts.join('\n');
+}
+
+/**
+ * Sanitizes raw HTML for safe display inside the built-in HTML & eBook Reader
+ * while keeping headings, paragraphs, tables, lists, blockquotes, pre/code, and inline formatting.
+ */
+export function sanitizeHtmlForReader(
+  rawHtml: string,
+  fallbackTitle?: string
+): string {
+  if (!rawHtml || !rawHtml.trim()) {
+    return fallbackTitle ? `<h1>${escapeHtmlText(fallbackTitle)}</h1>` : '';
+  }
+
+  let cleaned = rawHtml
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<object\b[^>]*>[\s\S]*?<\/object>/gi, '')
+    .replace(/<embed\b[^>]*>/gi, '')
+    .replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/javascript\s*:/gi, '');
+
+  const bodyMatch = cleaned.match(/<body\b[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) {
+    cleaned = bodyMatch[1].trim();
+  } else {
+    cleaned = cleaned.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '').trim();
+  }
+
+  return cleaned || (fallbackTitle ? `<h1>${escapeHtmlText(fallbackTitle)}</h1>` : '');
+}
+
+async function inflateRawBytesInWordService(
+  compressed: Uint8Array
+): Promise<Uint8Array> {
+  if (typeof DecompressionStream !== 'undefined') {
+    const ds = new DecompressionStream('deflate-raw');
+    const writer = ds.writable.getWriter();
+    await writer.write(new Uint8Array(compressed));
+    await writer.close();
+    const reader = ds.readable.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) {
+        chunks.push(value);
+        total += value.byteLength;
+      }
+    }
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const c of chunks) {
+      out.set(c, offset);
+      offset += c.byteLength;
+    }
+    return out;
+  }
+  return compressed;
+}
+
+async function extractTextEntriesFromZip(
+  zipBytes: Uint8Array
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (zipBytes.byteLength < 22) return result;
+  const view = new DataView(
+    zipBytes.buffer,
+    zipBytes.byteOffset,
+    zipBytes.byteLength
+  );
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+
+  let eocdPos = -1;
+  for (
+    let i = zipBytes.byteLength - 22;
+    i >= Math.max(0, zipBytes.byteLength - 65557);
+    i--
+  ) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdPos = i;
+      break;
+    }
+  }
+  if (eocdPos < 0) return result;
+
+  const entryCount = view.getUint16(eocdPos + 10, true);
+  let cdPos = view.getUint32(eocdPos + 16, true);
+
+  for (let i = 0; i < entryCount; i++) {
+    if (
+      cdPos + 46 > zipBytes.byteLength ||
+      view.getUint32(cdPos, true) !== 0x02014b50
+    ) {
+      break;
+    }
+    const compressionMethod = view.getUint16(cdPos + 10, true);
+    const compressedSize = view.getUint32(cdPos + 20, true);
+    const nameLen = view.getUint16(cdPos + 28, true);
+    const extraLen = view.getUint16(cdPos + 30, true);
+    const commentLen = view.getUint16(cdPos + 32, true);
+    const localHeaderOffset = view.getUint32(cdPos + 42, true);
+
+    const fileName = decoder.decode(
+      zipBytes.subarray(cdPos + 46, cdPos + 46 + nameLen)
+    );
+    cdPos += 46 + nameLen + extraLen + commentLen;
+
+    const lowerEntry = fileName.toLowerCase();
+    const isTextEntry =
+      lowerEntry.endsWith('.xml') ||
+      lowerEntry.endsWith('.opf') ||
+      lowerEntry.endsWith('.ncx') ||
+      lowerEntry.endsWith('.xhtml') ||
+      lowerEntry.endsWith('.html') ||
+      lowerEntry.endsWith('.htm') ||
+      lowerEntry.endsWith('.json') ||
+      lowerEntry.endsWith('.txt') ||
+      lowerEntry.endsWith('.md') ||
+      lowerEntry.endsWith('.fb2') ||
+      lowerEntry.endsWith('.rels');
+
+    if (!isTextEntry) continue;
+
+    if (
+      localHeaderOffset + 30 <= zipBytes.byteLength &&
+      view.getUint32(localHeaderOffset, true) === 0x04034b50
+    ) {
+      const localNameLen = view.getUint16(localHeaderOffset + 26, true);
+      const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+      const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+      const dataEnd = Math.min(
+        zipBytes.byteLength,
+        dataStart + compressedSize
+      );
+      const rawSlice = zipBytes.subarray(dataStart, dataEnd);
+
+      try {
+        if (compressionMethod === 0) {
+          result.set(fileName, decoder.decode(rawSlice));
+        } else if (compressionMethod === 8) {
+          const inflated = await inflateRawBytesInWordService(rawSlice);
+          result.set(fileName, decoder.decode(inflated));
+        }
+      } catch {
+        // Ignore unreadable entry
+      }
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Parses an EPUB or KPF (Kindle Package Format) or ODT (OpenDocument) ZIP archive
+ * into ordered chapters, WordContentBlock[], and rich HTML.
+ */
+async function parseEpubKpfOrOdtZipEntries(
+  entries: Map<string, string>,
+  fallbackTitle: string
+): Promise<{
+  blocks: WordContentBlock[];
+  plainText: string;
+  htmlPreview: string;
+} | null> {
+  // 1. Check OpenDocument Text / Spreadsheet / Presentation (content.xml)
+  if (entries.has('content.xml')) {
+    const contentXml = entries.get('content.xml') || '';
+    if (
+      /<(?:office:document-content|text:p|text:h|table:table)\b/i.test(
+        contentXml
+      )
+    ) {
+      const convertedHtml = contentXml
+        .replace(
+          /<text:h\b[^>]*>([\s\S]*?)<\/text:h>/gi,
+          (_, inner) => `<h2>${inner.replace(/<[^>]+>/g, ' ').trim()}</h2>\n`
+        )
+        .replace(
+          /<text:p\b[^>]*>([\s\S]*?)<\/text:p>/gi,
+          (_, inner) => `<p>${inner.replace(/<[^>]+>/g, ' ').trim()}</p>\n`
+        )
+        .replace(/<table:table\b[^>]*>/gi, '<table>')
+        .replace(/<\/table:table>/gi, '</table>')
+        .replace(/<table:table-row\b[^>]*>/gi, '<tr>')
+        .replace(/<\/table:table-row>/gi, '</tr>')
+        .replace(/<table:table-cell\b[^>]*>/gi, '<td>')
+        .replace(/<\/table:table-cell>/gi, '</td>');
+
+      const blocks = parseHtmlIntoWordBlocks(convertedHtml);
+      if (blocks.length > 0) {
+        const plainText = wordBlocksToReadableText(blocks);
+        return {
+          blocks,
+          plainText,
+          htmlPreview: wordBlocksToCleanHtml(blocks, fallbackTitle),
+        };
+      }
+    }
+  }
+
+  // 2. Check KPF (Kindle Package Format) kdf_manifest.json or OPF spine/manifest (EPUB & KPF)
+  let bookTitle = fallbackTitle;
+  let bookAuthor = '';
+  const orderedChapterPaths: string[] = [];
+
+  if (entries.has('kdf_manifest.json')) {
+    try {
+      const kdfJson = JSON.parse(entries.get('kdf_manifest.json') || '{}');
+      if (kdfJson.title) bookTitle = String(kdfJson.title);
+      if (kdfJson.author) bookAuthor = String(kdfJson.author);
+      if (Array.isArray(kdfJson.resources)) {
+        for (const res of kdfJson.resources) {
+          if (
+            res &&
+            typeof res.path === 'string' &&
+            /\.(?:xhtml|html|htm)$/i.test(res.path) &&
+            res.role !== 'navigation'
+          ) {
+            orderedChapterPaths.push(res.path);
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed kdf_manifest.json
+    }
+  }
+
+  // Locate .opf file if orderedChapterPaths is still empty
+  if (orderedChapterPaths.length === 0) {
+    let opfPath = '';
+    const containerXml = entries.get('META-INF/container.xml') || '';
+    const fullPathMatch = containerXml.match(/full-path=["']([^"']+)["']/i);
+    if (fullPathMatch && entries.has(fullPathMatch[1])) {
+      opfPath = fullPathMatch[1];
+    } else {
+      opfPath =
+        Array.from(entries.keys()).find((k) => k.toLowerCase().endsWith('.opf')) ||
+        '';
+    }
+
+    if (opfPath) {
+      const opfXml = entries.get(opfPath) || '';
+      const opfDir = opfPath.includes('/')
+        ? opfPath.slice(0, opfPath.lastIndexOf('/') + 1)
+        : '';
+
+      const titleMatch = opfXml.match(
+        /<dc:title\b[^>]*>([\s\S]*?)<\/dc:title>/i
+      );
+      if (titleMatch && titleMatch[1].trim()) {
+        bookTitle = decodeHtmlEntities(
+          titleMatch[1].replace(/<[^>]+>/g, '').trim()
+        );
+      }
+      const creatorMatch = opfXml.match(
+        /<dc:creator\b[^>]*>([\s\S]*?)<\/dc:creator>/i
+      );
+      if (creatorMatch && creatorMatch[1].trim()) {
+        bookAuthor = decodeHtmlEntities(
+          creatorMatch[1].replace(/<[^>]+>/g, '').trim()
+        );
+      }
+
+      // Map manifest id -> href
+      const manifestMap = new Map<string, string>();
+      const itemRegex = /<item\b([^>]*)\/?>/gi;
+      let itemMatch: RegExpExecArray | null;
+      while ((itemMatch = itemRegex.exec(opfXml)) !== null) {
+        const attrs = itemMatch[1];
+        const idAttr = attrs.match(/\bid=["']([^"']+)["']/i)?.[1];
+        const hrefAttr = attrs.match(/\bhref=["']([^"']+)["']/i)?.[1];
+        const propsAttr = attrs.match(/\bproperties=["']([^"']+)["']/i)?.[1] || '';
+        if (idAttr && hrefAttr && !propsAttr.includes('nav')) {
+          manifestMap.set(idAttr, hrefAttr);
+        }
+      }
+
+      // Read spine itemref order
+      const itemrefRegex = /<itemref\b([^>]*)\/?>/gi;
+      let refMatch: RegExpExecArray | null;
+      while ((refMatch = itemrefRegex.exec(opfXml)) !== null) {
+        const idref = refMatch[1].match(/\bidref=["']([^"']+)["']/i)?.[1];
+        if (idref && manifestMap.has(idref)) {
+          const rawHref = manifestMap.get(idref)!.split('#')[0];
+          const resolved = opfDir ? `${opfDir}${rawHref}` : rawHref;
+          if (entries.has(resolved)) {
+            orderedChapterPaths.push(resolved);
+          } else if (entries.has(rawHref)) {
+            orderedChapterPaths.push(rawHref);
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback: collect all .xhtml / .html / .htm entries in the archive
+  if (orderedChapterPaths.length === 0) {
+    const allHtmlKeys = Array.from(entries.keys())
+      .filter((k) => /\.(?:xhtml|html|htm)$/i.test(k))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    const nonNavKeys = allHtmlKeys.filter(
+      (k) => !/(?:^|\/)(?:toc|nav)\.(?:xhtml|html|htm)$/i.test(k)
+    );
+    orderedChapterPaths.push(
+      ...(nonNavKeys.length > 0 ? nonNavKeys : allHtmlKeys)
+    );
+  }
+
+  if (orderedChapterPaths.length === 0) {
+    return null;
+  }
+
+  const allBlocks: WordContentBlock[] = [];
+  const chapterHtmlFragments: string[] = [];
+
+  allBlocks.push({
+    type: 'h1',
+    text: bookAuthor ? `${bookTitle} — ${bookAuthor}` : bookTitle,
+    bold: true,
+  });
+  chapterHtmlFragments.push(
+    `<header class="ebook-header"><h1>${escapeHtmlText(bookTitle)}</h1>${
+      bookAuthor ? `<p><strong>Author:</strong> ${escapeHtmlText(bookAuthor)}</p>` : ''
+    }</header>`
+  );
+
+  for (let idx = 0; idx < orderedChapterPaths.length; idx++) {
+    const path = orderedChapterPaths[idx];
+    const chapterRaw = entries.get(path) || '';
+    if (!chapterRaw.trim()) continue;
+
+    const chapterBlocks = parseHtmlIntoWordBlocks(chapterRaw);
+    if (chapterBlocks.length > 0) {
+      // Avoid repeating the book title if chapter 1 starts with it
+      if (
+        idx === 0 &&
+        chapterBlocks[0].type === 'h1' &&
+        (chapterBlocks[0].text || '').toLowerCase() === bookTitle.toLowerCase()
+      ) {
+        allBlocks.push(...chapterBlocks.slice(1));
+      } else {
+        allBlocks.push(...chapterBlocks);
+      }
+      chapterHtmlFragments.push(
+        `<section data-chapter="${idx + 1}">${sanitizeHtmlForReader(
+          chapterRaw
+        )}</section>`
+      );
+    }
+  }
+
+  const plainText = wordBlocksToReadableText(allBlocks);
+  const htmlPreview =
+    chapterHtmlFragments.join('\n<hr />\n') ||
+    wordBlocksToCleanHtml(allBlocks, bookTitle);
+
+  return {
+    blocks:
+      allBlocks.length > 0
+        ? allBlocks
+        : plainTextToWordBlocks(bookTitle || 'eBook Document'),
+    plainText,
+    htmlPreview,
+  };
+}
+
+/**
+ * Parses an uploaded Word, eBook (.epub, .kpf, .mobi, .fb2), OpenDocument (.odt),
+ * HTML (.html, .htm, .xhtml), RTF, Markdown (.md), JSON, XML, or Text file
+ * into structured blocks, plain editable text, and sanitized HTML for reading and PDF generation.
  */
 export async function parseUploadedWordFile(file: File): Promise<{
   blocks: WordContentBlock[];
@@ -452,13 +895,50 @@ export async function parseUploadedWordFile(file: File): Promise<{
   htmlPreview: string;
 }> {
   const lowerName = file.name.toLowerCase();
+  const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
   const buf = await file.arrayBuffer();
+  const bytes = new Uint8Array(buf);
+  const isZipArchive =
+    bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b;
 
-  // 1. Standard .docx OpenXML parsing via mammoth
+  // 1. Check for ZIP-based eBooks (.epub, .kpf) and OpenDocument (.odt, .ods, .odp)
+  if (
+    isZipArchive &&
+    (lowerName.endsWith('.epub') ||
+      lowerName.endsWith('.kpf') ||
+      lowerName.endsWith('.odt') ||
+      lowerName.endsWith('.ods') ||
+      lowerName.endsWith('.odp') ||
+      !lowerName.endsWith('.docx'))
+  ) {
+    try {
+      const zipEntries = await extractTextEntriesFromZip(bytes);
+      if (
+        zipEntries.has('kdf_manifest.json') ||
+        zipEntries.has('META-INF/container.xml') ||
+        zipEntries.has('content.xml') ||
+        lowerName.endsWith('.epub') ||
+        lowerName.endsWith('.kpf') ||
+        lowerName.endsWith('.odt')
+      ) {
+        const parsedBook = await parseEpubKpfOrOdtZipEntries(
+          zipEntries,
+          baseTitle
+        );
+        if (parsedBook && parsedBook.blocks.length > 0) {
+          return parsedBook;
+        }
+      }
+    } catch (err) {
+      console.warn('ZIP eBook/ODT parse fallback:', err);
+    }
+  }
+
+  // 2. Standard .docx OpenXML parsing via mammoth
   if (
     lowerName.endsWith('.docx') ||
     file.type.includes('wordprocessingml') ||
-    new Uint8Array(buf.slice(0, 2)).join(',') === '80,75' // PK zip signature
+    isZipArchive
   ) {
     try {
       const htmlResult = await mammoth.convertToHtml({ arrayBuffer: buf });
@@ -469,13 +949,14 @@ export async function parseUploadedWordFile(file: File): Promise<{
         wordBlocksToReadableText(blocks) || rawTextResult.value?.trim() || '';
 
       if (blocks.length > 0 || plainText.length > 0) {
+        const finalBlocks =
+          blocks.length > 0
+            ? blocks
+            : plainTextToWordBlocks(plainText || 'Empty Word Document');
         return {
-          blocks:
-            blocks.length > 0
-              ? blocks
-              : plainTextToWordBlocks(plainText || 'Empty Word Document'),
+          blocks: finalBlocks,
           plainText,
-          htmlPreview: html,
+          htmlPreview: html || wordBlocksToCleanHtml(finalBlocks, baseTitle),
         };
       }
     } catch (err) {
@@ -483,11 +964,75 @@ export async function parseUploadedWordFile(file: File): Promise<{
     }
   }
 
-  // 2. Decode UTF-8 text for .html, .htm, .rtf, .doc, .md, or .txt
+  // 3. Decode UTF-8 text for .html, .htm, .xhtml, .fb2, .kpf (non-ZIP), .mobi, .json, .xml, .rtf, .doc, .md, or .txt
   const decoder = new TextDecoder('utf-8', { fatal: false });
   let rawStr = decoder.decode(buf);
 
-  // Check if file is HTML (by extension, MIME type, or HTML tags in content)
+  // 3a. FictionBook (.fb2) XML eBook format
+  if (lowerName.endsWith('.fb2') || /<FictionBook\b/i.test(rawStr)) {
+    const fbHtml = rawStr
+      .replace(/<binary\b[^>]*>[\s\S]*?<\/binary>/gi, '')
+      .replace(/<description\b[^>]*>([\s\S]*?)<\/description>/gi, (_, desc) => {
+        const t = desc.match(/<book-title\b[^>]*>([\s\S]*?)<\/book-title>/i);
+        return t ? `<h1>${t[1]}</h1>\n` : '';
+      })
+      .replace(/<title\b[^>]*>([\s\S]*?)<\/title>/gi, (_, inner) => {
+        const cleanTitle = inner.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+        return cleanTitle ? `<h2>${cleanTitle}</h2>\n` : '';
+      })
+      .replace(/<subtitle\b[^>]*>([\s\S]*?)<\/subtitle>/gi, '<h3>$1</h3>\n')
+      .replace(/<emphasis\b[^>]*>([\s\S]*?)<\/emphasis>/gi, '<em>$1</em>');
+    const blocks = parseHtmlIntoWordBlocks(fbHtml);
+    const plainText = wordBlocksToReadableText(blocks);
+    return {
+      blocks:
+        blocks.length > 0 ? blocks : plainTextToWordBlocks(baseTitle),
+      plainText,
+      htmlPreview: wordBlocksToCleanHtml(blocks, baseTitle),
+    };
+  }
+
+  // 3b. JSON (.json) structured document formatting
+  if (lowerName.endsWith('.json') || (file.type || '').includes('json')) {
+    try {
+      const parsedJson = JSON.parse(rawStr);
+      const blocks: WordContentBlock[] = [
+        { type: 'h1', text: baseTitle, bold: true },
+      ];
+      if (Array.isArray(parsedJson) && parsedJson.length > 0 && typeof parsedJson[0] === 'object' && parsedJson[0] !== null) {
+        const keys = Object.keys(parsedJson[0]).slice(0, 8);
+        const rows: string[][] = [keys];
+        for (const item of parsedJson.slice(0, 100)) {
+          rows.push(
+            keys.map((k) => {
+              const v = (item as Record<string, unknown>)[k];
+              return v === null || v === undefined
+                ? ''
+                : typeof v === 'object'
+                  ? JSON.stringify(v)
+                  : String(v);
+            })
+          );
+        }
+        blocks.push({ type: 'table', rows });
+      } else {
+        const pretty = JSON.stringify(parsedJson, null, 2);
+        pretty.split('\n').forEach((line) => {
+          if (line.trim()) blocks.push({ type: 'p', text: line });
+        });
+      }
+      const plainText = wordBlocksToReadableText(blocks);
+      return {
+        blocks,
+        plainText,
+        htmlPreview: wordBlocksToCleanHtml(blocks, baseTitle),
+      };
+    } catch {
+      // Fallback to text
+    }
+  }
+
+  // 3c. Check if file is HTML / XHTML (by extension, MIME type, or HTML tags inside .html/.kpf/.mobi)
   const isHtmlContent =
     lowerName.endsWith('.html') ||
     lowerName.endsWith('.htm') ||
@@ -500,15 +1045,44 @@ export async function parseUploadedWordFile(file: File): Promise<{
   if (isHtmlContent) {
     const blocks = parseHtmlIntoWordBlocks(rawStr);
     const readableText = wordBlocksToReadableText(blocks);
+    const finalBlocks =
+      blocks.length > 0
+        ? blocks
+        : plainTextToWordBlocks(
+            readableText || `Webpage imported from ${file.name}`
+          );
     return {
-      blocks:
-        blocks.length > 0
-          ? blocks
-          : plainTextToWordBlocks(
-              readableText || `Webpage imported from ${file.name}`
-            ),
+      blocks: finalBlocks,
       plainText: readableText,
-      htmlPreview: rawStr,
+      htmlPreview: sanitizeHtmlForReader(rawStr, baseTitle),
+    };
+  }
+
+  // 3d. Non-ZIP .kpf / .mobi / .azw3 binary or KDF stream fallback
+  if (
+    lowerName.endsWith('.kpf') ||
+    lowerName.endsWith('.mobi') ||
+    lowerName.endsWith('.azw3') ||
+    lowerName.endsWith('.epub')
+  ) {
+    const matches = rawStr.match(/[\x20-\x7E\n\r\t]{5,}/g) || [];
+    const filteredLines = matches
+      .map((m) => m.trim())
+      .filter(
+        (m) =>
+          m.length >= 4 &&
+          !/^(?:SQLite format|BOOKMOBI|TPZ|EXTH|INDX|TAGX|IDXT|FDST)/i.test(m)
+      );
+    const cleanText =
+      filteredLines.join('\n\n') || `eBook imported from ${file.name}`;
+    const blocks = [
+      { type: 'h1' as const, text: baseTitle, bold: true },
+      ...plainTextToWordBlocks(cleanText),
+    ];
+    return {
+      blocks,
+      plainText: wordBlocksToReadableText(blocks),
+      htmlPreview: wordBlocksToCleanHtml(blocks, baseTitle),
     };
   }
 
@@ -537,6 +1111,11 @@ export async function parseUploadedWordFile(file: File): Promise<{
         )
         .join('\n');
     }
+  } else if (lowerName.endsWith('.xml')) {
+    rawStr = rawStr
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]+>/g, '\n')
+      .replace(/\n{3,}/g, '\n\n');
   }
 
   const cleanText = rawStr.replace(/\r\n/g, '\n').trim();
@@ -546,7 +1125,7 @@ export async function parseUploadedWordFile(file: File): Promise<{
   return {
     blocks,
     plainText: cleanText,
-    htmlPreview: '',
+    htmlPreview: wordBlocksToCleanHtml(blocks, baseTitle),
   };
 }
 

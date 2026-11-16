@@ -887,7 +887,40 @@ export const PdfToolCustomIcon: React.FC<ToolIconProps> = ({
         </svg>
       );
 
-    // 33. WORKFLOW PDF
+    // 33. HTML & EBOOK READER: Top-left teal-mint square with </> code badge, bottom-right deep-teal square with open book icon
+    case 'html-reader':
+      return (
+        <svg viewBox="0 0 44 44" fill="none" className={className}>
+          <rect x="2" y="2" width="24" height="24" rx="6" fill="#D5F5F0" />
+          <text
+            x="14"
+            y="17.5"
+            textAnchor="middle"
+            fill="#0D9488"
+            fontSize="10"
+            fontWeight="800"
+            fontFamily="Inter, system-ui, sans-serif"
+          >
+            {'</>'}
+          </text>
+          <rect x="17" y="17" width="25" height="25" rx="6.5" fill="#0D9488" />
+          <path
+            d="M22.5 23.5C24.5 22.8 27 23.2 29.5 24.8C32 23.2 34.5 22.8 36.5 23.5V35.2C34.5 34.5 32 34.9 29.5 36.5C27 34.9 24.5 34.5 22.5 35.2V23.5Z"
+            stroke="white"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          <path
+            d="M29.5 24.8V36.5"
+            stroke="white"
+            strokeWidth="1.9"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+
+    // 34. WORKFLOW PDF
     case 'workflow-pdf':
     default:
       return (

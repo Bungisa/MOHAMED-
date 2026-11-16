@@ -11,7 +11,12 @@ import {
   renderPdfPage,
   extractAllPdfText,
   getPdfPageCount,
+  createPdfFromImages,
 } from './pdfService';
+import {
+  parseUploadedWordFile,
+  generatePdfFromWordBlocks,
+} from './wordConversionService';
 
 function hexToRgbComponents(hex: string): { r: number; g: number; b: number } {
   const clean = hex.replace('#', '').trim();
@@ -2419,5 +2424,229 @@ export async function parseUploadedPresentationFile(
     },
   ];
 }
+
+// ============================================================================
+// 15. UNIVERSAL MULTI-EXTENSION DOCUMENT, EBOOK (.EPUB, .KPF) & HTML CONVERTER
+// ============================================================================
+
+export const SUPPORTED_DOCUMENT_ACCEPT =
+  '.pdf,.epub,.kpf,.mobi,.azw3,.fb2,.cbz,.docx,.doc,.odt,.rtf,.txt,.md,.html,.htm,.xhtml,.xlsx,.xls,.ods,.csv,.tsv,.pptx,.ppt,.odp,.json,.xml,.svg,.png,.jpg,.jpeg,.webp,.gif,.bmp,application/pdf,application/epub+zip,application/vnd.amazon.ebook,application/x-mobipocket-ebook,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/html,application/xhtml+xml,text/plain,text/markdown,text/csv,application/rtf,application/json,application/xml,text/xml,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/svg+xml';
+
+export interface ConvertedUniversalDocumentResult {
+  pdfBytes: Uint8Array;
+  pageCount: number;
+  extractedText: string;
+  rawHtmlContent: string;
+  sourceFormat: string;
+  outputPdfName: string;
+}
+
+function escapeHtmlCell(val: string): string {
+  return (val || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function readImageFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to read image file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+/**
+ * Converts ANY uploaded document, eBook (.epub, .kpf, .mobi, .fb2), Office file
+ * (.docx, .doc, .odt, .xlsx, .xls, .ods, .csv, .tsv, .pptx, .ppt, .odp),
+ * Web/Markup (.html, .htm, .xhtml, .md, .rtf, .txt, .json, .xml), or Image
+ * into a multi-page searchable PDF + rich HTML representation for the HTML & eBook Reader.
+ */
+export async function convertAnyUploadedFileToPdfAndHtml(
+  file: File
+): Promise<ConvertedUniversalDocumentResult> {
+  const lowerName = (file.name || '').toLowerCase();
+  const mime = (file.type || '').toLowerCase();
+  const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
+  const extMatch = lowerName.match(/\.([a-z0-9]+)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : 'pdf';
+  const outputPdfName = lowerName.endsWith('.pdf')
+    ? file.name
+    : `${baseTitle}.pdf`;
+
+  const buf = await file.arrayBuffer();
+  const rawBytes = new Uint8Array(buf);
+
+  // 1. Native PDF file (%PDF-)
+  const isPdfHeader =
+    rawBytes.length >= 4 &&
+    rawBytes[0] === 0x25 &&
+    rawBytes[1] === 0x50 &&
+    rawBytes[2] === 0x44 &&
+    rawBytes[3] === 0x46;
+
+  if ((lowerName.endsWith('.pdf') || mime === 'application/pdf') && isPdfHeader) {
+    let pageCount = 1;
+    let extractedText = '';
+    try {
+      pageCount = await getPdfPageCount(rawBytes);
+    } catch {
+      pageCount = 1;
+    }
+    try {
+      const pageTexts = await extractAllPdfText(rawBytes);
+      extractedText = pageTexts
+        .map((p) => `--- Page ${p.pageNumber} ---\n${p.text}`)
+        .join('\n\n');
+    } catch {
+      extractedText = '';
+    }
+
+    const htmlParagraphs = (extractedText || baseTitle)
+      .split(/\n{2,}/)
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .map((p) => {
+        if (/^---\s*Page\s+\d+\s*---$/i.test(p)) {
+          return `<h2>${escapeHtmlCell(p.replace(/-/g, '').trim())}</h2>`;
+        }
+        return `<p>${escapeHtmlCell(p)}</p>`;
+      })
+      .join('\n');
+
+    return {
+      pdfBytes: rawBytes,
+      pageCount,
+      extractedText,
+      rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n${htmlParagraphs}`,
+      sourceFormat: 'pdf',
+      outputPdfName,
+    };
+  }
+
+  // 2. Spreadsheets (.xlsx, .xls, .csv, .tsv)
+  if (
+    lowerName.endsWith('.xlsx') ||
+    lowerName.endsWith('.xls') ||
+    lowerName.endsWith('.csv') ||
+    lowerName.endsWith('.tsv') ||
+    mime.includes('spreadsheet') ||
+    mime.includes('excel') ||
+    mime === 'text/csv'
+  ) {
+    const rows = await parseUploadedSpreadsheetFile(file);
+    const { pdfBytes, pageCount } = await convertSpreadsheetRowsToPdf(
+      rows,
+      baseTitle,
+      'landscape'
+    );
+    const tableHtmlRows = rows
+      .map((r, rIdx) => {
+        const cellTag = rIdx === 0 ? 'th' : 'td';
+        return `<tr>${r
+          .map((c) => `<${cellTag}>${escapeHtmlCell(c)}</${cellTag}>`)
+          .join('')}</tr>`;
+      })
+      .join('\n');
+
+    return {
+      pdfBytes,
+      pageCount,
+      extractedText: rows.map((r) => r.join(' | ')).join('\n'),
+      rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n<table>\n${tableHtmlRows}\n</table>`,
+      sourceFormat: ext,
+      outputPdfName,
+    };
+  }
+
+  // 3. Presentations (.pptx, .ppt)
+  if (
+    lowerName.endsWith('.pptx') ||
+    lowerName.endsWith('.ppt') ||
+    mime.includes('presentation') ||
+    mime.includes('powerpoint')
+  ) {
+    const slides = await parseUploadedPresentationFile(file);
+    const { pdfBytes, pageCount } = await buildPresentationPdfFromSlides(
+      slides,
+      baseTitle
+    );
+    const slideHtml = slides
+      .map(
+        (s) =>
+          `<section><h2>Slide ${s.slideNumber}: ${escapeHtmlCell(
+            s.title
+          )}</h2><ul>${s.bullets
+            .map((b) => `<li>${escapeHtmlCell(b)}</li>`)
+            .join('')}</ul></section>`
+      )
+      .join('\n<hr />\n');
+
+    return {
+      pdfBytes,
+      pageCount,
+      extractedText: slides
+        .map((s) => `${s.title}\n${s.bullets.join('\n')}`)
+        .join('\n\n'),
+      rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n${slideHtml}`,
+      sourceFormat: ext,
+      outputPdfName,
+    };
+  }
+
+  // 4. Raster Images (.png, .jpg, .jpeg, .webp, .gif, .bmp)
+  if (
+    mime.startsWith('image/') &&
+    !mime.includes('svg') &&
+    !/\.(?:svg|html|htm|xhtml|epub|kpf)$/i.test(lowerName)
+  ) {
+    const dataUrl = await readImageFileAsDataUrl(file);
+    const pdfBytes = await createPdfFromImages([dataUrl], {
+      pageSize: 'A4',
+      marginPt: 18,
+    });
+    return {
+      pdfBytes,
+      pageCount: 1,
+      extractedText: baseTitle,
+      rawHtmlContent: `<h1>${escapeHtmlCell(
+        baseTitle
+      )}</h1><figure><img src="${dataUrl}" alt="${escapeHtmlCell(
+        baseTitle
+      )}" /></figure>`,
+      sourceFormat: ext,
+      outputPdfName,
+    };
+  }
+
+  // 5. eBooks (.epub, .kpf, .mobi, .azw3, .fb2), HTML (.html, .htm, .xhtml),
+  //    Word & OpenDocument (.docx, .doc, .odt, .ods, .odp), Markdown (.md), RTF, JSON, XML, TXT
+  const parsed = await parseUploadedWordFile(file);
+  const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
+    parsed.blocks,
+    {
+      pageSize: 'A4',
+      fontFamily:
+        lowerName.endsWith('.epub') || lowerName.endsWith('.kpf')
+          ? 'times'
+          : 'helvetica',
+      baseFontSize: 11.5,
+      lineSpacing: 1.4,
+      addPageNumbers: true,
+    }
+  );
+
+  return {
+    pdfBytes,
+    pageCount,
+    extractedText: parsed.plainText,
+    rawHtmlContent: parsed.htmlPreview,
+    sourceFormat: ext,
+    outputPdfName,
+  };
+}
+
 
 

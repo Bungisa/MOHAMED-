@@ -27,6 +27,7 @@ import {
   Cloud,
   CloudUpload,
   HardDrive,
+  BookOpen,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -48,6 +49,7 @@ import {
   PdfToolCategoryFilter,
 } from './PdfToolsView';
 import { PdfToolCustomIcon } from './PdfToolCustomIcons';
+import { SUPPORTED_DOCUMENT_ACCEPT } from '../services/advancedPdfToolsService';
 
 interface DashboardViewProps {
   documents: StoredDocument[];
@@ -133,6 +135,18 @@ const QUICK_TOOLS: {
     label: 'Organize',
     icon: LayoutGrid,
     accentClass: 'text-[#4A1D5E] dark:text-[#D5B3FF] bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20',
+  },
+  {
+    id: 'html-reader',
+    label: 'HTML Reader',
+    icon: BookOpen,
+    accentClass: 'text-[#0891B2] dark:text-[#67E8F9] bg-[#0891B2]/10 dark:bg-[#0891B2]/20',
+  },
+  {
+    id: 'pdf-to-kpf',
+    label: 'PDF to KPF',
+    icon: BookOpen,
+    accentClass: 'text-[#C2410C] dark:text-[#FDBA74] bg-[#C2410C]/10 dark:bg-[#C2410C]/20',
   },
 ];
 
@@ -403,11 +417,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 space-y-6">
-      {/* Hidden File Inputs (Accept PDF, Word .docx/.doc, Text .txt/.rtf, and Images) */}
+      {/* Hidden File Inputs (Accept PDF, EPUB, KPF, HTML, Word, ODT, Excel, PowerPoint, Text, and Images) */}
       <input
         ref={pdfInputRef}
         type="file"
-        accept=".pdf,.docx,.doc,.rtf,.txt,.md,.odt,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,application/rtf,image/png,image/jpeg,image/webp"
+        accept={SUPPORTED_DOCUMENT_ACCEPT}
         multiple
         className="hidden"
         onChange={handlePdfUploadChange}
@@ -801,6 +815,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         </>
                       )}
 
+                      {doc.sourceFormat && doc.sourceFormat !== 'pdf' && (
+                        <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#0891B2] text-white text-[9px] font-extrabold uppercase tracking-tight">
+                          {doc.sourceFormat}
+                        </span>
+                      )}
+
                       {doc.starred && (
                         <Star className="w-3.5 h-3.5 fill-[#D97706] text-[#D97706] shrink-0" />
                       )}
@@ -877,6 +897,17 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                       </button>
                       {onOpenToolForDocument && (
                         <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenMenuDocId(null);
+                              onOpenToolForDocument(doc, 'html-reader');
+                            }}
+                            className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#0891B2] dark:text-[#67E8F9] font-semibold cursor-pointer"
+                          >
+                            <BookOpen className="w-4 h-4 text-[#0891B2]" />
+                            <span>HTML &amp; eBook Reader</span>
+                          </button>
                           <button
                             type="button"
                             onClick={() => {

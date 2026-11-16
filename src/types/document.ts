@@ -30,6 +30,7 @@ export type ToolId =
   | 'watermark-pdf'
   | 'sign-pdf'
   | 'html-to-pdf'
+  | 'html-reader'
   | 'unlock-pdf'
   | 'security-pdf'
   | 'pdf-to-pdfa'
@@ -128,6 +129,8 @@ export interface StoredDocument {
   watermarkText?: string;
   addPageNumbers?: boolean;
   ocrText?: string;
+  sourceFormat?: string; // e.g., 'pdf' | 'html' | 'epub' | 'kpf' | 'docx' | 'xlsx' | 'pptx' | 'odt'
+  rawHtmlContent?: string; // Rich HTML representation for HTML & eBook Reader mode
   isProtected?: boolean;
   protectionHint?: string;
 }
