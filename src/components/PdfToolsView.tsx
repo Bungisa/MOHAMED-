@@ -35,6 +35,27 @@ import {
   Plus,
   Crown,
   CircleArrowRight,
+  Presentation,
+  FileSpreadsheet,
+  PenTool,
+  Stamp,
+  Globe,
+  Unlock,
+  Lock,
+  Archive,
+  Wrench,
+  Hash,
+  Camera,
+  GitCompare,
+  EyeOff,
+  Crop,
+  ClipboardList,
+  Languages,
+  FileCode,
+  Workflow,
+  Search,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -69,6 +90,354 @@ import {
   PdfToWordMode,
 } from '../services/wordConversionService';
 import { formatBytes } from '../services/storageService';
+import { ExtendedPdfToolsWorkspaces } from './ExtendedPdfToolsWorkspaces';
+import { PdfToolCustomIcon } from './PdfToolCustomIcons';
+
+export type PdfToolCategoryFilter =
+  | 'All'
+  | 'Workflows'
+  | 'Organize PDF'
+  | 'Optimize PDF'
+  | 'Convert PDF'
+  | 'Edit PDF'
+  | 'PDF Security'
+  | 'PDF Intelligence';
+
+export interface PdfCatalogToolItem {
+  id: ToolId;
+  label: string;
+  description: string;
+  categories: PdfToolCategoryFilter[];
+  icon: React.ComponentType<{ className?: string }>;
+  badgeColor: string;
+  isNew?: boolean;
+}
+
+export const PDF_TOOLS_CATALOG: PdfCatalogToolItem[] = [
+  {
+    id: 'merge-pdf',
+    label: 'Merge PDF',
+    description:
+      'Combine PDFs in the order you want with the easiest PDF merger available.',
+    categories: ['Organize PDF'],
+    icon: Merge,
+    badgeColor: 'bg-[#FFF0EE] text-[#E53935] dark:bg-[#E53935]/20 dark:text-[#FF8A80]',
+  },
+  {
+    id: 'split-pdf',
+    label: 'Split PDF',
+    description:
+      'Separate one page or a whole set for easy conversion into independent PDF files.',
+    categories: ['Organize PDF'],
+    icon: Scissors,
+    badgeColor: 'bg-[#FFF0EE] text-[#E53935] dark:bg-[#E53935]/20 dark:text-[#FF8A80]',
+  },
+  {
+    id: 'compress-pdf',
+    label: 'Compress PDF',
+    description:
+      'Reduce file size while optimizing for maximal PDF quality.',
+    categories: ['Optimize PDF'],
+    icon: Minimize2,
+    badgeColor: 'bg-[#EAFBF1] text-[#16A34A] dark:bg-[#16A34A]/20 dark:text-[#4ADE80]',
+  },
+  {
+    id: 'pdf-to-word',
+    label: 'PDF to Word',
+    description:
+      'Easily convert your PDF files into easy to edit DOC and DOCX documents.',
+    categories: ['Convert PDF'],
+    icon: FileOutput,
+    badgeColor: 'bg-[#EEF5FF] text-[#2563EB] dark:bg-[#2563EB]/20 dark:text-[#60A5FA]',
+  },
+  {
+    id: 'pdf-to-ppt',
+    label: 'PDF to PowerPoint',
+    description:
+      'Turn your PDF files into easy to edit PPT and PPTX slideshows.',
+    categories: ['Convert PDF'],
+    icon: Presentation,
+    badgeColor: 'bg-[#FFF3EB] text-[#EA580C] dark:bg-[#EA580C]/20 dark:text-[#FB923C]',
+  },
+  {
+    id: 'pdf-to-excel',
+    label: 'PDF to Excel',
+    description:
+      'Pull data straight from PDFs into Excel spreadsheets in a few short seconds.',
+    categories: ['Convert PDF'],
+    icon: FileSpreadsheet,
+    badgeColor: 'bg-[#EAFBF1] text-[#15803D] dark:bg-[#15803D]/20 dark:text-[#4ADE80]',
+  },
+  {
+    id: 'word-to-pdf',
+    label: 'Word to PDF',
+    description:
+      'Make DOC and DOCX files easy to read by converting them to PDF.',
+    categories: ['Convert PDF'],
+    icon: FileText,
+    badgeColor: 'bg-[#EEF5FF] text-[#2563EB] dark:bg-[#2563EB]/20 dark:text-[#60A5FA]',
+  },
+  {
+    id: 'ppt-to-pdf',
+    label: 'PowerPoint to PDF',
+    description:
+      'Make PPT and PPTX slideshows easy to view by converting them to PDF.',
+    categories: ['Convert PDF'],
+    icon: Presentation,
+    badgeColor: 'bg-[#FFF3EB] text-[#EA580C] dark:bg-[#EA580C]/20 dark:text-[#FB923C]',
+  },
+  {
+    id: 'excel-to-pdf',
+    label: 'Excel to PDF',
+    description:
+      'Make EXCEL spreadsheets easy to read by converting them to PDF.',
+    categories: ['Convert PDF'],
+    icon: FileSpreadsheet,
+    badgeColor: 'bg-[#EAFBF1] text-[#15803D] dark:bg-[#15803D]/20 dark:text-[#4ADE80]',
+  },
+  {
+    id: 'edit-pdf',
+    label: 'Edit PDF',
+    description:
+      'Add text, images, shapes or freehand annotations to a PDF document.',
+    categories: ['Edit PDF'],
+    icon: PenTool,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+    isNew: true,
+  },
+  {
+    id: 'pdf-to-img',
+    label: 'PDF to JPG',
+    description:
+      'Convert each PDF page into a JPG or extract all images contained in a PDF.',
+    categories: ['Convert PDF'],
+    icon: Images,
+    badgeColor: 'bg-[#FFFBEB] text-[#D97706] dark:bg-[#D97706]/20 dark:text-[#FBBF24]',
+  },
+  {
+    id: 'img-to-pdf',
+    label: 'JPG to PDF',
+    description:
+      'Convert JPG images to PDF in seconds. Easily adjust orientation and margins.',
+    categories: ['Convert PDF'],
+    icon: FileImage,
+    badgeColor: 'bg-[#FFFBEB] text-[#D97706] dark:bg-[#D97706]/20 dark:text-[#FBBF24]',
+  },
+  {
+    id: 'sign-pdf',
+    label: 'Sign PDF',
+    description:
+      'Sign yourself or stamp electronic signatures and verification dates onto your PDF.',
+    categories: ['PDF Security', 'Edit PDF'],
+    icon: PenTool,
+    badgeColor: 'bg-[#EEF5FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/20 dark:text-[#93C5FD]',
+  },
+  {
+    id: 'watermark-pdf',
+    label: 'Watermark',
+    description:
+      'Stamp an image or text over your PDF in seconds. Choose the typography, transparency and position.',
+    categories: ['Edit PDF'],
+    icon: Stamp,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'rotate-pdf',
+    label: 'Rotate PDF',
+    description:
+      'Rotate your PDFs the way you need them. You can even rotate multiple PDFs at once!',
+    categories: ['Organize PDF'],
+    icon: RotateCw,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'html-to-pdf',
+    label: 'HTML to PDF',
+    description:
+      'Convert webpages or HTML markup to PDF with clean typography and page styling.',
+    categories: ['Convert PDF'],
+    icon: Globe,
+    badgeColor: 'bg-[#FFFBEB] text-[#B45309] dark:bg-[#B45309]/20 dark:text-[#FCD34D]',
+  },
+  {
+    id: 'unlock-pdf',
+    label: 'Unlock PDF',
+    description:
+      'Remove PDF password security, giving you the freedom to use your PDFs as you want.',
+    categories: ['PDF Security'],
+    icon: Unlock,
+    badgeColor: 'bg-[#EEF5FF] text-[#0284C7] dark:bg-[#0284C7]/20 dark:text-[#7DD3FC]',
+  },
+  {
+    id: 'security-pdf',
+    label: 'Protect PDF',
+    description:
+      'Protect PDF files with a password. Encrypt PDF documents to prevent unauthorized access.',
+    categories: ['PDF Security'],
+    icon: Lock,
+    badgeColor: 'bg-[#EEF5FF] text-[#0284C7] dark:bg-[#0284C7]/20 dark:text-[#7DD3FC]',
+  },
+  {
+    id: 'organize-pdf',
+    label: 'Organize PDF',
+    description:
+      'Sort pages of your PDF file however you like. Delete PDF pages or add PDF pages to your document.',
+    categories: ['Organize PDF'],
+    icon: LayoutGrid,
+    badgeColor: 'bg-[#FFF0EE] text-[#E53935] dark:bg-[#E53935]/20 dark:text-[#FF8A80]',
+  },
+  {
+    id: 'pdf-to-pdfa',
+    label: 'PDF to PDF/A',
+    description:
+      'Transform your PDF to PDF/A, the ISO-standardized version of PDF for long-term archiving.',
+    categories: ['Convert PDF'],
+    icon: Archive,
+    badgeColor: 'bg-[#EEF5FF] text-[#2563EB] dark:bg-[#2563EB]/20 dark:text-[#60A5FA]',
+  },
+  {
+    id: 'pdf-to-kpf',
+    label: 'PDF to KPF',
+    description:
+      'Convert PDF documents into Amazon Kindle Package Format (.KPF) for Kindle Create and KDP publishing.',
+    categories: ['Convert PDF'],
+    icon: FileOutput,
+    badgeColor: 'bg-[#FFF3E6] text-[#E47911] dark:bg-[#E47911]/20 dark:text-[#FDBA74]',
+    isNew: true,
+  },
+  {
+    id: 'repair-pdf',
+    label: 'Repair PDF',
+    description:
+      'Repair a damaged PDF and recover data from corrupt PDF. Fix PDF files with our Repair tool.',
+    categories: ['Optimize PDF'],
+    icon: Wrench,
+    badgeColor: 'bg-[#EAFBF1] text-[#16A34A] dark:bg-[#16A34A]/20 dark:text-[#4ADE80]',
+  },
+  {
+    id: 'page-numbers-pdf',
+    label: 'Page numbers',
+    description:
+      'Add page numbers into PDFs with ease. Choose your positions, dimensions, typography.',
+    categories: ['Edit PDF'],
+    icon: Hash,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'scan-to-pdf',
+    label: 'Scan to PDF',
+    description:
+      'Capture document scans from your mobile device or camera and convert them to clean PDFs.',
+    categories: ['Organize PDF'],
+    icon: Camera,
+    badgeColor: 'bg-[#FFF0EE] text-[#E53935] dark:bg-[#E53935]/20 dark:text-[#FF8A80]',
+  },
+  {
+    id: 'ocr-pdf',
+    label: 'OCR PDF',
+    description:
+      'Easily convert scanned PDF into searchable and selectable documents (English & Swahili).',
+    categories: ['Optimize PDF', 'PDF Intelligence'],
+    icon: ScanText,
+    badgeColor: 'bg-[#EAFBF1] text-[#16A34A] dark:bg-[#16A34A]/20 dark:text-[#4ADE80]',
+  },
+  {
+    id: 'compare-pdf',
+    label: 'Compare PDF',
+    description:
+      'Show a side-by-side document comparison and easily spot changes between different file versions.',
+    categories: ['PDF Security', 'Edit PDF'],
+    icon: GitCompare,
+    badgeColor: 'bg-[#EEF5FF] text-[#0284C7] dark:bg-[#0284C7]/20 dark:text-[#7DD3FC]',
+  },
+  {
+    id: 'redact-pdf',
+    label: 'Redact PDF',
+    description:
+      'Redact text and graphics to permanently remove sensitive information from a PDF.',
+    categories: ['PDF Security'],
+    icon: EyeOff,
+    badgeColor: 'bg-[#EEF5FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/20 dark:text-[#93C5FD]',
+  },
+  {
+    id: 'crop-pdf',
+    label: 'Crop PDF',
+    description:
+      'Crop margins of PDF documents or select specific areas across single or all pages.',
+    categories: ['Edit PDF'],
+    icon: Crop,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'pdf-forms',
+    label: 'PDF Forms',
+    description:
+      'Create fillable PDF forms or fill existing forms effortlessly for fast data collection.',
+    categories: ['Edit PDF'],
+    icon: ClipboardList,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+    isNew: true,
+  },
+  {
+    id: 'summarize-pdf',
+    label: 'PDF Summarizer',
+    description:
+      'Distill lengthy PDFs into clear executive summaries, key bullet points, and word metrics.',
+    categories: ['PDF Intelligence'],
+    icon: Sparkles,
+    badgeColor: 'bg-[#EEF5FF] text-[#4F46E5] dark:bg-[#4F46E5]/20 dark:text-[#A5B4FC]',
+    isNew: true,
+  },
+  {
+    id: 'translate-pdf',
+    label: 'Translate PDF',
+    description:
+      'Easily translate PDF text while keeping layout, structure, and formatting intact.',
+    categories: ['PDF Intelligence'],
+    icon: Languages,
+    badgeColor: 'bg-[#EEF5FF] text-[#2563EB] dark:bg-[#2563EB]/20 dark:text-[#60A5FA]',
+    isNew: true,
+  },
+  {
+    id: 'pdf-to-markdown',
+    label: 'PDF to Markdown',
+    description:
+      'Convert PDF text to clean, structured Markdown files quickly and accurately.',
+    categories: ['Convert PDF', 'PDF Intelligence'],
+    icon: FileCode,
+    badgeColor: 'bg-[#EEF5FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/20 dark:text-[#93C5FD]',
+    isNew: true,
+  },
+  {
+    id: 'remove-watermark',
+    label: 'Watermark Remover',
+    description:
+      'Clean diagonal stamps and background watermarks while preserving drawings and crisp text.',
+    categories: ['Optimize PDF', 'Edit PDF'],
+    icon: Sparkles,
+    badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'workflow-pdf',
+    label: 'Create a workflow',
+    description:
+      'Create custom workflows with your favorite tools, automate tasks, and reuse them anytime.',
+    categories: ['Workflows'],
+    icon: Workflow,
+    badgeColor: 'bg-[#F5EFFF] text-[#6D28D9] dark:bg-[#6D28D9]/20 dark:text-[#C4B5FD]',
+  },
+];
+
+const CATEGORY_FILTER_TABS: PdfToolCategoryFilter[] = [
+  'All',
+  'Workflows',
+  'Organize PDF',
+  'Optimize PDF',
+  'Convert PDF',
+  'Edit PDF',
+  'PDF Security',
+  'PDF Intelligence',
+];
 
 interface PdfToolsViewProps {
   initialTool?: ToolId;
@@ -78,47 +447,12 @@ interface PdfToolsViewProps {
   onSaveNewDocument: (doc: StoredDocument) => Promise<void>;
   onUpdateDocument: (doc: StoredDocument) => Promise<void>;
   onOpenInEditor?: (doc: StoredDocument) => void;
+  onOpenScanner?: () => void;
   onUploadNewPdf?: (
     files: FileList | File[],
     openInEditorAfter?: boolean
   ) => Promise<void>;
 }
-
-const TOOL_CATEGORIES: {
-  category: string;
-  items: {
-    id: ToolId;
-    label: string;
-    icon: React.ComponentType<{ className?: string }>;
-  }[];
-}[] = [
-  {
-    category: 'Page Structure',
-    items: [
-      { id: 'split-pdf', label: 'Split PDF', icon: Scissors },
-      { id: 'merge-pdf', label: 'Merge PDF', icon: Merge },
-      { id: 'organize-pdf', label: 'Organize & Rotate', icon: LayoutGrid },
-    ],
-  },
-  {
-    category: 'Size & Format',
-    items: [
-      { id: 'compress-pdf', label: 'Compress PDF', icon: Minimize2 },
-      { id: 'pdf-to-word', label: 'PDF to Word', icon: FileOutput },
-      { id: 'word-to-pdf', label: 'Word to PDF', icon: FileText },
-      { id: 'pdf-to-img', label: 'PDF to Pictures', icon: Images },
-      { id: 'img-to-pdf', label: 'Photos to PDF', icon: FileImage },
-    ],
-  },
-  {
-    category: 'OCR & Security',
-    items: [
-      { id: 'remove-watermark', label: 'Watermark Remover', icon: Sparkles },
-      { id: 'ocr-pdf', label: 'OCR Text (EN/SW)', icon: ScanText },
-      { id: 'security-pdf', label: 'PDF Security', icon: Shield },
-    ],
-  },
-];
 
 export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   initialTool = 'merge-pdf',
@@ -128,16 +462,17 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   onSaveNewDocument,
   onUpdateDocument,
   onOpenInEditor,
+  onOpenScanner,
   onUploadNewPdf,
 }) => {
   const normalizedInitial =
-    initialTool === 'rotate-pdf'
-      ? 'organize-pdf'
-      : initialTool === 'scan-to-pdf' || initialTool === 'edit-pdf'
-        ? 'split-pdf'
-        : initialTool;
+    initialTool === 'scan-to-pdf' ? 'split-pdf' : initialTool;
 
   const [activeTool, setActiveTool] = useState<ToolId>(normalizedInitial);
+  const [selectedCategory, setSelectedCategory] =
+    useState<PdfToolCategoryFilter>('All');
+  const [toolSearchQuery, setToolSearchQuery] = useState('');
+  const [showFullCatalog, setShowFullCatalog] = useState<boolean>(true);
   const [selectedDocId, setSelectedDocId] = useState<string>(
     activeDocumentId || documents[0]?.id || ''
   );
@@ -145,14 +480,8 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   const [feedback, setFeedback] = useState<string | null>(null);
 
   useEffect(() => {
-    if (
-      initialTool &&
-      initialTool !== 'scan-to-pdf' &&
-      initialTool !== 'edit-pdf'
-    ) {
-      setActiveTool(
-        initialTool === 'rotate-pdf' ? 'organize-pdf' : initialTool
-      );
+    if (initialTool && initialTool !== 'scan-to-pdf') {
+      setActiveTool(initialTool);
     }
   }, [initialTool]);
 
@@ -1825,78 +2154,382 @@ Status: Approved for Production Distribution`;
     }
   };
 
+  const [externalUploadedFile, setExternalUploadedFile] =
+    useState<File | null>(null);
+
+  const filteredCatalogTools = PDF_TOOLS_CATALOG.filter((tool) => {
+    const matchesCategory =
+      selectedCategory === 'All' || tool.categories.includes(selectedCategory);
+    if (!matchesCategory) return false;
+    if (!toolSearchQuery.trim()) return true;
+    const q = toolSearchQuery.toLowerCase();
+    return (
+      tool.label.toLowerCase().includes(q) ||
+      tool.description.toLowerCase().includes(q) ||
+      tool.categories.some((c) => c.toLowerCase().includes(q))
+    );
+  });
+
+  const activeCatalogMeta =
+    PDF_TOOLS_CATALOG.find((t) => t.id === activeTool) || PDF_TOOLS_CATALOG[0];
+
+  const handleSelectCatalogTool = (toolId: ToolId) => {
+    if (toolId === 'scan-to-pdf' && onOpenScanner) {
+      onOpenScanner();
+      return;
+    }
+    setActiveTool(toolId);
+    setFeedback(null);
+    const workspaceEl = document.getElementById('active-pdf-tool-workspace');
+    if (workspaceEl) {
+      workspaceEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
+  const getToolUploadAccept = (toolId: ToolId): string => {
+    switch (toolId) {
+      case 'img-to-pdf':
+        return 'image/png,image/jpeg,image/webp,.jpg,.jpeg,.png,.webp';
+      case 'word-to-pdf':
+        return '.docx,.doc,.rtf,.txt,.md,.html,.htm,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/html,application/rtf';
+      case 'ppt-to-pdf':
+        return '.pptx,.ppt,.pdf,.txt,.md,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,text/plain';
+      case 'excel-to-pdf':
+        return '.csv,.tsv,.xlsx,.xls,.txt,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain';
+      case 'html-to-pdf':
+        return '.html,.htm,.xhtml,.txt,.md,text/html,text/plain';
+      default:
+        return 'application/pdf,.pdf';
+    }
+  };
+
+  const getToolUploadLabel = (toolId: ToolId): string => {
+    switch (toolId) {
+      case 'merge-pdf':
+        return 'Upload PDFs to Merge';
+      case 'img-to-pdf':
+        return 'Upload JPG / Photos';
+      case 'word-to-pdf':
+        return 'Upload Word (.DOCX/.DOC)';
+      case 'ppt-to-pdf':
+        return 'Upload PowerPoint / File';
+      case 'excel-to-pdf':
+        return 'Upload Excel / CSV';
+      case 'html-to-pdf':
+        return 'Upload HTML File';
+      default:
+        return 'Upload PDF File';
+    }
+  };
+
+  const handleUniversalToolFileUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    if (!e.target.files || e.target.files.length === 0) return;
+    if (activeTool === 'merge-pdf') {
+      await handleUploadFilesForMerge(e);
+      return;
+    }
+    if (activeTool === 'img-to-pdf') {
+      handleSelectImagesForPdf(e);
+      return;
+    }
+    if (activeTool === 'word-to-pdf') {
+      await handleUploadWordDocument(e);
+      return;
+    }
+    const files = Array.from(e.target.files);
+    e.target.value = '';
+    const first = files[0];
+    if (
+      activeTool === 'ppt-to-pdf' ||
+      activeTool === 'excel-to-pdf' ||
+      activeTool === 'html-to-pdf'
+    ) {
+      const clonedFile = new File(
+        [await first.arrayBuffer()],
+        first.name,
+        { type: first.type, lastModified: Date.now() }
+      );
+      setExternalUploadedFile(clonedFile);
+      return;
+    }
+
+    // Standard PDF upload for any PDF tool: save directly to vault & set as selectedDocId immediately
+    try {
+      setIsBusy(true);
+      let latestDoc: StoredDocument | null = null;
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const buf = new Uint8Array(await f.arrayBuffer());
+        const isPdfMagic =
+          buf.length >= 4 &&
+          buf[0] === 0x25 &&
+          buf[1] === 0x50 &&
+          buf[2] === 0x44 &&
+          buf[3] === 0x46;
+
+        if (isPdfMagic) {
+          const pageCount = await getPdfPageCount(buf);
+          const newDoc: StoredDocument = {
+            id: `doc-tool-up-${Date.now()}-${i}`,
+            name: f.name.toLowerCase().endsWith('.pdf')
+              ? f.name
+              : `${f.name}.pdf`,
+            category: 'Reports',
+            starred: false,
+            sizeBytes: buf.byteLength,
+            pageCount,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: buf,
+          };
+          await onSaveNewDocument(newDoc);
+          latestDoc = newDoc;
+        } else {
+          // Non-PDF file uploaded while on a PDF tool: convert cleanly via parseUploadedWordFile
+          const parsed = await parseUploadedWordFile(f);
+          const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
+            parsed.blocks,
+            {
+              pageSize: 'A4',
+              fontFamily: 'helvetica',
+              baseFontSize: 11.5,
+              lineSpacing: 1.4,
+              addPageNumbers: true,
+            }
+          );
+          const baseName = f.name.replace(/\.[^.]+$/, '') || 'Converted_Document';
+          const newDoc: StoredDocument = {
+            id: `doc-tool-conv-${Date.now()}-${i}`,
+            name: `${baseName}.pdf`,
+            category: 'Reports',
+            starred: false,
+            sizeBytes: pdfBytes.byteLength,
+            pageCount,
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            lastOpenedAt: new Date().toISOString(),
+            pdfData: pdfBytes,
+          };
+          await onSaveNewDocument(newDoc);
+          latestDoc = newDoc;
+        }
+      }
+      if (latestDoc) {
+        setSelectedDocId(latestDoc.id);
+        if (activeTool === 'edit-pdf' && onOpenInEditor) {
+          onOpenInEditor(latestDoc);
+        } else {
+          setFeedback(
+            `Uploaded "${first.name}" and loaded into ${activeCatalogMeta.label}.`
+          );
+        }
+      }
+    } catch {
+      if (onUploadNewPdf) {
+        await onUploadNewPdf(files, false);
+      }
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-      {/* Compact Header & Tool Grid */}
-      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4 space-y-3.5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <h1 className="text-base sm:text-lg font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
-            PDF & Word Tools
-          </h1>
+      {/* Comprehensive PDF Tools Directory & Category Filter Bar */}
+      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4 sm:p-6 space-y-4 shadow-2xs">
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+          <div className="space-y-1">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight text-[#14101B] dark:text-[#F4F1F8]">
+                Every tool you need to work with PDFs in one place
+              </h1>
+              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]">
+                {PDF_TOOLS_CATALOG.length} Tools
+              </span>
+            </div>
+            <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+              Merge, split, compress, convert, rotate, unlock, sign, watermark, OCR, and automate PDFs 100% locally.
+            </p>
+          </div>
 
-          {/* Active File Selector (for single-doc tools) */}
-          {activeTool !== 'merge-pdf' &&
-            activeTool !== 'img-to-pdf' &&
-            activeTool !== 'word-to-pdf' && (
-              <div className="flex items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-1.5">
-                <select
-                  value={selectedDocId}
-                  onChange={(e) => setSelectedDocId(e.target.value)}
-                  className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2 py-1.5 text-[#14101B] dark:text-[#F4F1F8] flex-1 min-w-0 max-w-[200px] sm:max-w-xs truncate cursor-pointer"
-                >
-                  {documents.map((doc) => (
-                    <option key={doc.id} value={doc.id}>
-                      {doc.name} ({doc.pageCount}p)
-                    </option>
-                  ))}
-                </select>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Search Tools */}
+            <div className="relative flex-1 sm:flex-initial sm:w-52">
+              <Search className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={toolSearchQuery}
+                onChange={(e) => setToolSearchQuery(e.target.value)}
+                placeholder="Search 30+ PDF tools..."
+                className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] focus:outline-none focus:border-[#4A1D5E]"
+              />
+            </div>
 
-                {onUploadNewPdf && (
-                  <label className="px-2.5 py-1.5 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-semibold flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0">
-                    <Upload className="w-3.5 h-3.5 shrink-0" />
-                    <span>Upload</span>
-                    <input
-                      type="file"
-                      accept="application/pdf,.pdf"
-                      className="hidden"
-                      onChange={async (e) => {
-                        if (e.target.files && e.target.files.length > 0) {
-                          const files = Array.from(e.target.files);
-                          e.target.value = '';
-                          await onUploadNewPdf(files, false);
-                        }
-                      }}
-                    />
-                  </label>
-                )}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setShowFullCatalog((prev) => !prev)}
+              className="px-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-1.5 cursor-pointer"
+            >
+              {showFullCatalog ? (
+                <>
+                  <ChevronUp className="w-3.5 h-3.5" />
+                  <span>Compact View</span>
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="w-3.5 h-3.5" />
+                  <span>Expand All Tools ({PDF_TOOLS_CATALOG.length})</span>
+                </>
+              )}
+            </button>
+          </div>
         </div>
 
-        {/* Clean 5-Column (3-Column on Phone) Tool Switcher Grid */}
-        <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 sm:gap-2">
-          {TOOL_CATEGORIES.flatMap((g) => g.items).map((t) => {
-            const Icon = t.icon;
-            const active = activeTool === t.id;
+        {/* Category Filter Tabs matching reference image */}
+        <div className="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+          {CATEGORY_FILTER_TABS.map((cat) => {
+            const isActive = selectedCategory === cat;
             return (
               <button
-                key={t.id}
+                key={cat}
+                type="button"
                 onClick={() => {
-                  setActiveTool(t.id);
-                  setFeedback(null);
+                  setSelectedCategory(cat);
+                  if (!showFullCatalog) setShowFullCatalog(true);
                 }}
-                className={`px-2 py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer truncate ${
-                  active
-                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-bold shadow-xs'
-                    : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                className={`px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-[#1D1D24] text-white dark:bg-[#F4F1F8] dark:text-[#0D0A12] shadow-xs'
+                    : 'bg-white dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#2C2836] dark:text-[#C5BED4] hover:border-[#4A1D5E] dark:hover:border-[#9D5CE5]'
                 }`}
               >
-                <Icon className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">{t.label}</span>
+                {cat}
               </button>
             );
           })}
         </div>
+
+        {/* Visual Tool Cards Grid (4 columns on desktop, matching reference screenshot) */}
+        {showFullCatalog ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 pt-1">
+            {filteredCatalogTools.map((tool) => {
+              const isSelected = activeTool === tool.id;
+              if (tool.id === 'workflow-pdf') {
+                return (
+                  <button
+                    key={tool.id}
+                    type="button"
+                    onClick={() => handleSelectCatalogTool(tool.id)}
+                    className={`group relative overflow-hidden text-left p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-4 bg-gradient-to-br from-[#FDE7E2] via-[#FCE1DA] to-[#FAD6CE] dark:from-[#341D22] dark:to-[#28151A] ${
+                      isSelected
+                        ? 'border-[#E53935] ring-2 ring-[#E53935]/30 shadow-sm'
+                        : 'border-[#F8C9BE] dark:border-[#4D2830] hover:shadow-md'
+                    }`}
+                  >
+                    <svg
+                      viewBox="0 0 180 120"
+                      fill="none"
+                      className="absolute right-0 bottom-0 w-36 h-24 pointer-events-none opacity-45"
+                    >
+                      <path
+                        d="M10 95C55 95 60 25 115 25C150 25 155 75 175 75"
+                        stroke="#E07A68"
+                        strokeWidth="2"
+                        strokeDasharray="4 4"
+                      />
+                      <rect
+                        x="95"
+                        y="12"
+                        width="24"
+                        height="24"
+                        rx="6"
+                        stroke="#E07A68"
+                        strokeWidth="1.8"
+                        strokeDasharray="3 3"
+                      />
+                    </svg>
+                    <div className="space-y-1.5 relative z-10">
+                      <h3 className="text-base font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                        Create a workflow
+                      </h3>
+                      <p className="text-xs leading-relaxed text-[#5C4744] dark:text-[#D9B8B2]">
+                        {tool.description}
+                      </p>
+                    </div>
+                    <div className="relative z-10 inline-flex items-center gap-1 text-xs font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                      <span>Create workflow</span>
+                      <span>↗</span>
+                    </div>
+                  </button>
+                );
+              }
+
+              return (
+                <button
+                  key={tool.id}
+                  type="button"
+                  onClick={() => handleSelectCatalogTool(tool.id)}
+                  className={`group relative text-left p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
+                    isSelected
+                      ? 'bg-[#FAF6FF] dark:bg-[#231934] border-[#4A1D5E] dark:border-[#9D5CE5] ring-2 ring-[#4A1D5E]/20 dark:ring-[#9D5CE5]/25 shadow-sm'
+                      : 'bg-white dark:bg-[#0D0A12]/80 border-[#ECE9F2] dark:border-[#261F33] hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 hover:shadow-md'
+                  }`}
+                >
+                  {tool.isNew && (
+                    <span className="absolute top-4 right-4 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E8F1FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/25 dark:text-[#93C5FD]">
+                      New!
+                    </span>
+                  )}
+
+                  <div className="space-y-3">
+                    <div className="w-11 h-11 shrink-0 transition-transform group-hover:scale-105">
+                      <PdfToolCustomIcon
+                        toolId={tool.id}
+                        className="w-11 h-11"
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <h3 className="text-[15px] font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1.5">
+                        <span>{tool.label}</span>
+                        {isSelected && (
+                          <span className="w-2 h-2 rounded-full bg-[#4A1D5E] dark:bg-[#9D5CE5] inline-block" />
+                        )}
+                      </h3>
+                      <p className="text-xs leading-relaxed text-[#6E667D] dark:text-[#A39BB5] line-clamp-3">
+                        {tool.description}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          /* Compact Horizontal Pill Switcher */
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            {filteredCatalogTools.map((tool) => {
+              const isSelected = activeTool === tool.id;
+              return (
+                <button
+                  key={tool.id}
+                  type="button"
+                  onClick={() => handleSelectCatalogTool(tool.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-2 whitespace-nowrap cursor-pointer transition-colors ${
+                    isSelected
+                      ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] font-bold shadow-xs'
+                      : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                  }`}
+                >
+                  <PdfToolCustomIcon toolId={tool.id} className="w-4 h-4 shrink-0" />
+                  <span>{tool.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {feedback && (
@@ -1912,7 +2545,69 @@ Status: Approved for Production Distribution`;
       )}
 
       {/* Active Tool Workspace */}
-      <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-6">
+      <div
+        id="active-pdf-tool-workspace"
+        className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-5 sm:p-6 space-y-5 shadow-2xs"
+      >
+        {/* Active Tool Header & Universal File Upload + Document Selector Bar */}
+        <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 pb-4 border-b border-[#E4DFEC] dark:border-[#261F33]">
+          <div className="flex items-center gap-3.5">
+            <PdfToolCustomIcon
+              toolId={activeTool}
+              className="w-11 h-11 shrink-0"
+            />
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  {activeCatalogMeta.label} Studio
+                </span>
+                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5]">
+                  Active Tool
+                </span>
+              </div>
+              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                {activeCatalogMeta.description}
+              </p>
+            </div>
+          </div>
+
+          {/* Universal File Upload & Active Document Selector (Available for EVERY Tool) */}
+          <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-1.5">
+            {activeTool !== 'merge-pdf' &&
+              activeTool !== 'img-to-pdf' &&
+              activeTool !== 'word-to-pdf' &&
+              activeTool !== 'ppt-to-pdf' &&
+              activeTool !== 'excel-to-pdf' &&
+              activeTool !== 'html-to-pdf' &&
+              documents.length > 0 && (
+                <select
+                  value={selectedDocId}
+                  onChange={(e) => setSelectedDocId(e.target.value)}
+                  className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2.5 py-1.5 text-[#14101B] dark:text-[#F4F1F8] flex-1 min-w-0 max-w-[220px] sm:max-w-xs truncate cursor-pointer"
+                >
+                  {documents.map((doc) => (
+                    <option key={doc.id} value={doc.id}>
+                      {doc.name} ({doc.pageCount}p)
+                    </option>
+                  ))}
+                </select>
+              )}
+
+            <label className="px-3.5 py-2 rounded-lg bg-[#E5322D] hover:bg-[#C8231E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-xs transition-colors">
+              <Upload className="w-3.5 h-3.5 shrink-0" />
+              <span>{getToolUploadLabel(activeTool)}</span>
+              <input
+                type="file"
+                accept={getToolUploadAccept(activeTool)}
+                multiple={
+                  activeTool === 'merge-pdf' || activeTool === 'img-to-pdf'
+                }
+                className="hidden"
+                onChange={handleUniversalToolFileUpload}
+              />
+            </label>
+          </div>
+        </div>
         {/* 1. MERGE PDF */}
         {activeTool === 'merge-pdf' && (
           <div className="space-y-6">
@@ -4536,6 +5231,26 @@ Status: Approved for Production Distribution`;
             )}
           </div>
         )}
+
+        {/* EXTENDED 18+ PDF TOOLS WORKSPACES */}
+        <ExtendedPdfToolsWorkspaces
+          activeTool={activeTool}
+          selectedDoc={selectedDoc}
+          documents={documents}
+          isBusy={isBusy}
+          setIsBusy={setIsBusy}
+          setFeedback={setFeedback}
+          onSaveNewDocument={onSaveNewDocument}
+          onUpdateDocument={onUpdateDocument}
+          onOpenInEditor={onOpenInEditor}
+          onSelectTool={(tool: ToolId) => setActiveTool(tool)}
+          onUploadPdfFiles={
+            onUploadNewPdf
+              ? async (files) => onUploadNewPdf(files, false)
+              : undefined
+          }
+          externalUploadedFile={externalUploadedFile}
+        />
       </div>
     </div>
   );

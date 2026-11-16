@@ -43,6 +43,11 @@ import {
   googleDriveSignIn,
   getGoogleDriveAccessTokenSync,
 } from '../services/cloudStorageService';
+import {
+  PDF_TOOLS_CATALOG,
+  PdfToolCategoryFilter,
+} from './PdfToolsView';
+import { PdfToolCustomIcon } from './PdfToolCustomIcons';
 
 interface DashboardViewProps {
   documents: StoredDocument[];
@@ -181,6 +186,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [isSelectionMode, setIsSelectionMode] = useState(false);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [batchBusyLabel, setBatchBusyLabel] = useState<string | null>(null);
+  const [showAllDashboardTools, setShowAllDashboardTools] = useState(false);
+  const [dashboardToolCategory, setDashboardToolCategory] =
+    useState<PdfToolCategoryFilter>('All');
 
   // Cloud Import / Export Modal & Plus (+) Upload Chooser state
   const [showPlusSourceMenu, setShowPlusSourceMenu] = useState(false);
@@ -413,35 +421,149 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onChange={handleImageUploadChange}
       />
 
-      {/* Quick PDF & Word Tools (Single Horizontal Row of 8 Core Tools) */}
+      {/* Quick PDF & Word Tools + Expandable 30+ PDF Tools Catalog */}
       <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-4 sm:p-5 space-y-3.5">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-            Quick PDF &amp; Word Tools
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+              {showAllDashboardTools
+                ? 'All PDF & Document Tools'
+                : 'Quick PDF & Word Tools'}
+            </h2>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]">
+              {PDF_TOOLS_CATALOG.length} Tools
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setShowAllDashboardTools((prev) => !prev)}
+              className="px-3 py-1 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer transition-colors"
+            >
+              {showAllDashboardTools
+                ? 'Show Compact Bar'
+                : `View All ${PDF_TOOLS_CATALOG.length} PDF Tools`}
+            </button>
+          </div>
         </div>
 
-        <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 sm:gap-3">
-          {QUICK_TOOLS.map((tool) => {
-            const Icon = tool.icon;
-            return (
+        {!showAllDashboardTools ? (
+          <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 sm:gap-3">
+            {QUICK_TOOLS.map((tool) => (
               <button
                 key={tool.id}
                 onClick={() => onOpenTool(tool.id)}
-                className="p-2.5 sm:p-3 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer flex flex-col items-center justify-center text-center gap-1.5"
+                className="group p-2.5 sm:p-3 rounded-xl hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] transition-colors cursor-pointer flex flex-col items-center justify-center text-center gap-1.5"
               >
-                <div
-                  className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 ${tool.accentClass}`}
-                >
-                  <Icon className="w-5 h-5" />
+                <div className="w-11 h-11 shrink-0 transition-transform group-hover:scale-105">
+                  <PdfToolCustomIcon toolId={tool.id} className="w-11 h-11" />
                 </div>
                 <span className="text-[11px] font-semibold text-[#14101B] dark:text-[#F4F1F8] leading-tight whitespace-nowrap">
                   {tool.label}
                 </span>
               </button>
-            );
-          })}
-        </div>
+            ))}
+          </div>
+        ) : (
+          <div className="space-y-3.5 pt-1">
+            {/* Category Filter Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+              {(
+                [
+                  'All',
+                  'Workflows',
+                  'Organize PDF',
+                  'Optimize PDF',
+                  'Convert PDF',
+                  'Edit PDF',
+                  'PDF Security',
+                  'PDF Intelligence',
+                ] as PdfToolCategoryFilter[]
+              ).map((cat) => {
+                const active = dashboardToolCategory === cat;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setDashboardToolCategory(cat)}
+                    className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
+                      active
+                        ? 'bg-[#1D1D24] text-white dark:bg-[#F4F1F8] dark:text-[#0D0A12]'
+                        : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#4B4458] dark:text-[#C5BED4] hover:border-[#4A1D5E]'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* 4-Column Visual Cards Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
+              {PDF_TOOLS_CATALOG.filter(
+                (t) =>
+                  dashboardToolCategory === 'All' ||
+                  t.categories.includes(dashboardToolCategory)
+              ).map((tool) => {
+                if (tool.id === 'workflow-pdf') {
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      onClick={() => onOpenTool(tool.id)}
+                      className="group relative overflow-hidden text-left p-5 rounded-2xl border border-[#F8C9BE] dark:border-[#4D2830] bg-gradient-to-br from-[#FDE7E2] via-[#FCE1DA] to-[#FAD6CE] dark:from-[#341D22] dark:to-[#28151A] hover:shadow-md transition-all cursor-pointer flex flex-col justify-between gap-4"
+                    >
+                      <div className="space-y-1.5 relative z-10">
+                        <h3 className="text-base font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                          Create a workflow
+                        </h3>
+                        <p className="text-xs leading-relaxed text-[#5C4744] dark:text-[#D9B8B2]">
+                          {tool.description}
+                        </p>
+                      </div>
+                      <div className="relative z-10 inline-flex items-center gap-1 text-xs font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                        <span>Create workflow</span>
+                        <span>↗</span>
+                      </div>
+                    </button>
+                  );
+                }
+
+                return (
+                  <button
+                    key={tool.id}
+                    type="button"
+                    onClick={() => onOpenTool(tool.id)}
+                    className="group relative text-left p-5 rounded-2xl border border-[#ECE9F2] dark:border-[#261F33] bg-white dark:bg-[#0D0A12]/80 hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 transition-all cursor-pointer flex flex-col justify-between gap-3 shadow-2xs hover:shadow-md"
+                  >
+                    {tool.isNew && (
+                      <span className="absolute top-4 right-4 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E8F1FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/25 dark:text-[#93C5FD]">
+                        New!
+                      </span>
+                    )}
+                    <div className="space-y-3">
+                      <div className="w-11 h-11 shrink-0 transition-transform group-hover:scale-105">
+                        <PdfToolCustomIcon
+                          toolId={tool.id}
+                          className="w-11 h-11"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <h3 className="text-[15px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                          {tool.label}
+                        </h3>
+                        <p className="text-xs leading-relaxed text-[#6E667D] dark:text-[#A39BB5] line-clamp-3">
+                          {tool.description}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Section 3: Unified File Manager ("All Files" Card Arrangement matching image_597cb37c.png) */}

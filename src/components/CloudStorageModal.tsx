@@ -22,6 +22,8 @@ import {
   googleDriveSignIn,
   googleDriveSignOut,
   getGoogleDriveAccessToken,
+  getGoogleDriveAccessTokenSync,
+  isGoogleDriveSignInInProgress,
   getCurrentGoogleUser,
   listGoogleDriveFiles,
   downloadGoogleDriveFile,
@@ -243,32 +245,30 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
     setHasConfirmedExport(false);
     setSelectedFileIds([]);
 
-    (async () => {
-      if (initialProvider === 'google-drive') {
-        const existingToken = await getGoogleDriveAccessToken();
-        if (existingToken) {
-          setGoogleNeedsAuth(false);
-          setGoogleUser(getCurrentGoogleUser());
-        } else {
-          setGoogleNeedsAuth(true);
-          if (!autoAuthTriggeredRef.current) {
-            autoAuthTriggeredRef.current = true;
-            handleGoogleLogin();
-          }
-        }
+    if (initialProvider === 'google-drive') {
+      const existingToken = getGoogleDriveAccessTokenSync();
+      if (existingToken) {
+        setGoogleNeedsAuth(false);
+        setGoogleUser(getCurrentGoogleUser());
       } else {
-        const existingDropbox = getDropboxAccessToken();
-        if (existingDropbox) {
-          setDropboxConnected(true);
-        } else {
-          setDropboxConnected(false);
-          if (!autoAuthTriggeredRef.current) {
-            autoAuthTriggeredRef.current = true;
-            handleDropboxConnect();
-          }
+        setGoogleNeedsAuth(true);
+        if (isGoogleDriveSignInInProgress() && !autoAuthTriggeredRef.current) {
+          autoAuthTriggeredRef.current = true;
+          void handleGoogleLogin();
         }
       }
-    })();
+    } else {
+      const existingDropbox = getDropboxAccessToken();
+      if (existingDropbox) {
+        setDropboxConnected(true);
+      } else {
+        setDropboxConnected(false);
+        if (!autoAuthTriggeredRef.current) {
+          autoAuthTriggeredRef.current = true;
+          void handleDropboxConnect();
+        }
+      }
+    }
   }, [
     isOpen,
     initialMode,

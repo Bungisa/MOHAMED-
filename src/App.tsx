@@ -317,10 +317,11 @@ export default function App() {
         const isWordOrText =
           !isPdf &&
           !isImage &&
-          (/\.(docx?|rtf|txt|md|csv|odt)$/i.test(lower) ||
+          (/\.(docx?|rtf|txt|md|csv|odt|html?|xhtml)$/i.test(lower) ||
             mime.includes('word') ||
             mime.includes('officedocument') ||
             mime.includes('rtf') ||
+            mime.includes('html') ||
             mime.startsWith('text/'));
 
         if (isPdf) {
@@ -1341,6 +1342,7 @@ export default function App() {
           }}
           onUpdateDocument={handleSaveUpdatedDocument}
           onOpenInEditor={(doc) => handleOpenDocumentInEditor(doc, false)}
+          onOpenScanner={() => navigateToView('scanner')}
           onUploadNewPdf={handleUploadPdfFiles}
         />
       )}

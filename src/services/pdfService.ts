@@ -12,8 +12,61 @@ import {
 } from 'pdf-lib';
 import { AnnotationElement, NativeTextBlock } from '../types/document';
 
+// Ensure Promise.try and Uint8Array.prototype.toHex are available for pdfjs-dist v5 across all browsers, WebViews, and Node.js
+if (typeof (Promise as unknown as { try?: unknown }).try !== 'function') {
+  (Promise as unknown as { try: (fn: (...args: unknown[]) => unknown, ...args: unknown[]) => Promise<unknown> }).try =
+    function (fn: (...args: unknown[]) => unknown, ...args: unknown[]) {
+      return new Promise((resolve) => resolve(fn(...args)));
+    };
+}
+
+if (typeof (Uint8Array.prototype as unknown as { toHex?: unknown }).toHex !== 'function') {
+  Object.defineProperty(Uint8Array.prototype, 'toHex', {
+    value: function (this: Uint8Array): string {
+      let hex = '';
+      for (let i = 0; i < this.length; i++) {
+        hex += this[i].toString(16).padStart(2, '0');
+      }
+      return hex;
+    },
+    configurable: true,
+    writable: true,
+  });
+}
+
+if (typeof (Map.prototype as unknown as { getOrInsertComputed?: unknown }).getOrInsertComputed !== 'function') {
+  Object.defineProperty(Map.prototype, 'getOrInsertComputed', {
+    value: function <K, V>(this: Map<K, V>, key: K, callbackfn: (key: K) => V): V {
+      if (this.has(key)) {
+        return this.get(key) as V;
+      }
+      const value = callbackfn(key);
+      this.set(key, value);
+      return value;
+    },
+    configurable: true,
+    writable: true,
+  });
+}
+
+if (typeof (Map.prototype as unknown as { getOrInsert?: unknown }).getOrInsert !== 'function') {
+  Object.defineProperty(Map.prototype, 'getOrInsert', {
+    value: function <K, V>(this: Map<K, V>, key: K, defaultValue: V): V {
+      if (this.has(key)) {
+        return this.get(key) as V;
+      }
+      this.set(key, defaultValue);
+      return defaultValue;
+    },
+    configurable: true,
+    writable: true,
+  });
+}
+
 // Configure PDF.js worker using Vite ?url asset resolution
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+if (typeof pdfWorkerUrl === 'string' && pdfWorkerUrl.length > 0) {
+  pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+}
 
 export interface RenderedPageInfo {
   pageNumber: number;
@@ -1019,34 +1072,44 @@ export async function compressPdfDocument(
   pdfBytes: Uint8Array,
   level: 'low' | 'medium' | 'extreme'
 ): Promise<Uint8Array> {
-  if (level === 'low') {
-    const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
-    const doc = await PDFDocument.load(cleanBytes, { ignoreEncryption: true });
-    return doc.save({ useObjectStreams: false });
+  const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
+  const doc = await PDFDocument.load(cleanBytes, { ignoreEncryption: true });
+  const streamCompressed = await doc.save({ useObjectStreams: true });
+
+  if (level === 'low' || typeof document === 'undefined') {
+    return streamCompressed.byteLength < pdfBytes.byteLength
+      ? streamCompressed
+      : streamCompressed;
   }
 
-  const scale = level === 'medium' ? 1.15 : 0.82;
-  const quality = level === 'medium' ? 0.68 : 0.45;
-  const pageCount = await getPdfPageCount(pdfBytes);
-  const compressedImages: string[] = [];
+  try {
+    const scale = level === 'medium' ? 1.15 : 0.82;
+    const quality = level === 'medium' ? 0.68 : 0.45;
+    const pageCount = await getPdfPageCount(pdfBytes);
+    const compressedImages: string[] = [];
 
-  for (let i = 1; i <= pageCount; i++) {
-    const rendered = await renderPdfPage(
-      pdfBytes,
-      i,
-      scale,
-      'image/jpeg',
-      quality
-    );
-    compressedImages.push(rendered.dataUrl);
+    for (let i = 1; i <= pageCount; i++) {
+      const rendered = await renderPdfPage(
+        pdfBytes,
+        i,
+        scale,
+        'image/jpeg',
+        quality
+      );
+      compressedImages.push(rendered.dataUrl);
+    }
+
+    const outDoc = await createPdfFromImages(compressedImages, {
+      pageSize: 'A4',
+      marginPt: 0,
+    });
+
+    return outDoc.byteLength < streamCompressed.byteLength
+      ? outDoc
+      : streamCompressed;
+  } catch {
+    return streamCompressed;
   }
-
-  const outDoc = await createPdfFromImages(compressedImages, {
-    pageSize: 'A4',
-    marginPt: 0,
-  });
-
-  return outDoc;
 }
 
 export type SaveCompressionQuality = 'low' | 'medium' | 'good' | 'high';

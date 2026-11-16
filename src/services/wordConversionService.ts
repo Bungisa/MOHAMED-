@@ -72,9 +72,379 @@ function sanitizeWinAnsiText(input: string): string {
     .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '');
 }
 
+export function wordBlocksToReadableText(blocks: WordContentBlock[]): string {
+  return blocks
+    .map((b) => {
+      if (b.type === 'table' && b.rows) {
+        return b.rows.map((r) => r.join(' | ')).join('\n');
+      }
+      if (b.type === 'h1') return `# ${b.text || ''}`;
+      if (b.type === 'h2') return `## ${b.text || ''}`;
+      if (b.type === 'h3') return `### ${b.text || ''}`;
+      return b.text || '';
+    })
+    .filter((line) => line.trim().length > 0)
+    .join('\n\n');
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&ndash;/gi, '-')
+    .replace(/&mdash;/gi, ' - ')
+    .replace(/&bull;/gi, '* ')
+    .replace(/&copy;/gi, '(c)')
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCharCode(parseInt(hex, 16))
+    );
+}
+
 /**
- * Parses an uploaded Word file (.docx, .doc, .rtf, .txt) into structured blocks
- * and plain editable text for preview and PDF generation.
+ * Parses any HTML document or fragment into structured Word/PDF content blocks
+ * (headings, paragraphs, bullet/numbered lists, tables, and embedded images)
+ * while stripping <style>, <script>, <head>, comments, and raw HTML tags so
+ * raw code is never copied into the output PDF.
+ */
+export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
+  if (!html || !html.trim()) return [];
+
+  // Extract <title> before stripping <head>
+  const titleMatch = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const extractedTitle = titleMatch
+    ? decodeHtmlEntities(titleMatch[1].replace(/\s+/g, ' ').trim())
+    : '';
+
+  // Strip comments, <script>, <style>, <noscript>, <svg>, <template>, <iframe>, and <head>
+  const cleanedHtml = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
+    .replace(/<template\b[^>]*>[\s\S]*?<\/template>/gi, '')
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
+    .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '');
+
+  const blocks: WordContentBlock[] = [];
+
+  if (typeof DOMParser !== 'undefined') {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(cleanedHtml, 'text/html');
+    // Also remove any stray script/style/meta/link inside body
+    doc
+      .querySelectorAll('script, style, noscript, svg, template, meta, link')
+      .forEach((el) => el.remove());
+
+    const BLOCK_TAGS = new Set([
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'p',
+      'ul',
+      'ol',
+      'dl',
+      'table',
+      'blockquote',
+      'pre',
+      'div',
+      'section',
+      'article',
+      'main',
+      'header',
+      'footer',
+      'aside',
+      'nav',
+      'form',
+      'fieldset',
+      'figure',
+      'figcaption',
+      'details',
+      'summary',
+      'address',
+      'hr',
+    ]);
+
+    const hasBlockChild = (el: Element): boolean => {
+      for (let i = 0; i < el.children.length; i++) {
+        const childTag = el.children[i].tagName.toLowerCase();
+        if (BLOCK_TAGS.has(childTag)) return true;
+        if (hasBlockChild(el.children[i])) return true;
+      }
+      return false;
+    };
+
+    const normalizeText = (raw: string | null | undefined): string =>
+      (raw || '').replace(/\s+/g, ' ').trim();
+
+    const walkNode = (node: Element) => {
+      const tag = node.tagName.toLowerCase();
+
+      if (tag === 'hr') return;
+
+      if (
+        tag === 'h1' ||
+        tag === 'h2' ||
+        tag === 'h3' ||
+        tag === 'h4' ||
+        tag === 'h5' ||
+        tag === 'h6'
+      ) {
+        const text = normalizeText(node.textContent);
+        if (text) {
+          const mappedType: 'h1' | 'h2' | 'h3' =
+            tag === 'h1' ? 'h1' : tag === 'h2' ? 'h2' : 'h3';
+          blocks.push({
+            type: mappedType,
+            text,
+            bold: true,
+          });
+        }
+        return;
+      }
+
+      if (tag === 'table') {
+        const rows: string[][] = [];
+        const trList = node.querySelectorAll('tr');
+        trList.forEach((tr) => {
+          const rowCells: string[] = [];
+          tr.querySelectorAll(':scope > th, :scope > td').forEach((cell) => {
+            rowCells.push(normalizeText(cell.textContent));
+          });
+          if (rowCells.some((c) => c.length > 0)) {
+            rows.push(rowCells);
+          }
+        });
+        if (rows.length > 0) {
+          blocks.push({ type: 'table', rows });
+        }
+        return;
+      }
+
+      if (tag === 'ul' || tag === 'ol') {
+        const items = node.querySelectorAll(':scope > li');
+        items.forEach((li, idx) => {
+          const text = normalizeText(li.textContent);
+          if (text) {
+            const prefix = tag === 'ol' ? `${idx + 1}. ` : '* ';
+            blocks.push({
+              type: 'li',
+              text: `${prefix}${text}`,
+            });
+          }
+        });
+        return;
+      }
+
+      if (tag === 'dl') {
+        Array.from(node.children).forEach((child) => {
+          const cTag = child.tagName.toLowerCase();
+          const text = normalizeText(child.textContent);
+          if (!text) return;
+          if (cTag === 'dt') {
+            blocks.push({ type: 'p', text, bold: true });
+          } else if (cTag === 'dd') {
+            blocks.push({ type: 'li', text: `* ${text}` });
+          }
+        });
+        return;
+      }
+
+      if (tag === 'img') {
+        const src = node.getAttribute('src') || '';
+        if (src.startsWith('data:image/')) {
+          blocks.push({ type: 'image', imageDataUrl: src });
+        }
+        return;
+      }
+
+      if (tag === 'pre') {
+        const rawPre = (node.textContent || '').replace(/\r\n/g, '\n').trim();
+        if (rawPre) {
+          rawPre.split('\n').forEach((line) => {
+            if (line.trim()) {
+              blocks.push({ type: 'p', text: line });
+            }
+          });
+        }
+        return;
+      }
+
+      if (tag === 'p' || tag === 'blockquote' || tag === 'figcaption') {
+        node.querySelectorAll('img').forEach((img) => {
+          const src = img.getAttribute('src') || '';
+          if (src.startsWith('data:image/')) {
+            blocks.push({ type: 'image', imageDataUrl: src });
+          }
+        });
+
+        const text = normalizeText(node.textContent);
+        if (text) {
+          const strongEl = node.querySelector('strong, b');
+          const emEl = node.querySelector('em, i');
+          const hasStrong =
+            strongEl !== null &&
+            normalizeText(strongEl.textContent).length >= text.length * 0.75;
+          const hasEm =
+            emEl !== null &&
+            normalizeText(emEl.textContent).length >= text.length * 0.75;
+          blocks.push({
+            type: 'p',
+            text,
+            bold: hasStrong,
+            italic: hasEm || tag === 'blockquote',
+          });
+        }
+        return;
+      }
+
+      // Generic container or inline element (div, section, article, header, span, etc.)
+      if (!hasBlockChild(node)) {
+        node.querySelectorAll('img').forEach((img) => {
+          const src = img.getAttribute('src') || '';
+          if (src.startsWith('data:image/')) {
+            blocks.push({ type: 'image', imageDataUrl: src });
+          }
+        });
+        const text = normalizeText(node.textContent);
+        if (text) {
+          const isBold =
+            tag === 'strong' ||
+            tag === 'b' ||
+            tag === 'summary' ||
+            (node.querySelector('strong, b') !== null &&
+              normalizeText(node.querySelector('strong, b')?.textContent)
+                .length >=
+                text.length * 0.75);
+          blocks.push({
+            type: 'p',
+            text,
+            bold: isBold,
+          });
+        }
+        return;
+      }
+
+      // Element has block children: flush any inline text runs between block children
+      let inlineBuffer = '';
+      const flushInline = () => {
+        const clean = inlineBuffer.replace(/\s+/g, ' ').trim();
+        if (clean) {
+          blocks.push({ type: 'p', text: clean });
+        }
+        inlineBuffer = '';
+      };
+
+      node.childNodes.forEach((child) => {
+        if (child.nodeType === 3) {
+          // TEXT_NODE
+          inlineBuffer += ' ' + (child.textContent || '');
+        } else if (child.nodeType === 1) {
+          const childEl = child as Element;
+          const childTag = childEl.tagName.toLowerCase();
+          if (childTag === 'br') {
+            flushInline();
+          } else if (BLOCK_TAGS.has(childTag) || hasBlockChild(childEl)) {
+            flushInline();
+            walkNode(childEl);
+          } else {
+            inlineBuffer += ' ' + (childEl.textContent || '');
+          }
+        }
+      });
+      flushInline();
+    };
+
+    if (doc.body) {
+      walkNode(doc.body);
+    }
+  } else {
+    // Fallback structured parser when DOMParser is unavailable (e.g. Node CLI tests)
+    const tableBlocks: string[][][] = [];
+    const withTablePlaceholders = cleanedHtml.replace(
+      /<table\b[^>]*>([\s\S]*?)<\/table>/gi,
+      (_, tableInner: string) => {
+        const rows: string[][] = [];
+        const trMatches = tableInner.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/gi) || [];
+        for (const tr of trMatches) {
+          const cellMatches =
+            tr.match(/<(?:th|td)\b[^>]*>([\s\S]*?)<\/(?:th|td)>/gi) || [];
+          const cells = cellMatches.map((c) =>
+            decodeHtmlEntities(
+              c
+                .replace(/<[^>]+>/g, ' ')
+                .replace(/\s+/g, ' ')
+                .trim()
+            )
+          );
+          if (cells.some((c) => c.length > 0)) {
+            rows.push(cells);
+          }
+        }
+        if (rows.length > 0) {
+          const idx = tableBlocks.length;
+          tableBlocks.push(rows);
+          return `\n__HTML_TABLE_${idx}__\n`;
+        }
+        return '\n';
+      }
+    );
+
+    const structuredText = decodeHtmlEntities(
+      withTablePlaceholders
+        .replace(/<h1\b[^>]*>([\s\S]*?)<\/h1>/gi, '\n# $1\n')
+        .replace(/<h2\b[^>]*>([\s\S]*?)<\/h2>/gi, '\n## $1\n')
+        .replace(/<h[3-6]\b[^>]*>([\s\S]*?)<\/h[3-6]>/gi, '\n### $1\n')
+        .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, '\n* $1\n')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(
+          /<\/(?:p|div|section|article|header|footer|tr|blockquote|pre)>/gi,
+          '\n\n'
+        )
+        .replace(/<[^>]+>/g, ' ')
+    );
+
+    const lines = structuredText.split('\n');
+    for (const rawLine of lines) {
+      const line = rawLine.replace(/\s+/g, ' ').trim();
+      if (!line) continue;
+      const tblMatch = line.match(/^__HTML_TABLE_(\d+)__$/);
+      if (tblMatch) {
+        const rows = tableBlocks[Number(tblMatch[1])];
+        if (rows) blocks.push({ type: 'table', rows });
+        continue;
+      }
+      blocks.push(...plainTextToWordBlocks(line));
+    }
+  }
+
+  // Prepend <title> if present and not already duplicated by the first heading
+  if (
+    extractedTitle &&
+    (!blocks[0] ||
+      (blocks[0].text || '').toLowerCase() !== extractedTitle.toLowerCase())
+  ) {
+    blocks.unshift({
+      type: 'h1',
+      text: extractedTitle,
+      bold: true,
+    });
+  }
+
+  return blocks;
+}
+
+/**
+ * Parses an uploaded Word, HTML, RTF, Markdown, or Text file (.docx, .doc, .html, .htm, .rtf, .txt, .md)
+ * into structured blocks and plain editable text for preview and PDF generation.
  */
 export async function parseUploadedWordFile(file: File): Promise<{
   blocks: WordContentBlock[];
@@ -96,15 +466,7 @@ export async function parseUploadedWordFile(file: File): Promise<{
       const html = htmlResult.value || '';
       const blocks = parseHtmlIntoWordBlocks(html);
       const plainText =
-        rawTextResult.value?.trim() ||
-        blocks
-          .map((b) =>
-            b.type === 'table' && b.rows
-              ? b.rows.map((r) => r.join(' | ')).join('\n')
-              : b.text || ''
-          )
-          .filter(Boolean)
-          .join('\n\n');
+        wordBlocksToReadableText(blocks) || rawTextResult.value?.trim() || '';
 
       if (blocks.length > 0 || plainText.length > 0) {
         return {
@@ -121,9 +483,34 @@ export async function parseUploadedWordFile(file: File): Promise<{
     }
   }
 
-  // 2. Fallback for .txt, .rtf, or legacy .doc files
+  // 2. Decode UTF-8 text for .html, .htm, .rtf, .doc, .md, or .txt
   const decoder = new TextDecoder('utf-8', { fatal: false });
   let rawStr = decoder.decode(buf);
+
+  // Check if file is HTML (by extension, MIME type, or HTML tags in content)
+  const isHtmlContent =
+    lowerName.endsWith('.html') ||
+    lowerName.endsWith('.htm') ||
+    lowerName.endsWith('.xhtml') ||
+    (file.type || '').toLowerCase().includes('html') ||
+    /<(?:!doctype\s+html|html|head|body|style|div|table|h[1-6]|p|section|article|ul|ol)\b/i.test(
+      rawStr
+    );
+
+  if (isHtmlContent) {
+    const blocks = parseHtmlIntoWordBlocks(rawStr);
+    const readableText = wordBlocksToReadableText(blocks);
+    return {
+      blocks:
+        blocks.length > 0
+          ? blocks
+          : plainTextToWordBlocks(
+              readableText || `Webpage imported from ${file.name}`
+            ),
+      plainText: readableText,
+      htmlPreview: rawStr,
+    };
+  }
 
   if (lowerName.endsWith('.rtf') || rawStr.startsWith('{\\rtf')) {
     // Strip RTF control words and groups
@@ -161,104 +548,6 @@ export async function parseUploadedWordFile(file: File): Promise<{
     plainText: cleanText,
     htmlPreview: '',
   };
-}
-
-function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
-  if (!html || !html.trim()) return [];
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-  const blocks: WordContentBlock[] = [];
-
-  const walkNode = (node: Element) => {
-    const tag = node.tagName.toLowerCase();
-
-    if (tag === 'h1' || tag === 'h2' || tag === 'h3') {
-      const text = (node.textContent || '').trim();
-      if (text) {
-        blocks.push({
-          type: tag as 'h1' | 'h2' | 'h3',
-          text,
-          bold: true,
-        });
-      }
-      return;
-    }
-
-    if (tag === 'table') {
-      const rows: string[][] = [];
-      const trList = node.querySelectorAll('tr');
-      trList.forEach((tr) => {
-        const rowCells: string[] = [];
-        tr.querySelectorAll('th, td').forEach((cell) => {
-          rowCells.push((cell.textContent || '').trim().replace(/\s+/g, ' '));
-        });
-        if (rowCells.some((c) => c.length > 0)) {
-          rows.push(rowCells);
-        }
-      });
-      if (rows.length > 0) {
-        blocks.push({ type: 'table', rows });
-      }
-      return;
-    }
-
-    if (tag === 'ul' || tag === 'ol') {
-      node.querySelectorAll(':scope > li').forEach((li, idx) => {
-        const text = (li.textContent || '').trim();
-        if (text) {
-          const prefix = tag === 'ol' ? `${idx + 1}. ` : '* ';
-          blocks.push({
-            type: 'li',
-            text: `${prefix}${text}`,
-          });
-        }
-      });
-      return;
-    }
-
-    if (tag === 'img') {
-      const src = node.getAttribute('src') || '';
-      if (src.startsWith('data:image/')) {
-        blocks.push({ type: 'image', imageDataUrl: src });
-      }
-      return;
-    }
-
-    if (tag === 'p') {
-      // Check for embedded images inside paragraph
-      node.querySelectorAll('img').forEach((img) => {
-        const src = img.getAttribute('src') || '';
-        if (src.startsWith('data:image/')) {
-          blocks.push({ type: 'image', imageDataUrl: src });
-        }
-      });
-
-      const text = (node.textContent || '').trim();
-      if (text) {
-        const hasStrong =
-          node.querySelector('strong, b') !== null &&
-          (node.querySelector('strong, b')?.textContent || '').trim().length >=
-            text.length * 0.8;
-        const hasEm =
-          node.querySelector('em, i') !== null &&
-          (node.querySelector('em, i')?.textContent || '').trim().length >=
-            text.length * 0.8;
-        blocks.push({
-          type: 'p',
-          text,
-          bold: hasStrong,
-          italic: hasEm,
-        });
-      }
-      return;
-    }
-
-    // Recurse into container tags (div, section, body, etc.)
-    Array.from(node.children).forEach((child) => walkNode(child));
-  };
-
-  Array.from(doc.body.children).forEach((child) => walkNode(child));
-  return blocks;
 }
 
 export function plainTextToWordBlocks(plainText: string): WordContentBlock[] {
