@@ -81,27 +81,22 @@ public class PdfOpenActivity extends Activity {
         }
 
         final Uri targetUri = pdfUri;
-        final String displayFilename = resolveDisplayName(targetUri);
+        final String resolvedMime = getContentResolver().getType(targetUri);
+        final String displayFilename = resolveDisplayName(targetUri, resolvedMime);
 
         executor.execute(() -> {
             try {
                 ContentResolver resolver = getContentResolver();
                 try (InputStream inputStream = resolver.openInputStream(targetUri)) {
                     if (inputStream == null) {
-                        showToastOnUi("Unable to read the selected PDF file.");
+                        showToastOnUi("Unable to read the selected document or book.");
                         finish();
                         return;
                     }
 
-                    // Read and verify %PDF- signature first
-                    byte[] pdfBytes = readAllBytes(inputStream);
-                    if (pdfBytes.length < 5
-                            || pdfBytes[0] != '%'
-                            || pdfBytes[1] != 'P'
-                            || pdfBytes[2] != 'D'
-                            || pdfBytes[3] != 'F'
-                            || pdfBytes[4] != '-') {
-                        showToastOnUi("Unsupported or corrupted PDF file.");
+                    byte[] fileBytes = readAllBytes(inputStream);
+                    if (fileBytes.length == 0) {
+                        showToastOnUi("The selected file is empty.");
                         finish();
                         return;
                     }
@@ -112,9 +107,15 @@ public class PdfOpenActivity extends Activity {
                             ? hostName
                             : "https://" + hostName;
 
+                    String safeMime = resolvedMime != null && !resolvedMime.trim().isEmpty()
+                            ? resolvedMime
+                            : "application/octet-stream";
+
                     String endpoint = baseUrl
                             + "/api/android-open-pdf?filename="
-                            + URLEncoder.encode(displayFilename, "UTF-8");
+                            + URLEncoder.encode(displayFilename, "UTF-8")
+                            + "&mime="
+                            + URLEncoder.encode(safeMime, "UTF-8");
 
                     URL url = new URL(endpoint);
                     HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -122,12 +123,13 @@ public class PdfOpenActivity extends Activity {
                     conn.setDoOutput(true);
                     conn.setConnectTimeout(15000);
                     conn.setReadTimeout(30000);
-                    conn.setRequestProperty("Content-Type", "application/pdf");
+                    conn.setRequestProperty("Content-Type", safeMime);
                     conn.setRequestProperty("X-Pdf-Filename", displayFilename);
-                    conn.setFixedLengthStreamingMode(pdfBytes.length);
+                    conn.setRequestProperty("X-Pdf-Mimetype", safeMime);
+                    conn.setFixedLengthStreamingMode(fileBytes.length);
 
                     try (OutputStream os = conn.getOutputStream()) {
-                        os.write(pdfBytes);
+                        os.write(fileBytes);
                         os.flush();
                     }
 
@@ -148,15 +150,15 @@ public class PdfOpenActivity extends Activity {
                             return;
                         }
                     } else {
-                        showToastOnUi("Could not open PDF in ElimikaPDF (status " + status + ").");
+                        showToastOnUi("Could not open file in ElimikaPDF Reader (status " + status + ").");
                         finish();
                     }
                 }
             } catch (SecurityException se) {
-                showToastOnUi("Permission denied while reading PDF URI.");
+                showToastOnUi("Permission denied while reading document URI.");
                 finish();
             } catch (Exception e) {
-                showToastOnUi("Failed to open PDF: " + e.getMessage());
+                showToastOnUi("Failed to open document: " + e.getMessage());
                 finish();
             }
         });
@@ -177,7 +179,7 @@ public class PdfOpenActivity extends Activity {
         }
     }
 
-    private String resolveDisplayName(Uri uri) {
+    private String resolveDisplayName(Uri uri, String mimeType) {
         String result = null;
         if ("content".equalsIgnoreCase(uri.getScheme())) {
             try (Cursor cursor = getContentResolver().query(uri, null, null, null, null)) {
@@ -194,10 +196,26 @@ public class PdfOpenActivity extends Activity {
             result = uri.getLastPathSegment();
         }
         if (result == null || result.trim().isEmpty()) {
-            result = "Document.pdf";
+            result = "Document";
         }
-        if (!result.toLowerCase().endsWith(".pdf")) {
-            result = result + ".pdf";
+        // Only append an extension if the resolved display name has no extension at all
+        if (!result.contains(".")) {
+            String lowerMime = mimeType != null ? mimeType.toLowerCase() : "";
+            if (lowerMime.contains("epub")) {
+                result = result + ".epub";
+            } else if (lowerMime.contains("kpf")) {
+                result = result + ".kpf";
+            } else if (lowerMime.contains("html") || lowerMime.contains("xhtml")) {
+                result = result + ".html";
+            } else if (lowerMime.contains("mobi")) {
+                result = result + ".mobi";
+            } else if (lowerMime.contains("wordprocessingml")) {
+                result = result + ".docx";
+            } else if (lowerMime.contains("opendocument.text")) {
+                result = result + ".odt";
+            } else {
+                result = result + ".pdf";
+            }
         }
         return result;
     }

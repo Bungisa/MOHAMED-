@@ -42,7 +42,7 @@ import {
   plainTextToWordBlocks,
   generatePdfFromWordBlocks,
   parseHtmlIntoWordBlocks,
-  sanitizeHtmlForReader,
+  prepareBrowserFidelityHtml,
   wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
 import {
@@ -806,6 +806,16 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       setHtmlFileName(base);
       setHtmlSourceInput(converted.rawHtmlContent);
       setHtmlReaderFormatBadge(converted.sourceFormat.toUpperCase());
+      if (
+        ['html', 'htm', 'xhtml', 'svg'].includes(
+          converted.sourceFormat.toLowerCase()
+        ) ||
+        /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+          converted.rawHtmlContent
+        )
+      ) {
+        setHtmlReaderViewMode('webpage');
+      }
 
       const newDoc: StoredDocument = {
         id: `doc-html-${Date.now()}`,
@@ -830,7 +840,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         doc: newDoc,
       });
       setFeedback(
-        `Loaded "${file.name}" (${converted.sourceFormat.toUpperCase()}) into Reader & converted to "${converted.outputPdfName}" (${converted.pageCount} ${
+        `Loaded "${file.name}" (${converted.sourceFormat.toUpperCase()}) into Browser Reader & converted to "${converted.outputPdfName}" (${converted.pageCount} ${
           converted.pageCount === 1 ? 'page' : 'pages'
         }, ${formatBytes(converted.pdfBytes.byteLength)}).`
       );
@@ -840,6 +850,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         const base = file.name.replace(/\.[^.]+$/, '');
         setHtmlFileName(base || 'Webpage_Converted');
         setHtmlSourceInput(text);
+        setHtmlReaderViewMode('webpage');
         await buildPdfFromHtmlMarkup(text, file.name, false);
       }
     } finally {
@@ -847,10 +858,10 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
     }
   };
 
-  // HTML & eBook Reader state
+  // HTML & eBook Reader state — defaults to 'webpage' (Full Browser View) so animations, colors, and pictures are immediately visible
   const [htmlReaderViewMode, setHtmlReaderViewMode] = useState<
     'reflow' | 'webpage' | 'source'
-  >('reflow');
+  >('webpage');
   const [htmlReaderTheme, setHtmlReaderTheme] = useState<
     'paper' | 'sepia' | 'dusk' | 'night'
   >('paper');
@@ -870,12 +881,19 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   useEffect(() => {
     if (activeTool !== 'html-reader' || !selectedDoc) return;
     const base = selectedDoc.name.replace(/\.pdf$/i, '');
+    const fmt = (selectedDoc.sourceFormat || 'html').toLowerCase();
     setHtmlFileName(base);
-    setHtmlReaderFormatBadge(
-      (selectedDoc.sourceFormat || 'html').toUpperCase()
-    );
+    setHtmlReaderFormatBadge(fmt.toUpperCase());
     if (selectedDoc.rawHtmlContent && selectedDoc.rawHtmlContent.trim()) {
       setHtmlSourceInput(selectedDoc.rawHtmlContent);
+      if (
+        ['html', 'htm', 'xhtml', 'svg'].includes(fmt) ||
+        /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+          selectedDoc.rawHtmlContent
+        )
+      ) {
+        setHtmlReaderViewMode('webpage');
+      }
     } else if (selectedDoc.ocrText && selectedDoc.ocrText.trim()) {
       const blocks = plainTextToWordBlocks(selectedDoc.ocrText);
       setHtmlSourceInput(wordBlocksToCleanHtml(blocks, base));
@@ -2884,8 +2902,8 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
             <div className="rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[300px] shadow-2xs">
               <iframe
                 title="HTML to PDF Rendered Preview"
-                sandbox=""
-                srcDoc={htmlSourceInput}
+                sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                srcDoc={prepareBrowserFidelityHtml(htmlSourceInput, htmlFileName)}
                 className="w-full h-full border-0 bg-white"
               />
             </div>
@@ -3962,28 +3980,10 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
           ? 'font-mono'
           : 'font-sans';
 
-    const fullHtmlDocument = /<html\b/i.test(htmlSourceInput)
-      ? htmlSourceInput
-      : `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>${htmlFileName}</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; color: #14101B; max-width: 820px; margin: 0 auto; padding: 28px; line-height: 1.65; }
-    h1, h2, h3 { color: #2D123B; margin-top: 1.3em; margin-bottom: 0.45em; }
-    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-    th, td { border: 1px solid #CBD5E1; padding: 8px 10px; text-align: left; }
-    th { background: #F1F5F9; font-weight: 700; }
-    blockquote { border-left: 4px solid #4A1D5E; margin: 12px 0; padding-left: 14px; color: #4B4458; font-style: italic; }
-    pre, code { background: #F8FAFC; border-radius: 6px; padding: 2px 6px; font-family: monospace; }
-    img { max-width: 100%; height: auto; border-radius: 8px; }
-  </style>
-</head>
-<body>
-${sanitizeHtmlForReader(htmlSourceInput, htmlFileName)}
-</body>
-</html>`;
+    const fullHtmlDocument = prepareBrowserFidelityHtml(
+      htmlSourceInput,
+      htmlFileName
+    );
 
     return (
       <div className="space-y-5">
@@ -4061,8 +4061,8 @@ ${sanitizeHtmlForReader(htmlSourceInput, htmlFileName)}
           <div className="inline-flex items-center p-1 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
             {(
               [
-                { id: 'reflow', label: 'Reflowable Reader' },
-                { id: 'webpage', label: 'Webpage View' },
+                { id: 'webpage', label: 'Browser View (Full HTML, Colors & Animations)' },
+                { id: 'reflow', label: 'Reflowable Book Reader' },
                 { id: 'source', label: 'HTML Code Editor' },
               ] as const
             ).map((tab) => (
@@ -4404,10 +4404,10 @@ ${sanitizeHtmlForReader(htmlSourceInput, htmlFileName)}
             )}
 
             {htmlReaderViewMode === 'webpage' && (
-              <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[520px] shadow-xs">
+              <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[560px] shadow-xs">
                 <iframe
-                  title="HTML Reader Webpage Preview"
-                  sandbox=""
+                  title="HTML Reader Full Browser Preview"
+                  sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                   srcDoc={fullHtmlDocument}
                   className="w-full h-full border-0 bg-white"
                 />

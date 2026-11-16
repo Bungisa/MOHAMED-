@@ -555,10 +555,8 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                   }
                   if (isSelectionMode) {
                     toggleDocSelection(doc.id);
-                  } else if (onRequestOpenWithOptions) {
-                    onRequestOpenWithOptions(doc);
                   } else {
-                    onOpenInEditor(doc, false);
+                    onOpenInEditor(doc, true);
                   }
                 }}
                 className={`relative rounded-xl border p-3 shadow-2xs flex items-center gap-3.5 transition-all cursor-pointer select-none ${

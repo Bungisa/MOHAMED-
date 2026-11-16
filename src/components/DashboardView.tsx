@@ -267,7 +267,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       e.target.value = '';
       setIsUploading(true);
       try {
-        await onUploadPdfFiles(selectedFiles, true, false);
+        await onUploadPdfFiles(selectedFiles, true, true);
       } finally {
         setIsUploading(false);
       }
@@ -733,7 +733,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     if (isSelectionMode) {
                       toggleDocSelection(doc.id);
                     } else {
-                      onOpenDocumentInEditor(doc, false);
+                      onOpenDocumentInEditor(doc, true);
                     }
                   }}
                   className={`relative rounded-xl border p-3 shadow-2xs flex items-center gap-3.5 transition-all cursor-pointer select-none ${

@@ -24,10 +24,27 @@
   "file_handlers": [
     {
       "action": "/?action=pdf-reader",
-      "name": "ElimikaPDF Reader",
+      "name": "ElimikaPDF Multi-Purpose Document, Book & HTML Reader",
       "launch_type": "single-client",
       "accept": {
-        "application/pdf": [".pdf"]
+        "application/pdf": [".pdf"],
+        "application/epub+zip": [".epub"],
+        "application/vnd.amazon.kpf": [".kpf"],
+        "application/x-kpf": [".kpf"],
+        "application/vnd.amazon.ebook": [".azw", ".azw3", ".kpf"],
+        "application/x-mobipocket-ebook": [".mobi", ".prc"],
+        "application/x-fictionbook+xml": [".fb2"],
+        "text/html": [".html", ".htm", ".shtml"],
+        "application/xhtml+xml": [".xhtml", ".xht"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+        "application/msword": [".doc"],
+        "application/vnd.oasis.opendocument.text": [".odt"],
+        "application/rtf": [".rtf"],
+        "text/markdown": [".md", ".markdown"],
+        "text/plain": [".txt"],
+        "text/csv": [".csv", ".tsv"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"]
       }
     }
   ],
@@ -44,8 +61,36 @@
           "name": "SharedFiles",
           "accept": [
             "application/pdf",
+            "application/epub+zip",
+            "application/vnd.amazon.kpf",
+            "application/x-kpf",
+            "application/vnd.amazon.ebook",
+            "application/x-mobipocket-ebook",
+            "application/x-fictionbook+xml",
+            "text/html",
+            "application/xhtml+xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+            "application/vnd.oasis.opendocument.text",
+            "text/markdown",
+            "text/plain",
             "image/png",
-            "image/jpeg"
+            "image/jpeg",
+            ".pdf",
+            ".epub",
+            ".kpf",
+            ".mobi",
+            ".azw3",
+            ".fb2",
+            ".html",
+            ".htm",
+            ".xhtml",
+            ".docx",
+            ".doc",
+            ".odt",
+            ".rtf",
+            ".md",
+            ".txt"
           ]
         }
       ]

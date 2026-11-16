@@ -120,16 +120,35 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
     ? decodeHtmlEntities(titleMatch[1].replace(/\s+/g, ' ').trim())
     : '';
 
-  // Strip comments, <script>, <style>, <noscript>, <svg>, <template>, <iframe>, and <head>
-  const cleanedHtml = html
+  // Convert inline <svg>...</svg> into <img src="data:image/svg+xml;utf8,..." /> so SVG graphics & illustrations are preserved as image blocks without leaking raw SVG text nodes
+  const htmlWithInlineSvgImages = html.replace(
+    /<svg\b[^>]*>[\s\S]*?<\/svg>/gi,
+    (svgMarkup) => {
+      const encoded = encodeURIComponent(svgMarkup.trim());
+      return `<img src="data:image/svg+xml;utf8,${encoded}" alt="SVG Graphic" />`;
+    }
+  );
+
+  // Strip comments, <script>, <style>, <noscript>, <template>, <iframe>, and <head> for block text extraction
+  const cleanedHtml = htmlWithInlineSvgImages
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, '')
-    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, '')
     .replace(/<template\b[^>]*>[\s\S]*?<\/template>/gi, '')
     .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, '')
     .replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '');
+
+  const isRenderableImgSrc = (src: string): boolean => {
+    const trimmed = (src || '').trim();
+    return (
+      trimmed.startsWith('data:image/') ||
+      trimmed.startsWith('https://') ||
+      trimmed.startsWith('http://') ||
+      trimmed.startsWith('blob:') ||
+      trimmed.startsWith('/')
+    );
+  };
 
   const blocks: WordContentBlock[] = [];
 
@@ -138,7 +157,7 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
     const doc = parser.parseFromString(cleanedHtml, 'text/html');
     // Also remove any stray script/style/meta/link inside body
     doc
-      .querySelectorAll('script, style, noscript, svg, template, meta, link')
+      .querySelectorAll('script, style, noscript, template, meta, link')
       .forEach((el) => el.remove());
 
     const BLOCK_TAGS = new Set([
@@ -171,6 +190,7 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
       'summary',
       'address',
       'hr',
+      'img',
     ]);
 
     const hasBlockChild = (el: Element): boolean => {
@@ -260,8 +280,8 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
 
       if (tag === 'img') {
         const src = node.getAttribute('src') || '';
-        if (src.startsWith('data:image/')) {
-          blocks.push({ type: 'image', imageDataUrl: src });
+        if (isRenderableImgSrc(src)) {
+          blocks.push({ type: 'image', imageDataUrl: src.trim() });
         }
         return;
       }
@@ -281,8 +301,8 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
       if (tag === 'p' || tag === 'blockquote' || tag === 'figcaption') {
         node.querySelectorAll('img').forEach((img) => {
           const src = img.getAttribute('src') || '';
-          if (src.startsWith('data:image/')) {
-            blocks.push({ type: 'image', imageDataUrl: src });
+          if (isRenderableImgSrc(src)) {
+            blocks.push({ type: 'image', imageDataUrl: src.trim() });
           }
         });
 
@@ -310,8 +330,8 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
       if (!hasBlockChild(node)) {
         node.querySelectorAll('img').forEach((img) => {
           const src = img.getAttribute('src') || '';
-          if (src.startsWith('data:image/')) {
-            blocks.push({ type: 'image', imageDataUrl: src });
+          if (isRenderableImgSrc(src)) {
+            blocks.push({ type: 'image', imageDataUrl: src.trim() });
           }
         });
         const text = normalizeText(node.textContent);
@@ -368,8 +388,21 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
     }
   } else {
     // Fallback structured parser when DOMParser is unavailable (e.g. Node CLI tests)
+    const imageUrls: string[] = [];
+    const withImagePlaceholders = cleanedHtml.replace(
+      /<img\b[^>]*\bsrc=["']([^"']+)["'][^>]*>/gi,
+      (_, srcAttr: string) => {
+        if (isRenderableImgSrc(srcAttr)) {
+          const idx = imageUrls.length;
+          imageUrls.push(srcAttr.trim());
+          return `\n__HTML_IMG_${idx}__\n`;
+        }
+        return '\n';
+      }
+    );
+
     const tableBlocks: string[][][] = [];
-    const withTablePlaceholders = cleanedHtml.replace(
+    const withTablePlaceholders = withImagePlaceholders.replace(
       /<table\b[^>]*>([\s\S]*?)<\/table>/gi,
       (_, tableInner: string) => {
         const rows: string[][] = [];
@@ -416,6 +449,12 @@ export function parseHtmlIntoWordBlocks(html: string): WordContentBlock[] {
     for (const rawLine of lines) {
       const line = rawLine.replace(/\s+/g, ' ').trim();
       if (!line) continue;
+      const imgMatch = line.match(/^__HTML_IMG_(\d+)__$/);
+      if (imgMatch) {
+        const url = imageUrls[Number(imgMatch[1])];
+        if (url) blocks.push({ type: 'image', imageDataUrl: url });
+        continue;
+      }
       const tblMatch = line.match(/^__HTML_TABLE_(\d+)__$/);
       if (tblMatch) {
         const rows = tableBlocks[Number(tblMatch[1])];
@@ -501,7 +540,7 @@ export function wordBlocksToCleanHtml(
       parts.push('</table>');
     } else if (b.type === 'image' && b.imageDataUrl) {
       parts.push(
-        `<figure><img src="${b.imageDataUrl}" alt="Embedded figure" /></figure>`
+        `<figure><img src="${b.imageDataUrl}" alt="Embedded figure" style="max-width:100%;height:auto;" /></figure>`
       );
     } else if (b.text && b.text.trim()) {
       let inner = escapeHtmlText(b.text);
@@ -516,8 +555,79 @@ export function wordBlocksToCleanHtml(
 }
 
 /**
+ * Prepares HTML for 100% browser-accurate rendering inside an iframe (`srcDoc`).
+ * Preserves the original `<!DOCTYPE html>`, `<head>`, `<style>` (including `@keyframes` animations,
+ * transitions, gradients, and custom colors), `<script>` (JS/Canvas animations), `<svg>`, and `<img>` pictures.
+ * If the input is an HTML fragment rather than a full document, wraps it in a clean HTML5 document
+ * while keeping all embedded `<style>`, `<script>`, `<svg>`, and `<img>` tags intact.
+ */
+export function prepareBrowserFidelityHtml(
+  rawHtml: string,
+  fallbackTitle?: string
+): string {
+  const trimmed = (rawHtml || '').trim();
+  if (!trimmed) {
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtmlText(
+      fallbackTitle || 'Document'
+    )}</title></head><body style="font-family:system-ui,-apple-system,sans-serif;padding:24px;"><h1>${escapeHtmlText(
+      fallbackTitle || 'Document'
+    )}</h1></body></html>`;
+  }
+
+  // Responsive media helper injected gently so huge images don't overflow horizontally unless styled
+  const baseHelperStyle = `<style id="elimika-browser-helper">
+    img, svg, video, canvas { max-width: 100%; }
+  </style>`;
+
+  // If the file is already a complete HTML document (has <!doctype html> or <html...>)
+  if (/^(?:<!doctype\s+html|<html\b)/i.test(trimmed) || /<html\b[^>]*>[\s\S]*<\/html>/i.test(trimmed)) {
+    if (/<head\b[^>]*>/i.test(trimmed)) {
+      return trimmed.replace(
+        /<head\b([^>]*)>/i,
+        `<head$1><meta charset="utf-8">${baseHelperStyle}`
+      );
+    }
+    return trimmed.replace(
+      /<html\b([^>]*)>/i,
+      `<html$1><head><meta charset="utf-8">${baseHelperStyle}</head>`
+    );
+  }
+
+  // Otherwise wrap the fragment while preserving all <style>, <link>, <script>, <svg>, and <img> tags
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${escapeHtmlText(fallbackTitle || 'HTML Document')}</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      line-height: 1.6;
+      color: #0f172a;
+      background: #ffffff;
+    }
+    img, svg, video, canvas { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+    th, td { border: 1px solid #cbd5e1; padding: 8px 12px; text-align: left; }
+    th { background: #f1f5f9; }
+    pre { background: #0f172a; color: #f8fafc; padding: 14px; border-radius: 8px; overflow-x: auto; }
+    blockquote { border-left: 4px solid #e11d48; margin: 1em 0; padding: 0.5em 1em; background: #fff1f2; }
+  </style>
+</head>
+<body>
+${trimmed}
+</body>
+</html>`;
+}
+
+/**
  * Sanitizes raw HTML for safe display inside the built-in HTML & eBook Reader
- * while keeping headings, paragraphs, tables, lists, blockquotes, pre/code, and inline formatting.
+ * while keeping `<style>` (colors, layouts, @keyframes animations), `<svg>`, `<img>`,
+ * headings, paragraphs, tables, lists, blockquotes, pre/code, and inline formatting.
  */
 export function sanitizeHtmlForReader(
   rawHtml: string,
@@ -525,6 +635,16 @@ export function sanitizeHtmlForReader(
 ): string {
   if (!rawHtml || !rawHtml.trim()) {
     return fallbackTitle ? `<h1>${escapeHtmlText(fallbackTitle)}</h1>` : '';
+  }
+
+  // Preserve <style> blocks from <head> before stripping <head> so colors & CSS animations remain visible
+  const styleBlocks: string[] = [];
+  const headMatch = rawHtml.match(/<head\b[^>]*>([\s\S]*?)<\/head>/i);
+  if (headMatch) {
+    const stylesInHead = headMatch[1].match(/<style\b[^>]*>[\s\S]*?<\/style>/gi);
+    if (stylesInHead) {
+      styleBlocks.push(...stylesInHead);
+    }
   }
 
   let cleaned = rawHtml
@@ -544,7 +664,21 @@ export function sanitizeHtmlForReader(
     cleaned = cleaned.replace(/<head\b[^>]*>[\s\S]*?<\/head>/gi, '').trim();
   }
 
-  return cleaned || (fallbackTitle ? `<h1>${escapeHtmlText(fallbackTitle)}</h1>` : '');
+  const combined = [...styleBlocks, cleaned].filter(Boolean).join('\n');
+  return combined || (fallbackTitle ? `<h1>${escapeHtmlText(fallbackTitle)}</h1>` : '');
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const sub = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+    binary += String.fromCharCode(...sub);
+  }
+  if (typeof btoa === 'function') {
+    return btoa(binary);
+  }
+  return Buffer.from(bytes).toString('base64');
 }
 
 async function inflateRawBytesInWordService(
@@ -632,13 +766,22 @@ async function extractTextEntriesFromZip(
       lowerEntry.endsWith('.xhtml') ||
       lowerEntry.endsWith('.html') ||
       lowerEntry.endsWith('.htm') ||
+      lowerEntry.endsWith('.css') ||
+      lowerEntry.endsWith('.svg') ||
       lowerEntry.endsWith('.json') ||
       lowerEntry.endsWith('.txt') ||
       lowerEntry.endsWith('.md') ||
       lowerEntry.endsWith('.fb2') ||
       lowerEntry.endsWith('.rels');
 
-    if (!isTextEntry) continue;
+    const isImageEntry =
+      lowerEntry.endsWith('.png') ||
+      lowerEntry.endsWith('.jpg') ||
+      lowerEntry.endsWith('.jpeg') ||
+      lowerEntry.endsWith('.gif') ||
+      lowerEntry.endsWith('.webp');
+
+    if (!isTextEntry && !isImageEntry) continue;
 
     if (
       localHeaderOffset + 30 <= zipBytes.byteLength &&
@@ -654,11 +797,28 @@ async function extractTextEntriesFromZip(
       const rawSlice = zipBytes.subarray(dataStart, dataEnd);
 
       try {
+        let decompressedBytes: Uint8Array | null = null;
         if (compressionMethod === 0) {
-          result.set(fileName, decoder.decode(rawSlice));
+          decompressedBytes = rawSlice;
         } else if (compressionMethod === 8) {
-          const inflated = await inflateRawBytesInWordService(rawSlice);
-          result.set(fileName, decoder.decode(inflated));
+          decompressedBytes = await inflateRawBytesInWordService(rawSlice);
+        }
+        if (decompressedBytes) {
+          if (isImageEntry) {
+            const mime = lowerEntry.endsWith('.png')
+              ? 'image/png'
+              : lowerEntry.endsWith('.gif')
+                ? 'image/gif'
+                : lowerEntry.endsWith('.webp')
+                  ? 'image/webp'
+                  : 'image/jpeg';
+            result.set(
+              fileName,
+              `data:${mime};base64,${uint8ArrayToBase64(decompressedBytes)}`
+            );
+          } else {
+            result.set(fileName, decoder.decode(decompressedBytes));
+          }
         }
       } catch {
         // Ignore unreadable entry
@@ -671,7 +831,7 @@ async function extractTextEntriesFromZip(
 
 /**
  * Parses an EPUB or KPF (Kindle Package Format) or ODT (OpenDocument) ZIP archive
- * into ordered chapters, WordContentBlock[], and rich HTML.
+ * into ordered chapters, WordContentBlock[], and rich HTML (with embedded CSS & images inlined).
  */
 async function parseEpubKpfOrOdtZipEntries(
   entries: Map<string, string>,
@@ -830,8 +990,47 @@ async function parseEpubKpfOrOdtZipEntries(
     return null;
   }
 
+  // Collect all .css stylesheets and image data URLs in the archive
+  const archiveStyles: string[] = [];
+  const imageByBasename = new Map<string, string>();
+  entries.forEach((val, key) => {
+    const lowerKey = key.toLowerCase();
+    if (lowerKey.endsWith('.css') && val.trim()) {
+      archiveStyles.push(val);
+    } else if (val.startsWith('data:image/')) {
+      imageByBasename.set(key, val);
+      const base = key.split('/').pop() || key;
+      imageByBasename.set(base, val);
+    } else if (lowerKey.endsWith('.svg') && val.includes('<svg')) {
+      const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(val.trim())}`;
+      imageByBasename.set(key, svgDataUrl);
+      const base = key.split('/').pop() || key;
+      imageByBasename.set(base, svgDataUrl);
+    }
+  });
+
+  const inlineArchiveAssets = (htmlStr: string): string => {
+    return htmlStr.replace(
+      /\b(src|href|xlink:href)=["']([^"']+)["']/gi,
+      (full, attr, rawPath: string) => {
+        const cleanPath = rawPath.split('#')[0].split('?')[0].replace(/^\.\.\//g, '').replace(/^\.\//g, '');
+        const base = cleanPath.split('/').pop() || cleanPath;
+        const matchedDataUrl =
+          imageByBasename.get(cleanPath) || imageByBasename.get(base);
+        if (matchedDataUrl) {
+          return `${attr}="${matchedDataUrl}"`;
+        }
+        return full;
+      }
+    );
+  };
+
   const allBlocks: WordContentBlock[] = [];
   const chapterHtmlFragments: string[] = [];
+
+  if (archiveStyles.length > 0) {
+    chapterHtmlFragments.push(`<style>\n${archiveStyles.join('\n')}\n</style>`);
+  }
 
   allBlocks.push({
     type: 'h1',
@@ -846,8 +1045,9 @@ async function parseEpubKpfOrOdtZipEntries(
 
   for (let idx = 0; idx < orderedChapterPaths.length; idx++) {
     const path = orderedChapterPaths[idx];
-    const chapterRaw = entries.get(path) || '';
-    if (!chapterRaw.trim()) continue;
+    const rawChapter = entries.get(path) || '';
+    if (!rawChapter.trim()) continue;
+    const chapterRaw = inlineArchiveAssets(rawChapter);
 
     const chapterBlocks = parseHtmlIntoWordBlocks(chapterRaw);
     if (chapterBlocks.length > 0) {
@@ -886,8 +1086,8 @@ async function parseEpubKpfOrOdtZipEntries(
 
 /**
  * Parses an uploaded Word, eBook (.epub, .kpf, .mobi, .fb2), OpenDocument (.odt),
- * HTML (.html, .htm, .xhtml), RTF, Markdown (.md), JSON, XML, or Text file
- * into structured blocks, plain editable text, and sanitized HTML for reading and PDF generation.
+ * HTML (.html, .htm, .xhtml, .svg), RTF, Markdown (.md), JSON, XML, or Text file
+ * into structured blocks, plain editable text, and full-fidelity HTML for browser reading and PDF generation.
  */
 export async function parseUploadedWordFile(file: File): Promise<{
   blocks: WordContentBlock[];
@@ -964,11 +1164,25 @@ export async function parseUploadedWordFile(file: File): Promise<{
     }
   }
 
-  // 3. Decode UTF-8 text for .html, .htm, .xhtml, .fb2, .kpf (non-ZIP), .mobi, .json, .xml, .rtf, .doc, .md, or .txt
+  // 3. Decode UTF-8 text for .html, .htm, .xhtml, .svg, .fb2, .kpf (non-ZIP), .mobi, .json, .xml, .rtf, .doc, .md, or .txt
   const decoder = new TextDecoder('utf-8', { fatal: false });
   let rawStr = decoder.decode(buf);
 
-  // 3a. FictionBook (.fb2) XML eBook format
+  // 3a. Standalone SVG vector graphic / animated SVG file
+  if (lowerName.endsWith('.svg') || (file.type || '').toLowerCase().includes('svg')) {
+    const svgDataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(rawStr.trim())}`;
+    const blocks: WordContentBlock[] = [
+      { type: 'h1', text: baseTitle, bold: true },
+      { type: 'image', imageDataUrl: svgDataUrl },
+    ];
+    return {
+      blocks,
+      plainText: baseTitle,
+      htmlPreview: rawStr,
+    };
+  }
+
+  // 3b. FictionBook (.fb2) XML eBook format
   if (lowerName.endsWith('.fb2') || /<FictionBook\b/i.test(rawStr)) {
     const fbHtml = rawStr
       .replace(/<binary\b[^>]*>[\s\S]*?<\/binary>/gi, '')
@@ -992,7 +1206,7 @@ export async function parseUploadedWordFile(file: File): Promise<{
     };
   }
 
-  // 3b. JSON (.json) structured document formatting
+  // 3c. JSON (.json) structured document formatting
   if (lowerName.endsWith('.json') || (file.type || '').includes('json')) {
     try {
       const parsedJson = JSON.parse(rawStr);
@@ -1032,13 +1246,13 @@ export async function parseUploadedWordFile(file: File): Promise<{
     }
   }
 
-  // 3c. Check if file is HTML / XHTML (by extension, MIME type, or HTML tags inside .html/.kpf/.mobi)
+  // 3d. Check if file is HTML / XHTML (by extension, MIME type, or HTML tags inside .html/.kpf/.mobi)
   const isHtmlContent =
     lowerName.endsWith('.html') ||
     lowerName.endsWith('.htm') ||
     lowerName.endsWith('.xhtml') ||
     (file.type || '').toLowerCase().includes('html') ||
-    /<(?:!doctype\s+html|html|head|body|style|div|table|h[1-6]|p|section|article|ul|ol)\b/i.test(
+    /<(?:!doctype\s+html|html|head|body|style|div|table|h[1-6]|p|section|article|ul|ol|svg|canvas)\b/i.test(
       rawStr
     );
 
@@ -1051,10 +1265,11 @@ export async function parseUploadedWordFile(file: File): Promise<{
         : plainTextToWordBlocks(
             readableText || `Webpage imported from ${file.name}`
           );
+    // Preserve 100% of rawStr in htmlPreview so CSS colors, @keyframes animations, <script>, <svg>, and <img> pictures render just like opening in a browser
     return {
       blocks: finalBlocks,
-      plainText: readableText,
-      htmlPreview: sanitizeHtmlForReader(rawStr, baseTitle),
+      plainText: readableText || baseTitle,
+      htmlPreview: rawStr,
     };
   }
 

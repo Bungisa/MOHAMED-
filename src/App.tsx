@@ -266,7 +266,7 @@ export default function App() {
   const handleUploadPdfFiles = async (
     files: FileList | File[],
     openInEditorAfter = true,
-    openInReaderMode?: boolean
+    openInReaderMode = true
   ) => {
     const fileArray = Array.from(files);
     let lastAdded: StoredDocument | null = null;
@@ -331,11 +331,12 @@ export default function App() {
     if (lastAdded) {
       await refreshVault();
       setActiveDocument(lastAdded);
-      if (openInReaderMode === true) {
+      const fmtUpper = (lastAdded.sourceFormat || 'pdf').toUpperCase();
+      if (openInEditorAfter && openInReaderMode !== false) {
         setEditorReaderMode(true);
         navigateToView('editor');
         showToast(
-          `Opened "${lastAdded.name}" in ElimikaPDF Reader (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+          `Detected ${fmtUpper} document — Opened "${lastAdded.name}" in Reading Mode (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
         );
       } else if (openInEditorAfter) {
         setEditorReaderMode(false);
@@ -345,14 +346,14 @@ export default function App() {
         );
       } else {
         showToast(
-          `Added "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+          `Added "${lastAdded.name}" (${fmtUpper}, ${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
         );
       }
     }
   };
 
-  // Handle PDF files opened from Android "Open with" menu (cold-start & already-running warm-start),
-  // OS File Handlers (window.launchQueue), or Web Share Target
+  // Handle PDF, eBook (.epub, .kpf, .mobi, .fb2), HTML (.html, .xhtml), and Office files opened from
+  // Android "Open with" menu (cold-start & already-running warm-start), OS File Handlers (window.launchQueue), or Web Share Target
   useEffect(() => {
     const openExternalPdfDirectlyInReader = async (
       incomingFiles: File[],
@@ -361,10 +362,10 @@ export default function App() {
       if (!incomingFiles || incomingFiles.length === 0) return;
       const firstFile = incomingFiles[0];
       setExternalPdfLoadingLabel(
-        `Opening "${firstFile.name}" from ${sourceLabel}...`
+        `Detecting & opening "${firstFile.name}" from ${sourceLabel} in Reading Mode...`
       );
       try {
-        // Automatically open directly in ElimikaPDF Reader (openInReaderMode = true) without asking user to browse again
+        // Automatically detect format and open directly in ElimikaPDF Multi-Purpose Reader (openInReaderMode = true)
         await handleUploadPdfFiles(incomingFiles, true, true);
       } finally {
         setExternalPdfLoadingLabel(null);
@@ -386,10 +387,11 @@ export default function App() {
         for (let i = 0; i < binaryStr.length; i++) {
           bytes[i] = binaryStr.charCodeAt(i);
         }
-        const safeName = filename.toLowerCase().endsWith('.pdf')
-          ? filename
-          : `${filename}.pdf`;
-        const file = new File([bytes], safeName, { type: 'application/pdf' });
+        // Preserve original extension (.epub, .kpf, .html, .docx, .pdf, etc.)
+        const safeName = filename.includes('.') ? filename : `${filename}.pdf`;
+        const file = new File([bytes], safeName, {
+          type: 'application/octet-stream',
+        });
         await openExternalPdfDirectlyInReader([file], 'Android Open With');
       } catch {
         setExternalPdfLoadingLabel(null);
@@ -440,15 +442,19 @@ export default function App() {
           return;
         }
         const headerName = res.headers.get('X-Android-Pdf-Filename');
+        const headerMime =
+          res.headers.get('X-Android-Pdf-Mimetype') ||
+          res.headers.get('Content-Type') ||
+          'application/octet-stream';
         const finalName = headerName
           ? decodeURIComponent(headerName)
           : fallbackName;
         const blob = await res.blob();
-        const file = new File([blob], finalName, { type: 'application/pdf' });
+        const file = new File([blob], finalName, { type: headerMime });
         await openExternalPdfDirectlyInReader([file], 'Android Open With');
       } catch {
         showToast(
-          `Could not open "${fallbackName}". Please verify the PDF file is valid.`,
+          `Could not open "${fallbackName}". Please verify the file is valid.`,
           'error'
         );
       } finally {

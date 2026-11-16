@@ -145,7 +145,7 @@ async function startServer() {
   app.get('/api/downloads/:id', serveDownload);
 
   // Android Native "Open With" (ACTION_VIEW content:// URI) Bridge Endpoint
-  // Receives raw PDF bytes from Android PdfOpenActivity, validates %PDF- signature, and issues a one-time openId
+  // Receives raw document/eBook/HTML/PDF bytes from Android PdfOpenActivity and issues a one-time openId
   app.post(
     '/api/android-open-pdf',
     express.raw({ type: '*/*', limit: '500mb' }),
@@ -155,32 +155,39 @@ async function startServer() {
           (req.query.filename as string) ||
           (req.headers['x-pdf-filename'] as string) ||
           'Opened_Document.pdf';
-        const filename = sanitizeFilename(rawFilename, 'pdf');
+        const rawMime =
+          (req.query.mime as string) ||
+          (req.headers['x-pdf-mimetype'] as string) ||
+          (req.headers['content-type'] as string) ||
+          'application/octet-stream';
+
+        const extMatch = rawFilename.toLowerCase().match(/\.([a-z0-9]+)$/);
+        const fallbackExt = extMatch
+          ? extMatch[1]
+          : rawMime.includes('epub')
+            ? 'epub'
+            : rawMime.includes('kpf')
+              ? 'kpf'
+              : rawMime.includes('html')
+                ? 'html'
+                : 'pdf';
+        const filename = sanitizeFilename(rawFilename, fallbackExt);
         const bodyBuffer = Buffer.isBuffer(req.body)
           ? req.body
           : Buffer.from(req.body || []);
 
-        if (bodyBuffer.length < 5) {
+        if (bodyBuffer.length < 1) {
           res.status(400).json({
             error: 'The selected file is empty or unreadable.',
           });
           return;
         }
 
-        // Validate %PDF- magic header so non-PDF or corrupted files are rejected cleanly
-        const magic = bodyBuffer.subarray(0, 5).toString('ascii');
-        if (magic !== '%PDF-') {
-          res.status(400).json({
-            error: 'Unsupported file format. Only valid PDF documents (%PDF-) can be opened.',
-          });
-          return;
-        }
-
-        const openId = `android_pdf_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+        const openId = `android_doc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
         downloadStore.set(openId, {
           buffer: bodyBuffer,
           filename,
-          mimeType: 'application/pdf',
+          mimeType: rawMime,
           createdAt: Date.now(),
         });
 
@@ -188,12 +195,13 @@ async function startServer() {
         res.status(200).json({
           openId,
           filename,
+          mimeType: rawMime,
           size: bodyBuffer.length,
           redirectUrl,
         });
       } catch (err) {
         console.error('Error in /api/android-open-pdf:', err);
-        res.status(500).json({ error: 'Failed to ingest Android PDF stream' });
+        res.status(500).json({ error: 'Failed to ingest Android document stream' });
       }
     }
   );
@@ -202,12 +210,16 @@ async function startServer() {
     const id = req.params.id;
     const item = downloadStore.get(id);
     if (!item) {
-      res.status(404).json({ error: 'Android PDF session expired or not found.' });
+      res.status(404).json({ error: 'Android document session expired or not found.' });
       return;
     }
-    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Type', item.mimeType || 'application/octet-stream');
     res.setHeader('X-Android-Pdf-Filename', encodeURIComponent(item.filename));
-    res.setHeader('Access-Control-Expose-Headers', 'X-Android-Pdf-Filename');
+    res.setHeader('X-Android-Pdf-Mimetype', item.mimeType || 'application/octet-stream');
+    res.setHeader(
+      'Access-Control-Expose-Headers',
+      'X-Android-Pdf-Filename, X-Android-Pdf-Mimetype'
+    );
     res.setHeader('Cache-Control', 'no-store');
     res.status(200).send(item.buffer);
   });

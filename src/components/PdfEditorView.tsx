@@ -98,6 +98,7 @@ import { SUPPORTED_DOCUMENT_ACCEPT } from '../services/advancedPdfToolsService';
 import {
   parseHtmlIntoWordBlocks,
   plainTextToWordBlocks,
+  prepareBrowserFidelityHtml,
   sanitizeHtmlForReader,
   wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
@@ -187,20 +188,54 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const isReaderMode = workspaceMode === 'reader';
   const [isHtmlReflowMode, setIsHtmlReflowMode] = useState<boolean>(() =>
     Boolean(
-      initialReaderMode &&
-        activeDocument?.sourceFormat &&
-        ['html', 'htm', 'xhtml', 'epub', 'kpf', 'mobi', 'fb2'].includes(
-          activeDocument.sourceFormat.toLowerCase()
-        )
+      activeDocument?.sourceFormat &&
+        [
+          'html',
+          'htm',
+          'xhtml',
+          'svg',
+          'epub',
+          'kpf',
+          'mobi',
+          'azw3',
+          'azw',
+          'fb2',
+          'md',
+          'txt',
+          'rtf',
+          'json',
+          'xml',
+        ].includes(activeDocument.sourceFormat.toLowerCase())
     )
   );
   const [htmlReflowTheme, setHtmlReflowTheme] = useState<
-    'paper' | 'sepia' | 'night'
+    'paper' | 'sepia' | 'dusk' | 'night'
   >('paper');
-  const [htmlReflowFontSize, setHtmlReflowFontSize] = useState<number>(16);
+  const [htmlReflowFontFamily, setHtmlReflowFontFamily] = useState<
+    'serif' | 'sans' | 'mono'
+  >('serif');
+  const [htmlReflowFontSize, setHtmlReflowFontSize] = useState<number>(17);
   const [htmlReflowSubMode, setHtmlReflowSubMode] = useState<
     'reflow' | 'webpage'
-  >('reflow');
+  >(() => {
+    const fmt = (
+      activeDocument?.sourceFormat ||
+      activeDocument?.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+      ''
+    ).toLowerCase();
+    if (
+      ['html', 'htm', 'xhtml', 'svg'].includes(fmt) ||
+      /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+        activeDocument?.rawHtmlContent || ''
+      )
+    ) {
+      return 'webpage';
+    }
+    return 'reflow';
+  });
+  const [showReflowToc, setShowReflowToc] = useState<boolean>(false);
+  const [reflowSearchQuery, setReflowSearchQuery] = useState<string>('');
+  const [isReflowSpeaking, setIsReflowSpeaking] = useState<boolean>(false);
 
   // Active grouped bottom drawer tab ('none' keeps the PDF in almost-full-screen view by default)
   const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('none');
@@ -665,10 +700,53 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setPreparedBaseBytes(null);
     setCompressedPreviewBytes(null);
     setTotalExpectedPages(activeDocument.pageCount || 1);
+
+    // Multi-Purpose Reader Auto-Detection:
+    // Automatically detect if the opened document is an eBook (.epub, .kpf, .mobi, .azw3, .fb2),
+    // HTML webpage (.html, .htm, .xhtml), or reflowable text/markdown, and open directly in Reading Mode!
+    const detectedFmt = (
+      activeDocument.sourceFormat ||
+      activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+      'pdf'
+    ).toLowerCase();
+    const isReflowBookOrHtml = [
+      'epub',
+      'kpf',
+      'mobi',
+      'azw3',
+      'azw',
+      'fb2',
+      'html',
+      'htm',
+      'xhtml',
+      'svg',
+      'md',
+      'txt',
+      'rtf',
+      'json',
+      'xml',
+    ].includes(detectedFmt);
+    const shouldOpenInBrowserView =
+      ['html', 'htm', 'xhtml', 'svg'].includes(detectedFmt) ||
+      /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+        activeDocument.rawHtmlContent || ''
+      );
+
+    if (isReflowBookOrHtml) {
+      setWorkspaceMode('reader');
+      setIsHtmlReflowMode(true);
+      setHtmlReflowSubMode(shouldOpenInBrowserView ? 'webpage' : 'reflow');
+      setBottomPanelTab('none');
+    } else if (initialReaderMode) {
+      setWorkspaceMode('reader');
+      setIsHtmlReflowMode(false);
+      setBottomPanelTab('none');
+    }
+
     renderAllPages(cloned, true).then(() => {
       hasInitializedDocRef.current = true;
     });
-  }, [activeDocument, renderAllPages]);
+  }, [activeDocument, renderAllPages, initialReaderMode]);
 
   const jumpToPage = (pageNum: number) => {
     const clamped = Math.max(1, Math.min(pages.length || 1, pageNum));
@@ -2914,93 +2992,227 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         >
           {isReaderMode && isHtmlReflowMode ? (
             <div className="max-w-4xl mx-auto p-3 sm:p-6 space-y-3 select-text">
-              {/* Reflow / Webpage Reader Controls Bar */}
-              <div className="sticky top-2 z-20 p-2.5 rounded-2xl bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border border-[#E4DFEC] dark:border-[#261F33] shadow-md flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="px-2 py-0.5 rounded-md bg-[#0D9488] text-white text-[10px] font-extrabold uppercase">
-                    {(activeDocument.sourceFormat || 'HTML').toUpperCase()} READER
-                  </span>
-                  <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+              {/* Multi-Purpose eBook & HTML Reader Controls Bar */}
+              <div className="sticky top-2 z-20 p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border border-[#E4DFEC] dark:border-[#261F33] shadow-md space-y-2">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-2 py-0.5 rounded-md bg-[#0D9488] text-white text-[10px] font-extrabold uppercase tracking-wide">
+                      {(activeDocument.sourceFormat || 'BOOK / HTML').toUpperCase()} READER
+                    </span>
+                    <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                      <button
+                        type="button"
+                        onClick={() => setHtmlReflowSubMode('webpage')}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                          htmlReflowSubMode === 'webpage'
+                            ? 'bg-[#0D9488] text-white'
+                            : 'text-[#6E667D]'
+                        }`}
+                      >
+                        Browser View (HTML / Animations)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHtmlReflowSubMode('reflow')}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                          htmlReflowSubMode === 'reflow'
+                            ? 'bg-[#0D9488] text-white'
+                            : 'text-[#6E667D]'
+                        }`}
+                      >
+                        Reflow Book
+                      </button>
+                    </div>
+
                     <button
                       type="button"
-                      onClick={() => setHtmlReflowSubMode('reflow')}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
-                        htmlReflowSubMode === 'reflow'
-                          ? 'bg-[#0D9488] text-white'
-                          : 'text-[#6E667D]'
+                      onClick={() => setShowReflowToc((v) => !v)}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer ${
+                        showReflowToc
+                          ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
+                          : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8]'
                       }`}
                     >
-                      Reflow eBook
+                      Chapters ({resolvedReaderBlocks.filter((b) => b.type === 'h1' || b.type === 'h2' || b.type === 'h3').length})
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => setHtmlReflowSubMode('webpage')}
-                      className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
-                        htmlReflowSubMode === 'webpage'
-                          ? 'bg-[#0D9488] text-white'
-                          : 'text-[#6E667D]'
+                      onClick={() => {
+                        if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+                        if (isReflowSpeaking) {
+                          window.speechSynthesis.cancel();
+                          setIsReflowSpeaking(false);
+                        } else {
+                          window.speechSynthesis.cancel();
+                          const textToRead = resolvedReaderBlocks
+                            .map((b) => b.text || '')
+                            .join('. ')
+                            .slice(0, 12000);
+                          const utterance = new SpeechSynthesisUtterance(textToRead);
+                          utterance.onend = () => setIsReflowSpeaking(false);
+                          utterance.onerror = () => setIsReflowSpeaking(false);
+                          setIsReflowSpeaking(true);
+                          window.speechSynthesis.speak(utterance);
+                        }
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                        isReflowSpeaking
+                          ? 'bg-[#DC2626] text-white'
+                          : 'bg-[#0D9488]/15 text-[#0D9488] dark:text-[#5EEAD4]'
                       }`}
                     >
-                      Webpage View
+                      {isReflowSpeaking ? 'Stop Audio' : 'Read Aloud'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Font Family */}
+                    <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                      {(
+                        [
+                          { id: 'serif', label: 'Serif' },
+                          { id: 'sans', label: 'Sans' },
+                          { id: 'mono', label: 'Mono' },
+                        ] as const
+                      ).map((f) => (
+                        <button
+                          key={f.id}
+                          type="button"
+                          onClick={() => setHtmlReflowFontFamily(f.id)}
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                            htmlReflowFontFamily === f.id
+                              ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
+                              : 'text-[#6E667D]'
+                          }`}
+                        >
+                          {f.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Themes */}
+                    {(
+                      [
+                        { id: 'paper', label: 'Paper' },
+                        { id: 'sepia', label: 'Sepia' },
+                        { id: 'dusk', label: 'Dusk' },
+                        { id: 'night', label: 'Night' },
+                      ] as const
+                    ).map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setHtmlReflowTheme(t.id)}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
+                          htmlReflowTheme === t.id
+                            ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
+                            : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D]'
+                        }`}
+                      >
+                        {t.label}
+                      </button>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setHtmlReflowFontSize((s) => Math.max(12, s - 1))
+                      }
+                      className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
+                    >
+                      A-
+                    </button>
+                    <span className="text-[11px] font-mono font-bold text-[#6E667D]">
+                      {htmlReflowFontSize}px
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setHtmlReflowFontSize((s) => Math.min(28, s + 1))
+                      }
+                      className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
+                    >
+                      A+
                     </button>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  {(
-                    [
-                      { id: 'paper', label: 'Paper' },
-                      { id: 'sepia', label: 'Sepia' },
-                      { id: 'night', label: 'Night' },
-                    ] as const
-                  ).map((t) => (
+                {/* Search bar inside book / HTML */}
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search className="w-3.5 h-3.5 text-[#6E667D] absolute left-2.5 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={reflowSearchQuery}
+                      onChange={(e) => setReflowSearchQuery(e.target.value)}
+                      placeholder="Search words or chapters inside this book / HTML document..."
+                      className="w-full pl-8 pr-3 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                    />
+                  </div>
+                  {reflowSearchQuery && (
                     <button
-                      key={t.id}
                       type="button"
-                      onClick={() => setHtmlReflowTheme(t.id)}
-                      className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
-                        htmlReflowTheme === t.id
-                          ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
-                          : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D]'
-                      }`}
+                      onClick={() => setReflowSearchQuery('')}
+                      className="px-2 py-1 rounded-lg text-[11px] font-semibold text-[#6E667D] hover:bg-[#F2EFF6] cursor-pointer"
                     >
-                      {t.label}
+                      Clear
                     </button>
-                  ))}
-
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setHtmlReflowFontSize((s) => Math.max(12, s - 1))
-                    }
-                    className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
-                  >
-                    A-
-                  </button>
-                  <span className="text-[11px] font-mono font-bold text-[#6E667D]">
-                    {htmlReflowFontSize}px
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setHtmlReflowFontSize((s) => Math.min(28, s + 1))
-                    }
-                    className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
-                  >
-                    A+
-                  </button>
+                  )}
                 </div>
+
+                {/* Expandable Chapter / Table of Contents Drawer */}
+                {showReflowToc && (
+                  <div className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] max-h-48 overflow-y-auto space-y-1">
+                    <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#6E667D] px-1">
+                      Table of Contents &amp; Headings
+                    </p>
+                    {resolvedReaderBlocks
+                      .map((b, i) => ({ b, i }))
+                      .filter(
+                        ({ b }) =>
+                          b.type === 'h1' || b.type === 'h2' || b.type === 'h3'
+                      )
+                      .map(({ b, i }) => (
+                        <button
+                          key={i}
+                          type="button"
+                          onClick={() => {
+                            const target = document.getElementById(
+                              `reflow-heading-${i}`
+                            );
+                            if (target) {
+                              target.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                              });
+                            }
+                            setShowReflowToc(false);
+                          }}
+                          className={`w-full text-left px-2 py-1 rounded-lg text-xs hover:bg-[#0D9488]/10 hover:text-[#0D9488] transition-colors cursor-pointer truncate ${
+                            b.type === 'h1'
+                              ? 'font-bold'
+                              : b.type === 'h2'
+                                ? 'pl-4 font-semibold'
+                                : 'pl-6 text-[11px]'
+                          }`}
+                        >
+                          {b.text}
+                        </button>
+                      ))}
+                  </div>
+                )}
               </div>
 
               {htmlReflowSubMode === 'webpage' ? (
-                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[75vh] shadow-md">
+                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[78vh] shadow-md">
                   <iframe
-                    title="Webpage HTML Reader"
-                    sandbox=""
-                    srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;color:#14101B;max-width:820px;margin:0 auto;padding:24px;line-height:1.65;}h1,h2,h3{color:#2D123B;}table{width:100%;border-collapse:collapse;margin:14px 0;}th,td{border:1px solid #CBD5E1;padding:8px 10px;text-align:left;}th{background:#F1F5F9;}</style></head><body>${sanitizeHtmlForReader(
+                    title="Full Browser HTML Reader"
+                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                    srcDoc={prepareBrowserFidelityHtml(
                       resolvedReaderHtml,
                       docBaseTitle
-                    )}</body></html>`}
+                    )}
                     className="w-full h-full border-0 bg-white"
                   />
                 </div>
@@ -3010,101 +3222,139 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     fontSize: `${htmlReflowFontSize}px`,
                     lineHeight: 1.75,
                   }}
-                  className={`rounded-2xl border p-6 sm:p-10 shadow-md space-y-4 font-serif transition-colors ${
+                  className={`rounded-2xl border p-6 sm:p-10 shadow-md space-y-4 transition-colors ${
+                    htmlReflowFontFamily === 'serif'
+                      ? 'font-serif'
+                      : htmlReflowFontFamily === 'mono'
+                        ? 'font-mono'
+                        : 'font-sans'
+                  } ${
                     htmlReflowTheme === 'sepia'
                       ? 'bg-[#F6EFE2] text-[#2B2218] border-[#DFD2BA]'
-                      : htmlReflowTheme === 'night'
-                        ? 'bg-[#111318] text-[#E4E2E8] border-[#262936]'
-                        : 'bg-white text-[#14101B] border-[#E4DFEC]'
+                      : htmlReflowTheme === 'dusk'
+                        ? 'bg-[#1E222D] text-[#D8DEE9] border-[#2E3440]'
+                        : htmlReflowTheme === 'night'
+                          ? 'bg-[#111318] text-[#E4E2E8] border-[#262936]'
+                          : 'bg-white text-[#14101B] border-[#E4DFEC]'
                   }`}
                 >
-                  {resolvedReaderBlocks.map((blk, idx) => {
-                    if (blk.type === 'h1') {
+                  {resolvedReaderBlocks
+                    .map((blk, idx) => ({ blk, idx }))
+                    .filter(({ blk }) => {
+                      if (!reflowSearchQuery.trim()) return true;
+                      const q = reflowSearchQuery.toLowerCase();
+                      if ((blk.text || '').toLowerCase().includes(q)) return true;
+                      if (
+                        blk.rows &&
+                        blk.rows.some((r) =>
+                          r.some((c) => c.toLowerCase().includes(q))
+                        )
+                      ) {
+                        return true;
+                      }
+                      return false;
+                    })
+                    .map(({ blk, idx }) => {
+                      if (blk.type === 'h1') {
+                        return (
+                          <h1
+                            id={`reflow-heading-${idx}`}
+                            key={idx}
+                            style={{ fontSize: `${htmlReflowFontSize + 8}px` }}
+                            className="font-bold pb-2 border-b border-current/15"
+                          >
+                            {blk.text}
+                          </h1>
+                        );
+                      }
+                      if (blk.type === 'h2') {
+                        return (
+                          <h2
+                            id={`reflow-heading-${idx}`}
+                            key={idx}
+                            style={{ fontSize: `${htmlReflowFontSize + 4}px` }}
+                            className="font-bold pt-3"
+                          >
+                            {blk.text}
+                          </h2>
+                        );
+                      }
+                      if (blk.type === 'h3') {
+                        return (
+                          <h3
+                            id={`reflow-heading-${idx}`}
+                            key={idx}
+                            style={{ fontSize: `${htmlReflowFontSize + 2}px` }}
+                            className="font-semibold pt-2"
+                          >
+                            {blk.text}
+                          </h3>
+                        );
+                      }
+                      if (blk.type === 'li') {
+                        return (
+                          <div key={idx} className="pl-4 flex items-start gap-2">
+                            <span className="text-[#0D9488] font-bold">•</span>
+                            <span>
+                              {(blk.text || '').replace(
+                                /^(\*|-|\u2022|\d+\.)\s+/,
+                                ''
+                              )}
+                            </span>
+                          </div>
+                        );
+                      }
+                      if (blk.type === 'table' && blk.rows) {
+                        return (
+                          <div key={idx} className="overflow-x-auto my-3">
+                            <table className="w-full border-collapse text-left">
+                              <tbody>
+                                {blk.rows.map((r, rIdx) => (
+                                  <tr
+                                    key={rIdx}
+                                    className={
+                                      rIdx === 0
+                                        ? 'font-bold bg-current/10'
+                                        : 'border-t border-current/15'
+                                    }
+                                  >
+                                    {r.map((c, cIdx) => (
+                                      <td
+                                        key={cIdx}
+                                        className="p-2.5 border border-current/20"
+                                      >
+                                        {c}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      }
+                      if (blk.type === 'image' && blk.imageDataUrl) {
+                        return (
+                          <figure key={idx} className="my-4 flex justify-center">
+                            <img
+                              src={blk.imageDataUrl}
+                              alt="Document illustration"
+                              className="max-w-full h-auto rounded-xl border border-current/15 shadow-sm"
+                            />
+                          </figure>
+                        );
+                      }
                       return (
-                        <h1
+                        <p
                           key={idx}
-                          style={{ fontSize: `${htmlReflowFontSize + 8}px` }}
-                          className="font-bold pb-2 border-b border-current/15"
+                          className={`${blk.bold ? 'font-bold' : ''} ${
+                            blk.italic ? 'italic opacity-90' : ''
+                          }`}
                         >
                           {blk.text}
-                        </h1>
+                        </p>
                       );
-                    }
-                    if (blk.type === 'h2') {
-                      return (
-                        <h2
-                          key={idx}
-                          style={{ fontSize: `${htmlReflowFontSize + 4}px` }}
-                          className="font-bold pt-3"
-                        >
-                          {blk.text}
-                        </h2>
-                      );
-                    }
-                    if (blk.type === 'h3') {
-                      return (
-                        <h3
-                          key={idx}
-                          style={{ fontSize: `${htmlReflowFontSize + 2}px` }}
-                          className="font-semibold pt-2"
-                        >
-                          {blk.text}
-                        </h3>
-                      );
-                    }
-                    if (blk.type === 'li') {
-                      return (
-                        <div key={idx} className="pl-4 flex items-start gap-2">
-                          <span className="text-[#0D9488] font-bold">•</span>
-                          <span>
-                            {(blk.text || '').replace(
-                              /^(\*|-|\u2022|\d+\.)\s+/,
-                              ''
-                            )}
-                          </span>
-                        </div>
-                      );
-                    }
-                    if (blk.type === 'table' && blk.rows) {
-                      return (
-                        <div key={idx} className="overflow-x-auto my-3">
-                          <table className="w-full border-collapse text-left">
-                            <tbody>
-                              {blk.rows.map((r, rIdx) => (
-                                <tr
-                                  key={rIdx}
-                                  className={
-                                    rIdx === 0
-                                      ? 'font-bold bg-current/10'
-                                      : 'border-t border-current/15'
-                                  }
-                                >
-                                  {r.map((c, cIdx) => (
-                                    <td
-                                      key={cIdx}
-                                      className="p-2.5 border border-current/20"
-                                    >
-                                      {c}
-                                    </td>
-                                  ))}
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      );
-                    }
-                    return (
-                      <p
-                        key={idx}
-                        className={`${blk.bold ? 'font-bold' : ''} ${
-                          blk.italic ? 'italic opacity-90' : ''
-                        }`}
-                      >
-                        {blk.text}
-                      </p>
-                    );
-                  })}
+                    })}
                 </div>
               )}
             </div>
