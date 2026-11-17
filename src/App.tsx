@@ -303,16 +303,27 @@ export default function App() {
             : converted.sourceFormat === 'pdf'
               ? 'Other'
               : 'Reports';
+
+        // Prevent duplicate file imports: if an identical document name & format already exists in the vault, reuse its ID and refresh its timestamp
+        const existingDocs = await storageService.getAllDocuments();
+        const duplicateDoc = existingDocs.find(
+          (d) =>
+            d.name.toLowerCase() === converted.outputPdfName.toLowerCase() &&
+            (d.sourceFormat || 'pdf').toLowerCase() ===
+              converted.sourceFormat.toLowerCase()
+        );
+
+        const nowIso = new Date().toISOString();
         const newDoc: StoredDocument = {
-          id: `doc-upload-${Date.now()}-${i}`,
+          id: duplicateDoc ? duplicateDoc.id : `doc-upload-${Date.now()}-${i}`,
           name: converted.outputPdfName,
-          category,
-          starred: false,
+          category: duplicateDoc ? duplicateDoc.category : category,
+          starred: duplicateDoc ? duplicateDoc.starred : false,
           sizeBytes: converted.pdfBytes.byteLength,
           pageCount: converted.pageCount,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-          lastOpenedAt: new Date().toISOString(),
+          createdAt: duplicateDoc ? duplicateDoc.createdAt : nowIso,
+          updatedAt: nowIso,
+          lastOpenedAt: nowIso,
           pdfData: converted.pdfBytes,
           ocrText: converted.extractedText,
           rawHtmlContent: converted.rawHtmlContent,
@@ -320,9 +331,11 @@ export default function App() {
         };
         await storageService.saveDocument(newDoc);
         lastAdded = newDoc;
-      } catch {
+      } catch (err) {
+        const errDetail =
+          err instanceof Error && err.message ? ` (${err.message})` : '';
         showToast(
-          `Failed to open "${file.name}". The file appears corrupted, password-locked, or unsupported.`,
+          `Failed to open "${file.name}"${errDetail}. The file appears corrupted, password-locked, or in an unsupported format.`,
           'error'
         );
       }
@@ -911,6 +924,13 @@ export default function App() {
       totalStorageBytes={totalStorageBytes}
       documentCount={documents.length}
       onQuickScan={() => navigateToView('scanner')}
+      onOpenReader={() => {
+        if (!activeDocument && documents.length > 0) {
+          setActiveDocument(documents[0]);
+        }
+        setEditorReaderMode(true);
+        navigateToView('editor');
+      }}
     >
       {/* Loading Overlay for Incoming Android "Open With" PDF URIs */}
       {externalPdfLoadingLabel && (

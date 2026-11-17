@@ -12,6 +12,7 @@ import {
   FileText,
   Camera,
   Lock,
+  BookOpen,
 } from 'lucide-react';
 import { ActiveView, ThemeMode } from '../types/document';
 import { formatBytes, MAX_VAULT_QUOTA_BYTES } from '../services/storageService';
@@ -25,6 +26,7 @@ interface LayoutProps {
   totalStorageBytes: number;
   documentCount: number;
   onQuickScan: () => void;
+  onOpenReader?: () => void;
   children: React.ReactNode;
 }
 
@@ -35,6 +37,7 @@ export const Layout: React.FC<LayoutProps> = ({
   onThemeChange,
   totalStorageBytes,
   documentCount,
+  onOpenReader,
   children,
 }) => {
   const [showHelpPrivacyModal, setShowHelpPrivacyModal] = useState(false);
@@ -86,7 +89,7 @@ export const Layout: React.FC<LayoutProps> = ({
               )}
             </div>
 
-            {/* Right Side: [Install App], [Theme Toggle ☀️/🌙], [Settings ⚙️], [Help / Privacy ❓] */}
+            {/* Right Side: [Install App], [Theme Toggle ☀️/🌙], [Settings ⚙️], [Help / Privacy ❓], and Top-Right [Reader] Button */}
             <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
               <OfflineIndicator />
 
@@ -135,6 +138,18 @@ export const Layout: React.FC<LayoutProps> = ({
               >
                 <HelpCircle className="w-4 h-4" />
               </button>
+
+              {onOpenReader && (
+                <button
+                  type="button"
+                  onClick={onOpenReader}
+                  title="Universal Document Reader — Open & read any PDF, Word, Excel, EPUB, KPF, or HTML document automatically"
+                  className="h-9 sm:h-10 px-3 sm:px-3.5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white text-xs font-bold flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer shrink-0"
+                >
+                  <BookOpen className="w-4 h-4 shrink-0" />
+                  <span>Reader</span>
+                </button>
+              )}
             </div>
           </div>
         </header>

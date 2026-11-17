@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   Cloud,
   CloudUpload,
@@ -15,15 +15,15 @@ import {
   CheckCircle2,
   FolderOpen,
 } from 'lucide-react';
-import { User } from 'firebase/auth';
 import {
   CloudFileEntry,
+  GoogleAccountProfile,
   initGoogleDriveAuth,
   googleDriveSignIn,
   googleDriveSignOut,
+  isGoogleDriveSignInInProgress,
   getGoogleDriveAccessToken,
   getGoogleDriveAccessTokenSync,
-  isGoogleDriveSignInInProgress,
   getCurrentGoogleUser,
   listGoogleDriveFiles,
   downloadGoogleDriveFile,
@@ -73,11 +73,15 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
   );
 
   // Google Drive Auth State
-  const [googleUser, setGoogleUser] = useState<User | null>(() =>
-    getCurrentGoogleUser()
+  const [googleUser, setGoogleUser] = useState<GoogleAccountProfile | null>(
+    () => getCurrentGoogleUser()
   );
-  const [googleNeedsAuth, setGoogleNeedsAuth] = useState<boolean>(true);
-  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState(false);
+  const [googleNeedsAuth, setGoogleNeedsAuth] = useState<boolean>(
+    () => !getGoogleDriveAccessTokenSync()
+  );
+  const [isGoogleSigningIn, setIsGoogleSigningIn] = useState<boolean>(() =>
+    isGoogleDriveSignInInProgress()
+  );
 
   // Dropbox Auth State
   const [dropboxConnected, setDropboxConnected] = useState<boolean>(() =>
@@ -107,18 +111,20 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
     Array<{ name: string; link?: string; pathDisplay?: string }>
   >([]);
 
-  const autoAuthTriggeredRef = useRef(false);
-
-  // Initialize Google Drive Auth Listener
+  // Initialize Google Drive Auth Listener (syncs with direct onClick sign-in)
   useEffect(() => {
     const unsubscribe = initGoogleDriveAuth(
       (user) => {
         setGoogleUser(user);
         setGoogleNeedsAuth(false);
+        setErrorMessage(null);
       },
       () => {
         setGoogleUser(null);
         setGoogleNeedsAuth(true);
+      },
+      (signingIn) => {
+        setIsGoogleSigningIn(signingIn);
       }
     );
     return () => unsubscribe();
@@ -176,10 +182,12 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
         setGoogleUser(result.user);
         setGoogleNeedsAuth(false);
       }
-    } catch (err: any) {
-      setErrorMessage(
-        err?.message || 'Google Sign-In was cancelled or failed. Tap below to try again.'
-      );
+    } catch (err: unknown) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'Failed to sign in with Google. Please try again.';
+      setErrorMessage(msg);
     } finally {
       setIsGoogleSigningIn(false);
     }
@@ -219,22 +227,23 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
       );
       if (!popup) {
         setErrorMessage(
-          'Popup was blocked by your browser. Tap "Connect with Dropbox" below to open sign-in.'
+          'Popup was blocked by your browser. Tap "Sign in with Dropbox" below to open sign-in.'
         );
         setIsDropboxConnecting(false);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       setErrorMessage(
-        err?.message || 'Failed to initiate Dropbox authentication.'
+        err instanceof Error
+          ? err.message
+          : 'Failed to initiate Dropbox authentication.'
       );
       setIsDropboxConnecting(false);
     }
   }, []);
 
-  // Sync state when modal opens and auto-check token
+  // Sync state when modal opens (does NOT duplicate signInWithPopup if already triggered on click)
   useEffect(() => {
     if (!isOpen) {
-      autoAuthTriggeredRef.current = false;
       return;
     }
 
@@ -252,30 +261,13 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
         setGoogleUser(getCurrentGoogleUser());
       } else {
         setGoogleNeedsAuth(true);
-        if (isGoogleDriveSignInInProgress() && !autoAuthTriggeredRef.current) {
-          autoAuthTriggeredRef.current = true;
-          void handleGoogleLogin();
-        }
+        setIsGoogleSigningIn(isGoogleDriveSignInInProgress());
       }
     } else {
       const existingDropbox = getDropboxAccessToken();
-      if (existingDropbox) {
-        setDropboxConnected(true);
-      } else {
-        setDropboxConnected(false);
-        if (!autoAuthTriggeredRef.current) {
-          autoAuthTriggeredRef.current = true;
-          void handleDropboxConnect();
-        }
-      }
+      setDropboxConnected(Boolean(existingDropbox));
     }
-  }, [
-    isOpen,
-    initialMode,
-    initialProvider,
-    handleGoogleLogin,
-    handleDropboxConnect,
-  ]);
+  }, [isOpen, initialMode, initialProvider]);
 
   const fetchFiles = useCallback(
     async (queryText = '') => {
@@ -291,13 +283,12 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
           const files = await listGoogleDriveFiles(queryText);
           setCloudFiles(files);
           setGoogleNeedsAuth(false);
-        } catch (err: any) {
-          if (err?.message === 'AUTH_REQUIRED') {
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '';
+          if (msg === 'AUTH_REQUIRED') {
             setGoogleNeedsAuth(true);
           } else {
-            setErrorMessage(
-              err?.message || 'Failed to load files from Google Drive.'
-            );
+            setErrorMessage(msg || 'Failed to load files from Google Drive.');
           }
         } finally {
           setIsLoadingFiles(false);
@@ -313,13 +304,12 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
           const files = await listDropboxFiles(queryText);
           setCloudFiles(files);
           setDropboxConnected(true);
-        } catch (err: any) {
-          if (err?.message === 'DROPBOX_AUTH_REQUIRED') {
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : '';
+          if (msg === 'DROPBOX_AUTH_REQUIRED') {
             setDropboxConnected(false);
           } else {
-            setErrorMessage(
-              err?.message || 'Failed to load files from Dropbox.'
-            );
+            setErrorMessage(msg || 'Failed to load files from Dropbox.');
           }
         } finally {
           setIsLoadingFiles(false);
@@ -400,14 +390,15 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
         );
       }
       onClose();
-    } catch (err: any) {
-      if (err?.message === 'AUTH_REQUIRED') {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === 'AUTH_REQUIRED') {
         setGoogleNeedsAuth(true);
-      } else if (err?.message === 'DROPBOX_AUTH_REQUIRED') {
+      } else if (msg === 'DROPBOX_AUTH_REQUIRED') {
         setDropboxConnected(false);
       } else {
         setErrorMessage(
-          err?.message || 'Failed to import selected file(s) from cloud.'
+          msg || 'Failed to import selected file(s) from cloud.'
         );
       }
     } finally {
@@ -455,14 +446,15 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
           'success'
         );
       }
-    } catch (err: any) {
-      if (err?.message === 'AUTH_REQUIRED') {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : '';
+      if (msg === 'AUTH_REQUIRED') {
         setGoogleNeedsAuth(true);
-      } else if (err?.message === 'DROPBOX_AUTH_REQUIRED') {
+      } else if (msg === 'DROPBOX_AUTH_REQUIRED') {
         setDropboxConnected(false);
       } else {
         setErrorMessage(
-          err?.message || 'Failed to upload document(s) to cloud storage.'
+          msg || 'Failed to upload document(s) to cloud storage.'
         );
       }
     } finally {
@@ -487,7 +479,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
         onClick={(e) => e.stopPropagation()}
         className="w-full max-w-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90dvh] text-[#14101B] dark:text-[#F4F1F8]"
       >
-        {/* Top Modal Header (Single Non-Duplicated Header) */}
+        {/* Top Modal Header */}
         <div className="px-5 py-4 border-b border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-3 shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-10 h-10 rounded-xl bg-[#0088FF]/10 text-[#0088FF] flex items-center justify-center shrink-0">
@@ -508,10 +500,10 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
               </h2>
               <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
                 {provider === 'google-drive' && !googleNeedsAuth
-                  ? `Signed in as ${googleUser?.email || googleUser?.displayName || 'Google User'}`
+                  ? `Signed in as ${googleUser?.email || googleUser?.displayName || 'Google Account'}`
                   : provider === 'dropbox' && dropboxConnected
                     ? `Connected to ${dropboxAccountName || 'Dropbox'}`
-                    : `Sign in to ${providerLabel} to continue`}
+                    : `Sign in to your ${provider === 'google-drive' ? 'Google Account' : 'Dropbox Account'} to continue`}
               </p>
             </div>
           </div>
@@ -521,7 +513,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
               <button
                 type="button"
                 onClick={handleGoogleLogout}
-                title="Sign out of Google Drive"
+                title="Sign out of Google Account"
                 className="p-2 rounded-lg text-[#6E667D] hover:text-[#DC2626] hover:bg-[#DC2626]/10 cursor-pointer"
               >
                 <LogOut className="w-4 h-4" />
@@ -548,7 +540,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
           </div>
         </div>
 
-        {/* Optional Provider Switcher ONLY when opened from generic Batch Cloud Export */}
+        {/* Optional Provider Switcher */}
         {allowProviderSwitch && (
           <div className="px-5 py-2.5 bg-[#FAF9FB] dark:bg-[#110D18] border-b border-[#E4DFEC] dark:border-[#261F33] flex items-center gap-2 shrink-0">
             <button
@@ -558,7 +550,9 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                 setErrorMessage(null);
                 setHasConfirmedExport(false);
                 setExportResults([]);
-                if (googleNeedsAuth) handleGoogleLogin();
+                if (!getGoogleDriveAccessTokenSync()) {
+                  void handleGoogleLogin();
+                }
               }}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
                 provider === 'google-drive'
@@ -577,7 +571,6 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                 setErrorMessage(null);
                 setHasConfirmedExport(false);
                 setExportResults([]);
-                if (!dropboxConnected) handleDropboxConnect();
               }}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-colors cursor-pointer ${
                 provider === 'dropbox'
@@ -600,47 +593,55 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
             </div>
           )}
 
-          {/* 1. AUTHENTICATION STATE */}
+          {/* 1. DIRECT GOOGLE ACCOUNT / DROPBOX SIGN-IN STATE */}
           {!isCurrentProviderAuthed ? (
-            <div className="py-6 px-4 text-center space-y-4">
+            <div className="py-8 px-4 rounded-2xl bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] text-center space-y-4">
               {provider === 'google-drive' ? (
                 <>
                   {isGoogleSigningIn ? (
-                    <div className="py-4 space-y-3">
-                      <Loader2 className="w-7 h-7 animate-spin text-[#4285F4] mx-auto" />
-                      <p className="text-xs font-semibold text-[#6E667D] dark:text-[#A39BB5]">
-                        Completing Google Sign-In in popup window...
-                      </p>
+                    <div className="py-3 space-y-3">
+                      <Loader2 className="w-8 h-8 animate-spin text-[#4285F4] mx-auto" />
+                      <div className="space-y-1 max-w-sm mx-auto">
+                        <h3 className="text-sm font-bold">
+                          Signing in to your Google Account...
+                        </h3>
+                        <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
+                          Select your Google Account in the sign-in window to{' '}
+                          {mode === 'import'
+                            ? 'browse and import your Google Drive files'
+                            : 'save your document to Google Drive'}
+                          .
+                        </p>
+                      </div>
                     </div>
                   ) : (
-                    <div className="space-y-1 max-w-sm mx-auto">
+                    <div className="space-y-1.5 max-w-sm mx-auto">
                       <h3 className="text-sm font-bold">
-                        Sign in to Google Drive
+                        Sign in with your Google Account
                       </h3>
                       <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
-                        Authorize Google Drive to{' '}
+                        Sign in to your Google Account to{' '}
                         {mode === 'import'
-                          ? 'browse and import your PDFs and documents'
-                          : 'upload your document directly to Google Drive'}
+                          ? 'access and import your PDFs, Excel spreadsheets, Word docs, eBooks, and HTML files from Google Drive'
+                          : 'upload your document directly to your Google Drive'}
                         .
                       </p>
                     </div>
                   )}
 
-                  {/* Official "Sign in with Google" Material Button */}
                   <div className="flex justify-center pt-1">
                     <button
                       type="button"
                       onClick={handleGoogleLogin}
                       disabled={isGoogleSigningIn}
-                      className="gsi-material-button inline-flex items-center gap-3 px-5 py-2.5 rounded-full bg-white dark:bg-[#1E172B] border border-neutral-300 dark:border-[#342A45] shadow-sm hover:shadow-md text-sm font-semibold text-[#1f1f1f] dark:text-white cursor-pointer disabled:opacity-60 transition-all"
+                      className="gsi-material-button inline-flex items-center gap-3 px-5 py-2.5 rounded-full bg-white dark:bg-[#1E172B] border border-neutral-300 dark:border-[#342A45] shadow-xs hover:shadow-md text-xs sm:text-sm font-semibold text-[#1f1f1f] dark:text-white cursor-pointer disabled:opacity-60 transition-all"
                     >
-                      <div className="gsi-material-button-icon w-5 h-5 shrink-0">
+                      <div className="gsi-material-button-icon w-4 h-4 shrink-0">
                         <svg
                           version="1.1"
                           xmlns="http://www.w3.org/2000/svg"
                           viewBox="0 0 48 48"
-                          className="w-5 h-5 block"
+                          className="w-4 h-4 block"
                         >
                           <path
                             fill="#EA4335"
@@ -663,7 +664,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                       </div>
                       <span className="gsi-material-button-contents">
                         {isGoogleSigningIn
-                          ? 'Signing in with Google...'
+                          ? 'Waiting for Google Sign-In...'
                           : 'Sign in with Google'}
                       </span>
                     </button>
@@ -684,7 +685,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                       <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
                         Sign in with your Dropbox account to{' '}
                         {mode === 'import'
-                          ? 'browse and import your PDFs and documents'
+                          ? 'browse and import your PDFs, Excel, and Word documents'
                           : 'upload your document directly to Dropbox'}
                         .
                       </p>
@@ -712,7 +713,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                   </div>
 
                   {dropboxConfigHelp && (
-                    <div className="mt-4 p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] text-left text-xs space-y-2">
+                    <div className="mt-4 p-3.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-left text-xs space-y-2">
                       <p className="font-bold text-[#14101B] dark:text-[#F4F1F8]">
                         Dropbox OAuth Setup Instructions:
                       </p>
@@ -728,7 +729,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                         </a>{' '}
                         and add this Redirect URI:
                       </p>
-                      <code className="block p-2 rounded bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-[11px] break-all select-all">
+                      <code className="block p-2 rounded bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-[11px] break-all select-all">
                         {dropboxConfigHelp.redirectUri}
                       </code>
                       <p className="text-[#6E667D] dark:text-[#A39BB5]">
@@ -751,7 +752,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder={`Search PDFs & documents in ${providerLabel}...`}
+                    placeholder={`Search PDFs, Excel, Word & eBooks in ${providerLabel}...`}
                     className="w-full pl-8 pr-3 py-2 text-xs rounded-xl bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] focus:outline-none focus:border-[#4A1D5E]"
                   />
                 </div>
@@ -779,11 +780,11 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                 <div className="py-10 text-center space-y-2">
                   <FolderOpen className="w-7 h-7 text-[#6E667D] mx-auto" />
                   <p className="text-xs font-semibold">
-                    No matching PDF, Word, or image files found.
+                    No matching PDF, Excel, Word, or eBook files found.
                   </p>
                 </div>
               ) : (
-                <div className="space-y-1.5 max-h-[46dvh] overflow-y-auto pr-1">
+                <div className="space-y-1.5 max-h-[52dvh] overflow-y-auto pr-1">
                   {cloudFiles.map((file) => {
                     const isSelected = selectedFileIds.includes(file.id);
                     return (
@@ -814,7 +815,9 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                             <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
                               {file.sizeBytes
                                 ? formatBytes(file.sizeBytes)
-                                : 'Google Doc'}{' '}
+                                : file.mimeType.includes('spreadsheet')
+                                  ? 'Google Sheet (.XLSX)'
+                                  : 'Google Doc'}{' '}
                               {file.modifiedTime
                                 ? `• ${new Date(
                                     file.modifiedTime
@@ -848,30 +851,33 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                 <div className="p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/30 space-y-3">
                   <div className="flex items-center gap-2 text-emerald-700 dark:text-emerald-300 font-bold text-sm">
                     <CheckCircle2 className="w-5 h-5 shrink-0" />
-                    <span>Successfully uploaded to {providerLabel}!</span>
+                    <span>
+                      Successfully uploaded {exportResults.length}{' '}
+                      {exportResults.length === 1 ? 'document' : 'documents'} to{' '}
+                      {providerLabel}!
+                    </span>
                   </div>
                   <div className="space-y-1.5">
                     {exportResults.map((res, idx) => (
                       <div
                         key={idx}
-                        className="flex items-center justify-between gap-2 text-xs bg-white/80 dark:bg-[#110D18]/80 px-3 py-2 rounded-lg"
+                        className="p-2.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-2 text-xs"
                       >
                         <span className="font-semibold truncate">
                           {res.name}
                         </span>
-                        {res.link && (
+                        {res.link ? (
                           <a
                             href={res.link}
                             target="_blank"
                             rel="noopener noreferrer"
-                            className="text-[#0088FF] font-bold inline-flex items-center gap-1 hover:underline shrink-0"
+                            className="inline-flex items-center gap-1 text-[#0088FF] font-bold hover:underline shrink-0"
                           >
-                            <span>View in Drive</span>
+                            <span>Open in Drive</span>
                             <ExternalLink className="w-3.5 h-3.5" />
                           </a>
-                        )}
-                        {res.pathDisplay && (
-                          <span className="text-[11px] font-mono text-[#6E667D]">
+                        ) : (
+                          <span className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono">
                             {res.pathDisplay}
                           </span>
                         )}
@@ -880,122 +886,135 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] space-y-3">
-                  <div className="space-y-1">
-                    <p className="text-xs font-bold uppercase tracking-wider text-[#6E667D] dark:text-[#A39BB5]">
-                      Confirm Cloud Upload ({exportPayloads.length}{' '}
-                      {exportPayloads.length === 1 ? 'File' : 'Files'})
+                <>
+                  <div className="p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#110D18] border border-[#E4DFEC] dark:border-[#261F33] space-y-2">
+                    <p className="text-xs font-bold">
+                      {exportPayloads.length === 1
+                        ? 'Document to Upload:'
+                        : `Documents to Upload (${exportPayloads.length}):`}
                     </p>
-                    <p className="text-xs text-[#14101B] dark:text-[#F4F1F8]">
-                      Please confirm that you want to upload the following{' '}
-                      {exportPayloads.length === 1 ? 'document' : 'documents'}{' '}
-                      to your{' '}
-                      <strong>
-                        {provider === 'google-drive'
-                          ? 'Google Drive'
-                          : 'Dropbox (/ElimikaPDF folder)'}
-                      </strong>
-                      :
-                    </p>
-                  </div>
-
-                  <div className="space-y-1.5 max-h-40 overflow-y-auto">
-                    {exportPayloads.map((item, idx) => (
-                      <div
-                        key={idx}
-                        className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
-                          <span className="font-semibold truncate">
-                            {item.name}
+                    <div className="space-y-1.5 max-h-40 overflow-y-auto">
+                      {exportPayloads.map((item, idx) => (
+                        <div
+                          key={idx}
+                          className="flex items-center justify-between text-xs p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
+                            <span className="font-semibold truncate">
+                              {item.name}
+                            </span>
+                          </div>
+                          <span className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] shrink-0 ml-2">
+                            {formatBytes(item.bytes.byteLength)}
                           </span>
                         </div>
-                        <span className="font-mono text-[11px] text-[#6E667D] shrink-0">
-                          {formatBytes(item.bytes.byteLength)}
-                        </span>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
 
-                  <label className="flex items-center gap-2 pt-1 text-xs font-medium cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      checked={hasConfirmedExport}
-                      onChange={(e) => setHasConfirmedExport(e.target.checked)}
-                      className="w-4 h-4 rounded accent-[#4A1D5E]"
-                    />
-                    <span>
-                      I confirm uploading{' '}
-                      {exportPayloads.length === 1
-                        ? `"${exportPayloads[0].name}"`
-                        : `${exportPayloads.length} files`}{' '}
-                      to my {providerLabel} account.
-                    </span>
-                  </label>
-                </div>
+                  {/* Mandatory Confirmation Box before writing to user's Cloud Storage */}
+                  {!hasConfirmedExport ? (
+                    <div className="p-4 rounded-xl bg-[#0088FF]/8 border border-[#0088FF]/25 space-y-3">
+                      <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                        Confirm Upload to {providerLabel}
+                      </p>
+                      <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
+                        Are you sure you want to upload{' '}
+                        <strong>
+                          {exportPayloads.length === 1
+                            ? `"${exportPayloads[0].name}"`
+                            : `${exportPayloads.length} PDF files`}
+                        </strong>{' '}
+                        to your {providerLabel} account
+                        {provider === 'dropbox' ? ' (in /ElimikaPDF/)' : ''}?
+                      </p>
+                      <div className="flex items-center justify-end gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={onClose}
+                          className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setHasConfirmedExport(true);
+                            handleConfirmedCloudExport();
+                          }}
+                          disabled={isExporting}
+                          className="px-4 py-2 rounded-xl bg-[#0088FF] hover:bg-[#0077E6] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          <CloudUpload className="w-4 h-4" />
+                          <span>Confirm &amp; Upload to {providerLabel}</span>
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    isExporting && (
+                      <div className="py-6 text-center space-y-2">
+                        <Loader2 className="w-6 h-6 animate-spin text-[#0088FF] mx-auto" />
+                        <p className="text-xs font-semibold">
+                          Uploading to {providerLabel}...
+                        </p>
+                      </div>
+                    )
+                  )}
+                </>
               )}
             </div>
           )}
         </div>
 
-        {/* Bottom Modal Footer */}
-        <div className="px-5 py-3.5 border-t border-[#E4DFEC] dark:border-[#261F33] bg-[#FAF9FB] dark:bg-[#110D18] flex items-center justify-between gap-3 shrink-0">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
-          >
-            {exportResults.length > 0 ? 'Done' : 'Cancel'}
-          </button>
-
-          {isCurrentProviderAuthed && mode === 'import' && (
-            <button
-              type="button"
-              disabled={selectedFileIds.length === 0 || isImporting}
-              onClick={() => handleImportSelected()}
-              className="px-4 py-2 rounded-xl bg-[#0088FF] hover:bg-[#0077E6] disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
-            >
-              {isImporting ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Importing...</span>
-                </>
-              ) : (
-                <>
-                  <CloudDownload className="w-4 h-4" />
-                  <span>Import Selected ({selectedFileIds.length})</span>
-                </>
-              )}
-            </button>
-          )}
-
-          {isCurrentProviderAuthed &&
-            mode === 'export' &&
-            exportResults.length === 0 && (
+        {/* Footer Actions */}
+        <div className="px-5 py-3.5 bg-[#FAF9FB] dark:bg-[#110D18] border-t border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-2 shrink-0">
+          {mode === 'import' && isCurrentProviderAuthed ? (
+            <>
+              <span className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+                {selectedFileIds.length} selected
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={onClose}
+                  className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={selectedFileIds.length === 0 || isImporting}
+                  onClick={() => handleImportSelected()}
+                  className="px-4 py-2 rounded-xl bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 disabled:opacity-40 cursor-pointer"
+                >
+                  {isImporting ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Importing...</span>
+                    </>
+                  ) : (
+                    <>
+                      <CloudDownload className="w-3.5 h-3.5" />
+                      <span>
+                        Import Selected ({selectedFileIds.length || 0})
+                      </span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="w-full flex justify-end">
               <button
                 type="button"
-                disabled={
-                  !hasConfirmedExport ||
-                  isExporting ||
-                  exportPayloads.length === 0
-                }
-                onClick={handleConfirmedCloudExport}
-                className="px-4 py-2 rounded-xl bg-[#0088FF] hover:bg-[#0077E6] disabled:opacity-40 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
+                onClick={onClose}
+                className="px-4 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
               >
-                {isExporting ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>Uploading to Cloud...</span>
-                  </>
-                ) : (
-                  <>
-                    <CloudUpload className="w-4 h-4" />
-                    <span>Confirm &amp; Export to {providerLabel}</span>
-                  </>
-                )}
+                Close
               </button>
-            )}
+            </div>
+          )}
         </div>
       </div>
     </div>

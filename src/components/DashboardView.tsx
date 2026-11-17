@@ -28,6 +28,7 @@ import {
   CloudUpload,
   HardDrive,
   BookOpen,
+  QrCode,
 } from 'lucide-react';
 import {
   StoredDocument,
@@ -147,6 +148,12 @@ const QUICK_TOOLS: {
     label: 'PDF to KPF',
     icon: BookOpen,
     accentClass: 'text-[#C2410C] dark:text-[#FDBA74] bg-[#C2410C]/10 dark:bg-[#C2410C]/20',
+  },
+  {
+    id: 'qr-generator',
+    label: 'QR Generator',
+    icon: QrCode,
+    accentClass: 'text-[#6D28D9] dark:text-[#C4B5FD] bg-[#6D28D9]/10 dark:bg-[#6D28D9]/20',
   },
 ];
 
@@ -1193,6 +1200,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               disabled={selectedDocuments.length < 1 || Boolean(batchBusyLabel)}
               onClick={() => {
                 if (selectedDocuments.length < 1) return;
+                if (!getGoogleDriveAccessTokenSync()) {
+                  void googleDriveSignIn().catch(() => {});
+                }
                 setCloudModalState({
                   isOpen: true,
                   mode: 'export',

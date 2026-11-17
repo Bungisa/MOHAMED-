@@ -777,16 +777,21 @@ export function processWatermarkRemovalOnImageData(
   options: {
     preserveColor: boolean;
     strength?: number; // -40 (gentle) to +60 (aggressive), default 0
-    contrastBoost?: number; // -50 to +60, default +30 (enhances word darkness & sharpness)
+    contrastBoost?: number; // -50 to +60, default +26 (natural crisp word & symbol clarity)
     targetWatermarkRgb?: [number, number, number] | null;
     removeSolidBanners?: boolean;
   }
 ): void {
   const preserveColor = options.preserveColor ?? true;
   const strength = clamp(options.strength ?? 0, -50, 60);
-  const contrastBoost = clamp(options.contrastBoost ?? 30, -40, 60);
+  const rawContrast = options.contrastBoost ?? 26;
+  const contrastBoost = clamp(
+    rawContrast === 0 ? 26 : rawContrast,
+    -40,
+    60
+  );
   const targetRgb = options.targetWatermarkRgb ?? null;
-  const targetColorTolerance = clamp(48 + strength * 0.55, 24, 88);
+  const targetColorTolerance = clamp(52 + strength * 0.55, 28, 92);
 
   const pixelCount = w * h;
   const rawLum = new Uint8Array(pixelCount);
@@ -796,10 +801,9 @@ export function processWatermarkRemovalOnImageData(
   const integral = new Float64Array((w + 1) * (h + 1));
 
   // Pass 1: Compute perceptual luminance, chroma, minimum channel, and effective watermark luminance.
-  // - Semi-transparent colored watermarks (like light blue/purple/pink/cyan stamps over white paper)
-  //   have elevated min(R,G,B) >= 112 and lum >= 136 because they transmit white paper underneath.
-  // - Genuine colored drawings, Coat of Arms emblems, and diagrams (green, red, gold, blue)
-  //   have strong pigment absorption in at least one channel (min(R,G,B) < 112) and are preserved in full color!
+  // - Semi-transparent colored watermarks (light blue, purple, pink, grey-tan, or red/green diagonal stamps)
+  //   have elevated min(R,G,B) >= 110 and lum >= 138 because white paper shines through them.
+  // - True colored drawings, emblems (Coat of Arms), and saturated colored ink have min(R,G,B) < 110.
   for (let y = 0; y < h; y++) {
     let rowSum = 0;
     const rowOff = y * w;
@@ -827,21 +831,19 @@ export function processWatermarkRemovalOnImageData(
         const dg = g - targetRgb[1];
         const db = b - targetRgb[2];
         const dist = Math.sqrt(dr * dr + dg * dg + db * db);
-        if (dist <= targetColorTolerance && lum > 55) {
+        if (dist <= targetColorTolerance && lum > 65) {
           effPx = 255;
         }
       }
 
       if (options.removeSolidBanners) {
-        // In aggressive monochrome OCV B&W mode, also bleach colored banners
-        if (chroma > 18 && minC >= 75) {
-          effPx = Math.min(255, Math.round(lum + (chroma - 12) * 0.9));
+        if (chroma > 16 && minC >= 75) {
+          effPx = Math.min(255, Math.round(lum + (chroma - 10) * 0.95));
         }
       } else {
-        // In Color-Preserving mode: only lift pastel/semi-transparent watermark tints (minC >= 112 && lum >= 136)
-        // so saturated drawings/emblems (Coat of Arms gold, green, red, blue where minC < 112) stay 100% intact!
-        if (chroma > 14 && minC >= 112 && lum >= 136) {
-          const pastelWeight = Math.min(1, (minC - 108) / 52);
+        // Lift pastel/semi-transparent colored watermarks (minC >= 110 && lum >= 136) into the watermark range
+        if (chroma > 14 && minC >= 110 && lum >= 136) {
+          const pastelWeight = Math.min(1, (minC - 106) / 48);
           effPx = Math.min(
             255,
             Math.round(lum + (chroma - 10) * 0.95 * pastelWeight)
@@ -856,24 +858,38 @@ export function processWatermarkRemovalOnImageData(
     }
   }
 
-  // Pass 2: Stroke-Preserving & Drawing-Preserving Watermark Unmixing
-  // - Uses 3x3 neighborhood minimum (`min3x3Eff`, `min3x3Lum`) to detect 1px anti-aliased edges of
-  //   text characters and drawing lines so letter strokes are NEVER shaved thin.
-  // - Uses continuous tonal mapping on foreground pixels instead of flat binary snapping (18 vs 252)
-  //   so drawings, emblems, and diagrams retain all internal shading and line detail.
+  // Pass 2: Two-Sided Stroke Valley & Optical Density Unmixing
+  // Why this eliminates watermarks completely while keeping words & symbols (+, =, -) crystal clear:
+  // 1. Watermarks are broad shapes (> 8px wide) with medium-to-high luminance (effPx >= 138).
+  //    Even at the outer boundary of a watermark, one side is white paper (255) while the opposite
+  //    side (2..4px inward) is still inside the watermark, so its two-sided valley depth is ~0!
+  // 2. Document words, thin math symbols (+, =, -, ÷, fraction bars), and table borders are narrow strokes
+  //    (1..8px wide) where BOTH opposite sides within +/- 1..4px are brighter paper/background!
+  // 3. Darkening is applied strictly in-place at (x, y) without 3x3 min-dilation, so words are dark and clear
+  //    at their natural font weight and the white gap inside '=' stays 100% open.
   const radius = Math.max(14, Math.floor(Math.min(w, h) / 30));
-  const bias = clamp(11 - strength * 0.22, 4, 24);
-  const maxLumCutoff = clamp(168 - strength * 0.5, 124, 186);
-  const inkFloor = clamp(Math.round(14 - contrastBoost * 0.1), 6, 20);
-  // Stroke gamma < 1.0 enriches/thickens anti-aliased letter edges so words look bold and crisp, never thin
-  const strokeGamma = clamp(0.82 - contrastBoost * 0.003, 0.65, 0.95);
+  const deepInkCutoff = clamp(134 - strength * 0.55, 96, 156);
+  const maxStrokeLum = clamp(218 - strength * 0.35, 185, 228);
+  const valleyMinDepth = clamp(12 + strength * 0.22, 7, 24);
+  const localDipMin = clamp(9 + strength * 0.18, 5, 20);
+  const inkFloor = clamp(Math.round(10 - contrastBoost * 0.1), 2, 16);
+  const densityExponent = clamp(0.76 - contrastBoost * 0.0025, 0.62, 0.88);
+  const densityGain = clamp(1.26 + contrastBoost * 0.006, 1.1, 1.58);
 
   for (let y = 0; y < h; y++) {
     const y1 = Math.max(0, y - radius);
     const y2 = Math.min(h - 1, y + radius);
     const rowOff = y * w;
+
+    // Offsets for +/- 1..4px two-sided stroke valley checks
     const ym1 = Math.max(0, y - 1) * w;
+    const ym2 = Math.max(0, y - 2) * w;
+    const ym3 = Math.max(0, y - 3) * w;
+    const ym4 = Math.max(0, y - 4) * w;
     const yp1 = Math.min(h - 1, y + 1) * w;
+    const yp2 = Math.min(h - 1, y + 2) * w;
+    const yp3 = Math.min(h - 1, y + 3) * w;
+    const yp4 = Math.min(h - 1, y + 4) * w;
 
     for (let x = 0; x < w; x++) {
       const x1 = Math.max(0, x - radius);
@@ -894,76 +910,169 @@ export function processWatermarkRemovalOnImageData(
       const chroma = chromaArr[pIndex];
       const minC = minChArr[pIndex];
 
-      // 3x3 neighborhood minimum to protect 1-pixel anti-aliased edges of words and fine drawing lines
       const xm1 = Math.max(0, x - 1);
+      const xm2 = Math.max(0, x - 2);
+      const xm3 = Math.max(0, x - 3);
+      const xm4 = Math.max(0, x - 4);
       const xp1 = Math.min(w - 1, x + 1);
-      const min3x3Eff = Math.min(
-        effGray[ym1 + xm1],
+      const xp2 = Math.min(w - 1, x + 2);
+      const xp3 = Math.min(w - 1, x + 3);
+      const xp4 = Math.min(w - 1, x + 4);
+
+      // Two-sided background peaks across vertical, horizontal, and diagonal axes within +/- 1..4px
+      const topPeak = Math.max(
         effGray[ym1 + x],
-        effGray[ym1 + xp1],
-        effGray[rowOff + xm1],
-        effPx,
-        effGray[rowOff + xp1],
-        effGray[yp1 + xm1],
+        effGray[ym2 + x],
+        effGray[ym3 + x],
+        effGray[ym4 + x]
+      );
+      const botPeak = Math.max(
         effGray[yp1 + x],
-        effGray[yp1 + xp1]
+        effGray[yp2 + x],
+        effGray[yp3 + x],
+        effGray[yp4 + x]
       );
-      const min3x3Lum = Math.min(
-        rawLum[ym1 + xm1],
-        rawLum[ym1 + x],
-        rawLum[ym1 + xp1],
-        rawLum[rowOff + xm1],
-        lum,
-        rawLum[rowOff + xp1],
-        rawLum[yp1 + xm1],
-        rawLum[yp1 + x],
-        rawLum[yp1 + xp1]
+      const leftPeak = Math.max(
+        effGray[rowOff + xm1],
+        effGray[rowOff + xm2],
+        effGray[rowOff + xm3],
+        effGray[rowOff + xm4]
+      );
+      const rightPeak = Math.max(
+        effGray[rowOff + xp1],
+        effGray[rowOff + xp2],
+        effGray[rowOff + xp3],
+        effGray[rowOff + xp4]
+      );
+      const diagNWPeak = Math.max(
+        effGray[ym1 + xm1],
+        effGray[ym2 + xm2],
+        effGray[ym3 + xm3]
+      );
+      const diagSEPeak = Math.max(
+        effGray[yp1 + xp1],
+        effGray[yp2 + xp2],
+        effGray[yp3 + xp3]
+      );
+      const diagNEPeak = Math.max(
+        effGray[ym1 + xp1],
+        effGray[ym2 + xp2],
+        effGray[ym3 + xp3]
+      );
+      const diagSWPeak = Math.max(
+        effGray[yp1 + xm1],
+        effGray[yp2 + xm2],
+        effGray[yp3 + xm3]
       );
 
-      const threshold = Math.min(localMean - bias, maxLumCutoff);
+      // Bilateral valley depth: high ONLY when BOTH sides of the stroke are brighter than (x, y)!
+      // Broad watermarks have 0 bilateral valley depth both inside their body AND along their step-edges.
+      const vertValley = Math.min(topPeak, botPeak) - effPx; // Horizontal lines, '=', '+', '-', fraction bars
+      const horizValley = Math.min(leftPeak, rightPeak) - effPx; // Vertical lines, '+', '|', '1', table columns
+      const diag1Valley = Math.min(diagNWPeak, diagSEPeak) - effPx;
+      const diag2Valley = Math.min(diagNEPeak, diagSWPeak) - effPx;
 
-      // Protect saturated colored drawings/emblems (e.g., gold/yellow/red/green/blue in Coat of Arms)
-      const isRichColorDrawing =
-        preserveColor && chroma >= 24 && minC < 112 && lum < 218;
+      const strokeValleyDepth = Math.max(
+        vertValley,
+        horizValley,
+        diag1Valley,
+        diag2Valley
+      );
 
-      // Protect 1px anti-aliased edges directly attached to dark text strokes or drawing lines
-      const isAntiAliasedStrokeEdge =
-        min3x3Eff < Math.min(130, threshold - 6) &&
-        min3x3Lum < 126 &&
-        effPx < Math.min(206, localMean - 4);
+      // Tight 1px trough check for crisp 1px lines and '=' / '+' bars
+      const is1pxLineTrough =
+        (effPx < 224 &&
+          Math.min(effGray[ym1 + x], effGray[yp1 + x]) - effPx >= 6 &&
+          Math.max(topPeak, botPeak) >= 210) ||
+        (effPx < 224 &&
+          Math.min(effGray[rowOff + xm1], effGray[rowOff + xp1]) - effPx >= 6 &&
+          Math.max(leftPeak, rightPeak) >= 210);
 
-      if (effPx < threshold || isRichColorDrawing || isAntiAliasedStrokeEdge) {
-        if (preserveColor && (isRichColorDrawing || (chroma >= 20 && minC < 110))) {
-          // Preserve true RGB color of drawings, emblems, stamps, and colored ink while gently crispening contrast
+      const localDip = localMean - effPx;
+
+      // 1. Genuine dark ink (deep black/charcoal text, dark drawings, solid table borders)
+      const isDeepForegroundInk =
+        effPx < deepInkCutoff && localDip >= localDipMin - 2;
+
+      // 2. Narrow stroke / word / math symbol (+, =, -) / table border (1..8px wide with bright background on BOTH sides)
+      const isNarrowDocumentStroke =
+        effPx < maxStrokeLum &&
+        localDip >= localDipMin &&
+        (strokeValleyDepth >= valleyMinDepth || is1pxLineTrough);
+
+      // 3. Saturated colored drawings, logos, Coat of Arms emblems, and colored headings
+      const isRichColorDrawingOrWord =
+        preserveColor &&
+        ((chroma >= 24 && minC < 108 && lum < 214) ||
+          (chroma >= 16 &&
+            minC < 135 &&
+            lum < 205 &&
+            strokeValleyDepth >= valleyMinDepth));
+
+      if (
+        isDeepForegroundInk ||
+        isNarrowDocumentStroke ||
+        isRichColorDrawingOrWord
+      ) {
+        if (
+          preserveColor &&
+          (isRichColorDrawingOrWord || (chroma >= 20 && minC < 112))
+        ) {
+          // Preserve vivid RGB color of drawings, logos, emblems, and colored words
           const r = data[idx];
           const g = data[idx + 1];
           const b = data[idx + 2];
-          const cBoost = 1.08;
-          const avg = (r + g + b) / 3;
-          data[idx] = clamp(Math.round(avg + (r - avg) * cBoost), 0, 255);
-          data[idx + 1] = clamp(Math.round(avg + (g - avg) * cBoost), 0, 255);
-          data[idx + 2] = clamp(Math.round(avg + (b - avg) * cBoost), 0, 255);
+
+          const lumScale =
+            strokeValleyDepth >= valleyMinDepth && lum < 175 ? 0.9 : 0.96;
+          const dr = r * lumScale;
+          const dg = g * lumScale;
+          const db = b * lumScale;
+
+          const cBoost = 1.15;
+          const avg = (dr + dg + db) / 3;
+          data[idx] = clamp(Math.round(avg + (dr - avg) * cBoost), 0, 255);
+          data[idx + 1] = clamp(Math.round(avg + (dg - avg) * cBoost), 0, 255);
+          data[idx + 2] = clamp(Math.round(avg + (db - avg) * cBoost), 0, 255);
         } else {
-          // Neutral document words, table lines, and monochrome drawing shading:
-          // Map smoothly from [inkFloor .. ceiling] using strokeGamma so:
-          // 1) Anti-aliased word edges are darkened/strengthened (words never look thin!)
-          // 2) Internal shading inside drawings/emblems stays distinct (never crushed to a solid black blob!)
-          const ceiling = isAntiAliasedStrokeEdge
-            ? Math.max(threshold + 36, 204)
-            : Math.max(threshold + 14, 180);
-          const norm = clamp((effPx - 20) / Math.max(24, ceiling - 20), 0, 1);
-          const curved = Math.pow(norm, strokeGamma);
-          const outVal = clamp(
-            Math.round(inkFloor + curved * (246 - inkFloor)),
-            inkFloor,
-            248
+          // Neutral document words, math symbols (+, =, -), table borders, and monochrome drawings:
+          // Unmix against the bilateral local background peak so words crossing over watermarks
+          // have the watermark completely stripped out from behind them while the word ink is darkened in-place!
+          const bilateralBg = Math.max(
+            localMean,
+            Math.min(topPeak, botPeak),
+            Math.min(leftPeak, rightPeak),
+            195
           );
+          const rawDensity = clamp(
+            (bilateralBg - effPx) / Math.max(34, bilateralBg - 16),
+            0,
+            1
+          );
+
+          const thinLineBoost =
+            is1pxLineTrough || vertValley >= 14 || horizValley >= 14
+              ? 1.22
+              : 1.0;
+
+          const boostedDensity = clamp(
+            Math.pow(rawDensity, densityExponent) * densityGain * thinLineBoost,
+            0,
+            1
+          );
+
+          const outVal = clamp(
+            Math.round(255 - boostedDensity * (255 - inkFloor)),
+            inkFloor,
+            242
+          );
+
           data[idx] = outVal;
           data[idx + 1] = outVal;
           data[idx + 2] = outVal;
         }
       } else {
-        // Watermark or paper background -> clean white paper
+        // Broad watermark interior, watermark step-edge, or paper background -> pure #FFFFFF white paper
         data[idx] = 255;
         data[idx + 1] = 255;
         data[idx + 2] = 255;
@@ -1022,7 +1131,7 @@ export async function applyImageEnhancements(
     processWatermarkRemovalOnImageData(data, w, h, {
       preserveColor: true,
       strength: options.brightness,
-      contrastBoost: options.contrast,
+      contrastBoost: options.contrast === 0 ? 22 : options.contrast,
       targetWatermarkRgb: options.targetWatermarkRgb,
       removeSolidBanners: false,
     });
@@ -1034,7 +1143,7 @@ export async function applyImageEnhancements(
     processWatermarkRemovalOnImageData(data, w, h, {
       preserveColor: false,
       strength: options.brightness,
-      contrastBoost: options.contrast,
+      contrastBoost: options.contrast === 0 ? 25 : options.contrast,
       targetWatermarkRgb: options.targetWatermarkRgb,
       removeSolidBanners: true,
     });

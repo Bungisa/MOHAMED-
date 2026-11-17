@@ -2207,7 +2207,10 @@ export async function removeWatermarksFromPdf(
   );
   const preserveColor = options.preserveColor ?? true;
   const strength = options.strength ?? 0;
-  const contrastBoost = options.contrastBoost ?? 32;
+  const contrastBoost =
+    options.contrastBoost === undefined || options.contrastBoost === 0
+      ? 22
+      : options.contrastBoost;
 
   const cleanBytes = toCleanUint8Array(pdfBytes);
   const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(cleanBytes) });

@@ -28,7 +28,10 @@ import {
   Sparkles,
   ArrowDown,
   Play,
+  QrCode,
 } from 'lucide-react';
+import QRCode from 'qrcode';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 import { StoredDocument, ToolId } from '../types/document';
 import {
   renderPdfPage,
@@ -76,7 +79,11 @@ import {
   extractPdfToKindleChapters,
   buildKindleKpfPackageBytes,
   KindleKpfChapter,
+  validatePdfBytesForConversion,
+  PdfValidationReport,
   parseUploadedSpreadsheetFile,
+  parseUploadedWorkbookSheets,
+  buildInteractiveExcelHtml,
   parseUploadedPresentationFile,
   convertAnyUploadedFileToPdfAndHtml,
   SUPPORTED_DOCUMENT_ACCEPT,
@@ -557,17 +564,24 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
     setIsBusy(true);
     setFeedback(null);
     try {
-      const parsed = await parseUploadedSpreadsheetFile(file);
+      const sheets = await parseUploadedWorkbookSheets(file);
+      const parsed =
+        sheets.length === 1
+          ? sheets[0].rows
+          : sheets.flatMap((s) => [[`=== Sheet: ${s.name} ===`], ...s.rows]);
       if (parsed.length > 0) {
         setExcelRows(parsed);
         const baseName =
-          file.name.replace(/\.(xlsx?|csv|tsv|txt)$/i, '') ||
+          file.name.replace(/\.(xlsx?|xlsm|xlsb|ods|csv|tsv|txt)$/i, '') ||
           'Spreadsheet_Report';
+        const extMatch = file.name.toLowerCase().match(/\.([a-z0-9]+)$/);
+        const ext = extMatch ? extMatch[1] : 'xlsx';
         const { pdfBytes, pageCount } = await convertSpreadsheetRowsToPdf(
           parsed,
           baseName,
           excelSheetOrientation
         );
+        const interactiveHtml = buildInteractiveExcelHtml(sheets, baseName);
         const outName = `${baseName}.pdf`;
         const newDoc: StoredDocument = {
           id: `doc-xls2pdf-${Date.now()}`,
@@ -580,10 +594,15 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
           updatedAt: new Date().toISOString(),
           lastOpenedAt: new Date().toISOString(),
           pdfData: pdfBytes,
+          ocrText: parsed.map((r) => r.join(' | ')).join('\n'),
+          rawHtmlContent: interactiveHtml,
+          sourceFormat: ext,
         };
         await onSaveNewDocument(newDoc);
         setFeedback(
-          `Loaded ${parsed.length} rows from "${file.name}" and converted into "${outName}" (${pageCount}p). Click 'Convert Excel to PDF & Download' to download.`
+          `Imported "${file.name}" (${sheets.length} ${
+            sheets.length === 1 ? 'sheet' : 'sheets'
+          }, ${parsed.length} rows) and converted into "${outName}" (${pageCount}p). Click 'Convert Excel to PDF & Download' to download.`
         );
       }
     } catch {
@@ -807,7 +826,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       setHtmlSourceInput(converted.rawHtmlContent);
       setHtmlReaderFormatBadge(converted.sourceFormat.toUpperCase());
       if (
-        ['html', 'htm', 'xhtml', 'svg'].includes(
+        ['html', 'htm', 'xhtml', 'svg', 'docx', 'doc', 'odt'].includes(
           converted.sourceFormat.toLowerCase()
         ) ||
         /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
@@ -887,7 +906,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
     if (selectedDoc.rawHtmlContent && selectedDoc.rawHtmlContent.trim()) {
       setHtmlSourceInput(selectedDoc.rawHtmlContent);
       if (
-        ['html', 'htm', 'xhtml', 'svg'].includes(fmt) ||
+        ['html', 'htm', 'xhtml', 'svg', 'docx', 'doc', 'odt'].includes(fmt) ||
         /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
           selectedDoc.rawHtmlContent
         )
@@ -1030,15 +1049,11 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         })
         .finally(() => setIsBusy(false));
     } else if (activeTool === 'pdf-to-kpf') {
-      setIsBusy(true);
-      const defaultTitle = selectedDoc.name.replace(/\.pdf$/i, '');
-      setKpfBookTitle(defaultTitle);
-      extractPdfToKindleChapters(selectedDoc.pdfData, selectedDoc.name)
-        .then((chaps) => {
-          setKpfChapters(chaps);
-          setActiveKpfChapterIdx(0);
-        })
-        .finally(() => setIsBusy(false));
+      runPdfToKpfConversionPipeline(
+        selectedDoc.pdfData,
+        selectedDoc.name,
+        false
+      );
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTool, selectedDoc?.id]);
@@ -1058,6 +1073,126 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   const [kpfReaderTheme, setKpfReaderTheme] = useState<
     'paper' | 'sepia' | 'night'
   >('sepia');
+  const [kpfEnableOcr, setKpfEnableOcr] = useState(false);
+  const [kpfValidationReport, setKpfValidationReport] =
+    useState<PdfValidationReport | null>(null);
+  const [kpfSourceBytes, setKpfSourceBytes] = useState<Uint8Array | null>(null);
+  const [kpfSourceFileName, setKpfSourceFileName] = useState<string>('');
+  const [kpfProgressPage, setKpfProgressPage] = useState(0);
+  const [kpfTotalPages, setKpfTotalPages] = useState(0);
+  const [kpfStatusText, setKpfStatusText] = useState<string | null>(null);
+  const [kpfErrorMsg, setKpfErrorMsg] = useState<string | null>(null);
+  const [kpfConvertedPackage, setKpfConvertedPackage] = useState<{
+    bytes: Uint8Array;
+    fileName: string;
+    chapterCount: number;
+    pageCount: number;
+  } | null>(null);
+  const kpfCancelRef = useRef(false);
+
+  const runPdfToKpfConversionPipeline = async (
+    rawPdfBytes: Uint8Array,
+    docName: string,
+    enableOcrOverride?: boolean
+  ) => {
+    kpfCancelRef.current = false;
+    setKpfErrorMsg(null);
+    setKpfConvertedPackage(null);
+    setKpfSourceBytes(rawPdfBytes);
+    setKpfSourceFileName(docName);
+    const defaultTitle = docName.replace(/\.(pdf|kpf)$/i, '');
+    setKpfBookTitle(defaultTitle);
+
+    setIsBusy(true);
+    setKpfStatusText('Validating PDF structure, encryption, and page count...');
+    try {
+      const validation = await validatePdfBytesForConversion(rawPdfBytes);
+      setKpfValidationReport(validation);
+      if (!validation.valid) {
+        setKpfChapters([]);
+        setKpfErrorMsg(
+          validation.errorMessage ||
+            'Selected PDF file could not be validated for KPF conversion.'
+        );
+        setKpfStatusText(null);
+        return;
+      }
+
+      setKpfTotalPages(validation.pageCount);
+      setKpfProgressPage(0);
+      const useOcr =
+        typeof enableOcrOverride === 'boolean'
+          ? enableOcrOverride
+          : kpfEnableOcr;
+
+      const chaps = await extractPdfToKindleChapters(rawPdfBytes, docName, {
+        enableOcrForScanned: useOcr,
+        shouldCancel: () => kpfCancelRef.current,
+        onProgress: (current, total, status) => {
+          setKpfProgressPage(current);
+          setKpfTotalPages(total);
+          setKpfStatusText(status);
+        },
+      });
+
+      setKpfChapters(chaps);
+      setActiveKpfChapterIdx(0);
+
+      // Immediately build the ready-to-open KPF package
+      const baseOut = (defaultTitle || 'Document').replace(
+        /[^a-zA-Z0-9_-]+/g,
+        '_'
+      );
+      const outFileName = `${baseOut}.kpf`;
+      const pkgBytes = buildKindleKpfPackageBytes(chaps, {
+        title: defaultTitle,
+        author: kpfBookAuthor,
+        language: kpfBookLang,
+        layoutMode: kpfLayoutMode,
+        fontScalePct: kpfFontScale,
+        sourcePdfBytes: rawPdfBytes,
+      });
+      setKpfConvertedPackage({
+        bytes: pkgBytes,
+        fileName: outFileName,
+        chapterCount: chaps.length,
+        pageCount: validation.pageCount,
+      });
+      setKpfStatusText(null);
+    } catch (err) {
+      const msg =
+        err instanceof Error
+          ? err.message
+          : 'PDF-to-KPF conversion failed unexpectedly.';
+      setKpfErrorMsg(msg);
+      setKpfStatusText(null);
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  const handleSelectPdfFileForKpf = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    if (file.size === 0) {
+      setKpfErrorMsg(
+        `Cannot convert "${file.name}": The selected file is empty (0 bytes).`
+      );
+      return;
+    }
+    try {
+      const ab = await file.arrayBuffer();
+      const bytes = new Uint8Array(ab);
+      await runPdfToKpfConversionPipeline(bytes, file.name, kpfEnableOcr);
+    } catch {
+      setKpfErrorMsg(
+        `Could not read "${file.name}" from storage. Please verify file permissions and try again.`
+      );
+    }
+  };
 
   // ==========================================================================
   // 13. CUSTOM MULTI-STEP WORKFLOW BUILDER STATE
@@ -1185,10 +1320,10 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         {onUploadPdfFiles && (
           <label className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold cursor-pointer shadow-xs">
             <Upload className="w-4 h-4" />
-            <span>Select PDF File</span>
+            <span>Select PDF / Excel / Word / eBook File</span>
             <input
               type="file"
-              accept="application/pdf,.pdf"
+              accept={SUPPORTED_DOCUMENT_ACCEPT}
               className="hidden"
               onChange={async (e) => {
                 if (e.target.files && e.target.files.length > 0) {
@@ -2449,12 +2584,12 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
           <div className="flex flex-wrap items-center gap-2">
             {!isPdfToExcel && (
               <>
-                <label className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+                <label className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold flex items-center gap-1.5 cursor-pointer hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]">
                   <Upload className="w-3.5 h-3.5 text-[#15803D]" />
-                  <span>Upload .CSV / .XLS</span>
+                  <span>Upload Excel (.XLSX / .XLS / .CSV / .ODS)</span>
                   <input
                     type="file"
-                    accept=".csv,.tsv,.txt,.xls,.xlsx"
+                    accept=".xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,application/vnd.oasis.opendocument.spreadsheet,text/csv,text/tab-separated-values,application/csv,application/excel,application/x-excel,application/x-msexcel,text/plain"
                     className="hidden"
                     onChange={handleUploadSpreadsheetFile}
                   />
@@ -3597,44 +3732,136 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   }
 
   // 19. PDF TO KPF (AMAZON KINDLE PACKAGE FORMAT .KPF / KDP STUDIO)
-  if (activeTool === 'pdf-to-kpf' && selectedDoc) {
+  if (activeTool === 'pdf-to-kpf') {
     const activeChapter =
       kpfChapters[activeKpfChapterIdx] || kpfChapters[0] || null;
+    const effectiveSourceName =
+      kpfSourceFileName || selectedDoc?.name || 'Document.pdf';
+    const effectiveSourceBytes =
+      kpfSourceBytes || selectedDoc?.pdfData || new Uint8Array(0);
     const baseOutName = (
-      kpfBookTitle.trim() || selectedDoc.name.replace(/\.pdf$/i, '')
+      kpfBookTitle.trim() || effectiveSourceName.replace(/\.pdf$/i, '')
     ).replace(/[^a-zA-Z0-9_-]+/g, '_');
+
+    const buildCurrentKpfBytes = (): Uint8Array => {
+      return buildKindleKpfPackageBytes(kpfChapters, {
+        title: kpfBookTitle,
+        author: kpfBookAuthor,
+        language: kpfBookLang,
+        layoutMode: kpfLayoutMode,
+        fontScalePct: kpfFontScale,
+        sourcePdfBytes:
+          effectiveSourceBytes.byteLength > 0 ? effectiveSourceBytes : undefined,
+      });
+    };
 
     const handleDownloadKindlePackage = (ext: 'kpf' | 'epub') => {
       if (kpfChapters.length === 0) return;
       setIsBusy(true);
       try {
-        const pkgBytes = buildKindleKpfPackageBytes(kpfChapters, {
-          title: kpfBookTitle,
-          author: kpfBookAuthor,
-          language: kpfBookLang,
-          layoutMode: kpfLayoutMode,
-          fontScalePct: kpfFontScale,
-        });
+        const pkgBytes = buildCurrentKpfBytes();
         const outFile = `${baseOutName}.${ext}`;
         const mime =
           ext === 'kpf'
-            ? 'application/vnd.amazon.ebook'
+            ? 'application/vnd.amazon.kpf'
             : 'application/epub+zip';
+        setKpfConvertedPackage({
+          bytes: pkgBytes,
+          fileName: `${baseOutName}.kpf`,
+          chapterCount: kpfChapters.length,
+          pageCount:
+            kpfValidationReport?.pageCount ||
+            selectedDoc?.pageCount ||
+            kpfChapters.length,
+        });
         downloadBytesAsFile(pkgBytes, outFile, mime);
         setFeedback(
-          `Built Amazon Kindle ${ext.toUpperCase()} package "${outFile}" (${kpfChapters.length} chapters, ${
+          `Conversion complete! Saved "${outFile}" (${kpfChapters.length} chapters, ${
             kpfLayoutMode === 'reflowable'
               ? 'Reflowable KDP Layout'
               : 'Print Replica Fixed Layout'
-          }, ${formatBytes(pkgBytes.byteLength)}) and downloaded!`
+          }, ${formatBytes(pkgBytes.byteLength)}). You can also click "Open Converted .KPF in Reader" below.`
         );
       } finally {
         setIsBusy(false);
       }
     };
 
+    const handleShareConvertedKpf = async () => {
+      if (kpfChapters.length === 0) return;
+      const pkgBytes = buildCurrentKpfBytes();
+      const outFile = `${baseOutName}.kpf`;
+      const kpfFile = new File([pkgBytes as BlobPart], outFile, {
+        type: 'application/vnd.amazon.kpf',
+      });
+      if (
+        typeof navigator !== 'undefined' &&
+        navigator.share &&
+        (!navigator.canShare || navigator.canShare({ files: [kpfFile] }))
+      ) {
+        try {
+          await navigator.share({
+            title: kpfBookTitle || outFile,
+            text: `Sharing converted KPF document "${outFile}" from ElimikaPDF`,
+            files: [kpfFile],
+          });
+          setFeedback(`Shared "${outFile}" via system share sheet.`);
+          return;
+        } catch {
+          // Fallback to download if share sheet cancelled
+        }
+      }
+      downloadBytesAsFile(pkgBytes, outFile, 'application/vnd.amazon.kpf');
+      setFeedback(`Downloaded "${outFile}" ready for sharing.`);
+    };
+
+    const handleOpenConvertedKpfInReader = async () => {
+      if (kpfChapters.length === 0) return;
+      setIsBusy(true);
+      setFeedback(null);
+      try {
+        const pkgBytes = buildCurrentKpfBytes();
+        const outFile = `${baseOutName}.kpf`;
+        const kpfFile = new File([pkgBytes as BlobPart], outFile, {
+          type: 'application/vnd.amazon.kpf',
+        });
+        const converted = await convertAnyUploadedFileToPdfAndHtml(kpfFile);
+        const newKpfDoc: StoredDocument = {
+          id: `doc-kpf-${Date.now()}`,
+          name: outFile,
+          category: 'Reports',
+          starred: false,
+          sizeBytes: pkgBytes.byteLength,
+          pageCount: converted.pageCount,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          lastOpenedAt: new Date().toISOString(),
+          pdfData: converted.pdfBytes,
+          ocrText: converted.extractedText,
+          rawHtmlContent: converted.rawHtmlContent,
+          sourceFormat: 'kpf',
+        };
+        await onSaveNewDocument(newKpfDoc);
+        setFeedback(
+          `Saved "${outFile}" to ElimikaPDF Library and opened in KPF Reader!`
+        );
+        if (onOpenInEditor) {
+          onOpenInEditor(newKpfDoc);
+        }
+      } catch {
+        setFeedback('Could not open the converted KPF file in Reader.');
+      } finally {
+        setIsBusy(false);
+      }
+    };
+
+    const progressPct =
+      kpfTotalPages > 0
+        ? Math.min(100, Math.round((kpfProgressPage / kpfTotalPages) * 100))
+        : 0;
+
     return (
-      <div className="space-y-6">
+      <div className="space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
           <div>
             <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-2">
@@ -3642,41 +3869,229 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                 KPF
               </span>
               <span>
-                PDF to KPF — Amazon Kindle Create &amp; KDP Publishing Studio
+                PDF to KPF — High-Accuracy Kindle Package Converter &amp; Studio
               </span>
             </h2>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-              Convert <strong>{selectedDoc.name}</strong> into an Amazon Kindle
-              Package Format (<strong>.KPF</strong>) with Reflowable chapters or
-              Print Replica pages ready for Kindle Direct Publishing (KDP).
+              Convert PDF documents into ElimikaPDF &amp; Kindle compatible{' '}
+              <strong>.KPF</strong> packages preserving text, tables,
+              mathematical equations, hyperlinks, and print-replica figures.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <label className="px-3.5 py-2.5 rounded-xl border border-[#4A1D5E]/40 bg-[#F4EFF8] dark:bg-[#241631] text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#EAE0F3] text-xs font-bold flex items-center gap-1.5 cursor-pointer">
+              <Upload className="w-3.5 h-3.5" />
+              <span>Select PDF File (Storage / Drive)</span>
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                onChange={handleSelectPdfFileForKpf}
+                className="hidden"
+              />
+            </label>
+
             <button
               type="button"
               onClick={() => handleDownloadKindlePackage('epub')}
               disabled={isBusy || kpfChapters.length === 0}
-              className="px-4 py-2.5 rounded-xl border border-[#E47911]/50 bg-[#FFF8F1] dark:bg-[#241911] text-[#C25E00] dark:text-[#FDBA74] hover:bg-[#FFEDD5] text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="px-3.5 py-2.5 rounded-xl border border-[#E47911]/50 bg-[#FFF8F1] dark:bg-[#241911] text-[#C25E00] dark:text-[#FDBA74] hover:bg-[#FFEDD5] text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Export KDP .EPUB</span>
+              <span>Export .EPUB</span>
             </button>
+
+            <button
+              type="button"
+              onClick={handleShareConvertedKpf}
+              disabled={isBusy || kpfChapters.length === 0}
+              className="px-3.5 py-2.5 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <span>Share .KPF</span>
+            </button>
+
             <button
               type="button"
               onClick={() => handleDownloadKindlePackage('kpf')}
               disabled={isBusy || kpfChapters.length === 0}
-              className="px-5 py-2.5 rounded-xl bg-[#E47911] hover:bg-[#C8680B] text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
+              className="px-4 py-2.5 rounded-xl bg-[#E47911] hover:bg-[#C8680B] text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
             >
               <Download className="w-4 h-4" />
               <span>
                 {isBusy
-                  ? 'Packaging Kindle .KPF...'
-                  : 'Convert & Download .KPF'}
+                  ? 'Converting PDF to .KPF...'
+                  : 'Convert & Save .KPF'}
               </span>
             </button>
           </div>
         </div>
+
+        {/* Selected File Summary, Validation Badge & OCR Option */}
+        <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+          <div className="flex flex-wrap items-center gap-3 text-xs">
+            <span className="font-bold text-[#14101B] dark:text-[#F4F1F8]">
+              File: {effectiveSourceName}
+            </span>
+            <span className="px-2 py-0.5 rounded-md bg-[#E4DFEC]/60 dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF] font-mono text-[11px]">
+              Size:{' '}
+              {formatBytes(
+                kpfValidationReport?.fileSizeBytes ||
+                  effectiveSourceBytes.byteLength
+              )}
+            </span>
+            <span className="px-2 py-0.5 rounded-md bg-[#E4DFEC]/60 dark:bg-[#261F33] text-[#4A1D5E] dark:text-[#D5B3FF] font-mono text-[11px]">
+              Pages:{' '}
+              {kpfValidationReport?.pageCount ||
+                selectedDoc?.pageCount ||
+                kpfChapters.length}
+            </span>
+            {kpfValidationReport?.valid && (
+              <span className="px-2 py-0.5 rounded-md bg-[#16A34A]/15 text-[#15803D] dark:text-[#4ADE80] font-bold text-[11px]">
+                Validated PDF
+              </span>
+            )}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1.5 text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={kpfEnableOcr}
+                onChange={(e) => {
+                  const nextOcr = e.target.checked;
+                  setKpfEnableOcr(nextOcr);
+                  if (effectiveSourceBytes.byteLength > 0) {
+                    runPdfToKpfConversionPipeline(
+                      effectiveSourceBytes,
+                      effectiveSourceName,
+                      nextOcr
+                    );
+                  }
+                }}
+                className="accent-[#E47911]"
+              />
+              <span>Enable OCR for Scanned Pages</span>
+            </label>
+
+            {effectiveSourceBytes.byteLength > 0 && !isBusy && (
+              <button
+                type="button"
+                onClick={() =>
+                  runPdfToKpfConversionPipeline(
+                    effectiveSourceBytes,
+                    effectiveSourceName,
+                    kpfEnableOcr
+                  )
+                }
+                className="px-3 py-1.5 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] text-[11px] font-bold cursor-pointer hover:bg-[#4A1D5E]/20"
+              >
+                Re-run Conversion
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Real-time Conversion Progress Bar & Cancel Control */}
+        {isBusy && kpfStatusText && (
+          <div className="p-4 rounded-2xl bg-[#FFF8F1] dark:bg-[#241911] border border-[#E47911]/40 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs font-bold text-[#C25E00] dark:text-[#FDBA74]">
+                {kpfStatusText}
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="text-xs font-mono font-bold text-[#C25E00] dark:text-[#FDBA74]">
+                  Page {kpfProgressPage} / {Math.max(1, kpfTotalPages)} (
+                  {progressPct}%)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    kpfCancelRef.current = true;
+                  }}
+                  className="px-3 py-1 rounded-lg bg-[#DC2626] text-white text-[11px] font-bold cursor-pointer hover:bg-[#B91C1C]"
+                >
+                  Cancel Conversion
+                </button>
+              </div>
+            </div>
+            <div className="w-full h-2.5 rounded-full bg-[#E47911]/20 overflow-hidden">
+              <div
+                style={{ width: `${progressPct}%` }}
+                className="h-full bg-[#E47911] transition-all duration-200"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Clear Error Message + Retry / Unlock Recovery */}
+        {kpfErrorMsg && (
+          <div className="p-4 rounded-2xl bg-[#FEF2F2] dark:bg-[#2A1215] border border-[#DC2626]/40 flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="text-xs font-bold text-[#DC2626] dark:text-[#F87171]">
+                PDF-to-KPF Conversion Error
+              </div>
+              <p className="text-xs text-[#7F1D1D] dark:text-[#FCA5A5]">
+                {kpfErrorMsg}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {effectiveSourceBytes.byteLength > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    runPdfToKpfConversionPipeline(
+                      effectiveSourceBytes,
+                      effectiveSourceName,
+                      kpfEnableOcr
+                    )
+                  }
+                  className="px-3.5 py-2 rounded-xl bg-[#DC2626] text-white text-xs font-bold cursor-pointer hover:bg-[#B91C1C]"
+                >
+                  Retry Conversion
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Conversion Success Notification + Open Converted File Button */}
+        {!isBusy && !kpfErrorMsg && kpfConvertedPackage && (
+          <div className="p-4 rounded-2xl bg-[#F0FDF4] dark:bg-[#0F2419] border border-[#16A34A]/40 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80] flex items-center gap-1.5">
+                <Check className="w-4 h-4" />
+                <span>
+                  KPF Package Ready: {kpfConvertedPackage.fileName} (
+                  {kpfConvertedPackage.chapterCount} chapters ·{' '}
+                  {formatBytes(kpfConvertedPackage.bytes.byteLength)})
+                </span>
+              </div>
+              <p className="text-[11px] text-[#166534] dark:text-[#86EFAC] mt-0.5">
+                Preserved layout, selectable text, tables, mathematical symbols,
+                and print-replica pages. Ready to reopen in ElimikaPDF Reader or
+                share.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleOpenConvertedKpfInReader}
+                className="px-4 py-2 rounded-xl bg-[#16A34A] hover:bg-[#15803D] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>Open Converted .KPF in Reader</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleDownloadKindlePackage('kpf')}
+                className="px-3.5 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#16A34A]/40 text-[#15803D] dark:text-[#4ADE80] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download .KPF</span>
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* KDP Book Metadata & Layout Mode Controls */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-3 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4">
@@ -3716,10 +4131,10 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
               className="w-full px-3 py-2 text-xs font-bold rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]"
             >
               <option value="reflowable">
-                Reflowable Kindle eBook (Text &amp; Chapters)
+                Reflowable Kindle eBook (Text, Tables &amp; Equations)
               </option>
               <option value="print-replica">
-                Print Replica Fixed-Layout (Textbooks &amp; Exams)
+                Print Replica Fixed-Layout (Exact Page + Searchable Text)
               </option>
             </select>
           </div>
@@ -3780,6 +4195,15 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                     p.{ch.pageNumber}
                   </span>
                 </div>
+                <div className="flex items-center gap-1.5 mt-1 text-[10px] opacity-75">
+                  <span>{ch.orientation || 'portrait'}</span>
+                  {ch.tables && ch.tables.length > 0 && (
+                    <span>· {ch.tables.length} tbl</span>
+                  )}
+                  {ch.equations && ch.equations.length > 0 && (
+                    <span>· {ch.equations.length} eq</span>
+                  )}
+                </div>
               </button>
             ))}
           </div>
@@ -3791,7 +4215,9 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                 Edit Kindle Chapter #{activeKpfChapterIdx + 1}
               </span>
               <span className="text-[11px] text-[#6E667D]">
-                Source Page {activeChapter?.pageNumber || 1}
+                Source Page {activeChapter?.pageNumber || 1} (
+                {activeChapter?.widthPt || 595}×{activeChapter?.heightPt || 842}
+                pt)
               </span>
             </div>
             {activeChapter && (
@@ -3894,27 +4320,58 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                   <h4 className="text-sm font-bold leading-snug">
                     {activeChapter.title}
                   </h4>
-                  {kpfLayoutMode === 'print-replica' &&
-                    activeChapter.imageDataUrl && (
-                      <img
-                        src={activeChapter.imageDataUrl}
-                        alt={activeChapter.title}
-                        className="w-full h-auto rounded border border-black/10 my-2"
-                      />
-                    )}
+                  {activeChapter.imageDataUrl && (
+                    <img
+                      src={activeChapter.imageDataUrl}
+                      alt={activeChapter.title}
+                      className="w-full h-auto rounded border border-black/10 my-2"
+                    />
+                  )}
                   {activeChapter.paragraphs.map((para, pIdx) => (
                     <p
                       key={pIdx}
-                      style={{ fontSize: `${Math.round(12 * (kpfFontScale / 100))}px` }}
+                      style={{
+                        fontSize: `${Math.round(12 * (kpfFontScale / 100))}px`,
+                      }}
                       className="leading-relaxed text-justify"
                     >
                       {para}
                     </p>
                   ))}
+                  {activeChapter.equations &&
+                    activeChapter.equations.map((eq, eqIdx) => (
+                      <div
+                        key={eqIdx}
+                        className="my-2 p-2 rounded bg-black/5 dark:bg-white/5 border-l-2 border-[#4A1D5E] font-mono text-[11px] text-center"
+                      >
+                        {eq}
+                      </div>
+                    ))}
+                  {activeChapter.tables &&
+                    activeChapter.tables.map((tbl, tIdx) => (
+                      <div key={tIdx} className="overflow-x-auto my-2">
+                        <table className="w-full border-collapse text-[10px]">
+                          <tbody>
+                            {tbl.map((row, rIdx) => (
+                              <tr key={rIdx}>
+                                {row.map((cell, cIdx) => (
+                                  <td
+                                    key={cIdx}
+                                    className="border border-current/25 px-1.5 py-1"
+                                  >
+                                    {cell}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ))}
                 </div>
               ) : (
                 <p className="text-xs opacity-70">
-                  Extracting chapters for Kindle preview...
+                  Select a PDF file above to preview and convert into KPF...
                 </p>
               )}
             </div>
@@ -4436,5 +4893,1252 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
     );
   }
 
+  // ============================================================================
+  // MULTI-COLOR QR CODE GENERATOR WORKSPACE ('qr-generator')
+  // ============================================================================
+  if (activeTool === 'qr-generator') {
+    return (
+      <QrCodeGeneratorWorkspace
+        isBusy={isBusy}
+        setIsBusy={setIsBusy}
+        setFeedback={setFeedback}
+        onSaveNewDocument={onSaveNewDocument}
+        onOpenInEditor={onOpenInEditor}
+      />
+    );
+  }
+
   return null;
 };
+
+interface QrCodeGeneratorWorkspaceProps {
+  isBusy: boolean;
+  setIsBusy: (busy: boolean) => void;
+  setFeedback: (msg: string | null) => void;
+  onSaveNewDocument: (doc: StoredDocument) => Promise<void>;
+  onOpenInEditor?: (doc: StoredDocument) => void;
+}
+
+const QR_COLOR_PRESETS: {
+  id: string;
+  label: string;
+  fgPrimary: string;
+  fgSecondary: string;
+  useGradient: boolean;
+  eyeColor: string;
+  useCustomEye: boolean;
+  bgColor: string;
+}[] = [
+  {
+    id: 'royal-purple',
+    label: 'Royal Purple',
+    fgPrimary: '#4A1D5E',
+    fgSecondary: '#7C3AED',
+    useGradient: true,
+    eyeColor: '#2563EB',
+    useCustomEye: true,
+    bgColor: '#FFFFFF',
+  },
+  {
+    id: 'classic-black',
+    label: 'Classic Black',
+    fgPrimary: '#111827',
+    fgSecondary: '#111827',
+    useGradient: false,
+    eyeColor: '#111827',
+    useCustomEye: false,
+    bgColor: '#FFFFFF',
+  },
+  {
+    id: 'ocean-blue',
+    label: 'Ocean Blue',
+    fgPrimary: '#1D4ED8',
+    fgSecondary: '#0891B2',
+    useGradient: true,
+    eyeColor: '#0F172A',
+    useCustomEye: true,
+    bgColor: '#F8FAFC',
+  },
+  {
+    id: 'emerald-teal',
+    label: 'Emerald Teal',
+    fgPrimary: '#0D9488',
+    fgSecondary: '#16A34A',
+    useGradient: true,
+    eyeColor: '#065F46',
+    useCustomEye: true,
+    bgColor: '#F0FDFA',
+  },
+  {
+    id: 'crimson-sunset',
+    label: 'Crimson Sunset',
+    fgPrimary: '#E11D48',
+    fgSecondary: '#EA580C',
+    useGradient: true,
+    eyeColor: '#9F1239',
+    useCustomEye: true,
+    bgColor: '#FFFDF9',
+  },
+  {
+    id: 'cyber-indigo',
+    label: 'Cyber Indigo',
+    fgPrimary: '#4F46E5',
+    fgSecondary: '#DB2777',
+    useGradient: true,
+    eyeColor: '#7C3AED',
+    useCustomEye: true,
+    bgColor: '#FAF5FF',
+  },
+  {
+    id: 'gold-navy',
+    label: 'Navy & Coral',
+    fgPrimary: '#1E293B',
+    fgSecondary: '#334155',
+    useGradient: false,
+    eyeColor: '#D97706',
+    useCustomEye: true,
+    bgColor: '#FFFBEB',
+  },
+  {
+    id: 'forest-berry',
+    label: 'Forest & Berry',
+    fgPrimary: '#15803D',
+    fgSecondary: '#0284C7',
+    useGradient: true,
+    eyeColor: '#BE123C',
+    useCustomEye: true,
+    bgColor: '#FFFFFF',
+  },
+  {
+    id: 'dark-neon',
+    label: 'Dark Neon Cyan',
+    fgPrimary: '#38BDF8',
+    fgSecondary: '#A855F7',
+    useGradient: true,
+    eyeColor: '#2DD4BF',
+    useCustomEye: true,
+    bgColor: '#0F172A',
+  },
+  {
+    id: 'midnight-gold',
+    label: 'Midnight Gold',
+    fgPrimary: '#F59E0B',
+    fgSecondary: '#FDE047',
+    useGradient: true,
+    eyeColor: '#FB923C',
+    useCustomEye: true,
+    bgColor: '#18181B',
+  },
+];
+
+const QrCodeGeneratorWorkspace: React.FC<QrCodeGeneratorWorkspaceProps> = ({
+  isBusy,
+  setIsBusy,
+  setFeedback,
+  onSaveNewDocument,
+  onOpenInEditor,
+}) => {
+  const [contentType, setContentType] = useState<
+    'url' | 'text' | 'wifi' | 'vcard' | 'email' | 'phone'
+  >('url');
+
+  // Content fields
+  const [urlInput, setUrlInput] = useState('https://elimikapdf.app');
+  const [textInput, setTextInput] = useState(
+    'ElimikaPDF — Verified Document & Multi-Format Reader'
+  );
+  const [wifiSsid, setWifiSsid] = useState('Elimika_Office_5G');
+  const [wifiPassword, setWifiPassword] = useState('Welcome2026!');
+  const [wifiEncryption, setWifiEncryption] = useState<'WPA' | 'WEP' | 'nopass'>(
+    'WPA'
+  );
+  const [vcardName, setVcardName] = useState('Jane Doe');
+  const [vcardOrg, setVcardOrg] = useState('ElimikaPDF Studio');
+  const [vcardPhone, setVcardPhone] = useState('+255 700 123 456');
+  const [vcardEmail, setVcardEmail] = useState('jane@elimikapdf.app');
+  const [emailTo, setEmailTo] = useState('support@elimikapdf.app');
+  const [emailSubject, setEmailSubject] = useState('Document Inquiry');
+  const [emailBody, setEmailBody] = useState(
+    'Hello, please find the attached PDF document.'
+  );
+  const [phoneInput, setPhoneInput] = useState('+255700123456');
+
+  // Color & Style controls
+  const [fgPrimary, setFgPrimary] = useState('#4A1D5E');
+  const [fgSecondary, setFgSecondary] = useState('#2563EB');
+  const [useGradient, setUseGradient] = useState(true);
+  const [useCustomEyeColor, setUseCustomEyeColor] = useState(true);
+  const [eyeColor, setEyeColor] = useState('#0D9488');
+  const [bgColor, setBgColor] = useState('#FFFFFF');
+  const [dotStyle, setDotStyle] = useState<'square' | 'rounded' | 'dots'>(
+    'rounded'
+  );
+  const [errorLevel, setErrorLevel] = useState<'L' | 'M' | 'Q' | 'H'>('M');
+  const [qrSizePx, setQrSizePx] = useState<number>(512);
+  const [quietMargin, setQuietMargin] = useState<number>(2);
+  const [showBadgeLabel, setShowBadgeLabel] = useState<boolean>(true);
+  const [badgeLabelText, setBadgeLabelText] = useState<string>('SCAN ME');
+  const [pdfSheetLayout, setPdfSheetLayout] = useState<'single' | 'grid-12'>(
+    'single'
+  );
+  const [outputFileName, setOutputFileName] = useState<string>('Custom_QR_Code');
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [savedQrPdfDoc, setSavedQrPdfDoc] = useState<StoredDocument | null>(
+    null
+  );
+
+  // Build final encoded QR string
+  const resolvedQrPayload = React.useMemo(() => {
+    switch (contentType) {
+      case 'url':
+        return urlInput.trim() || 'https://elimikapdf.app';
+      case 'text':
+        return textInput.trim() || 'ElimikaPDF';
+      case 'wifi': {
+        const s = wifiSsid.replace(/([\\;,:])/g, '\\$1');
+        const p = wifiPassword.replace(/([\\;,:])/g, '\\$1');
+        return `WIFI:T:${wifiEncryption};S:${s};P:${p};;`;
+      }
+      case 'vcard':
+        return [
+          'BEGIN:VCARD',
+          'VERSION:3.0',
+          `FN:${vcardName.trim() || 'Contact'}`,
+          vcardOrg.trim() ? `ORG:${vcardOrg.trim()}` : '',
+          vcardPhone.trim() ? `TEL;TYPE=CELL:${vcardPhone.trim()}` : '',
+          vcardEmail.trim() ? `EMAIL:${vcardEmail.trim()}` : '',
+          'END:VCARD',
+        ]
+          .filter(Boolean)
+          .join('\n');
+      case 'email':
+        return `mailto:${emailTo.trim()}?subject=${encodeURIComponent(
+          emailSubject.trim()
+        )}&body=${encodeURIComponent(emailBody.trim())}`;
+      case 'phone':
+        return `tel:${phoneInput.trim()}`;
+      default:
+        return 'https://elimikapdf.app';
+    }
+  }, [
+    contentType,
+    urlInput,
+    textInput,
+    wifiSsid,
+    wifiPassword,
+    wifiEncryption,
+    vcardName,
+    vcardOrg,
+    vcardPhone,
+    vcardEmail,
+    emailTo,
+    emailSubject,
+    emailBody,
+    phoneInput,
+  ]);
+
+  // Draw multi-color styled QR code onto the HTML5 canvas whenever options change
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    try {
+      const qr = QRCode.create(resolvedQrPayload || 'https://elimikapdf.app', {
+        errorCorrectionLevel: errorLevel,
+      });
+      const moduleCount = qr.modules.size;
+      const data = qr.modules.data;
+      const totalModules = moduleCount + quietMargin * 2;
+      const badgeExtraH =
+        showBadgeLabel && badgeLabelText.trim()
+          ? Math.round(qrSizePx * 0.14)
+          : 0;
+
+      canvas.width = qrSizePx;
+      canvas.height = qrSizePx + badgeExtraH;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      // Fill background
+      ctx.fillStyle = bgColor;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      const cellSize = qrSizePx / totalModules;
+
+      // Prepare foreground fill (solid or linear gradient)
+      let mainFillStyle: string | CanvasGradient = fgPrimary;
+      if (useGradient && fgPrimary !== fgSecondary) {
+        const grad = ctx.createLinearGradient(0, 0, qrSizePx, qrSizePx);
+        grad.addColorStop(0, fgPrimary);
+        grad.addColorStop(1, fgSecondary);
+        mainFillStyle = grad;
+      }
+
+      const isFinderEyeModule = (r: number, c: number): boolean => {
+        const inTopLeft = r < 7 && c < 7;
+        const inTopRight = r < 7 && c >= moduleCount - 7;
+        const inBottomLeft = r >= moduleCount - 7 && c < 7;
+        return inTopLeft || inTopRight || inBottomLeft;
+      };
+
+      const drawRoundedRect = (
+        x: number,
+        y: number,
+        w: number,
+        h: number,
+        radius: number
+      ) => {
+        const r = Math.min(radius, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + r, y);
+        ctx.arcTo(x + w, y, x + w, y + h, r);
+        ctx.arcTo(x + w, y + h, x, y + h, r);
+        ctx.arcTo(x, y + h, x, y, r);
+        ctx.arcTo(x, y, x + w, y, r);
+        ctx.closePath();
+        ctx.fill();
+      };
+
+      for (let r = 0; r < moduleCount; r++) {
+        for (let c = 0; c < moduleCount; c++) {
+          const isDark = Boolean(data[r * moduleCount + c]);
+          if (!isDark) continue;
+
+          const x = (c + quietMargin) * cellSize;
+          const y = (r + quietMargin) * cellSize;
+          const isEye = isFinderEyeModule(r, c);
+
+          ctx.fillStyle =
+            isEye && useCustomEyeColor ? eyeColor : mainFillStyle;
+
+          if (dotStyle === 'dots' && !isEye) {
+            const cx = x + cellSize / 2;
+            const cy = y + cellSize / 2;
+            ctx.beginPath();
+            ctx.arc(cx, cy, cellSize * 0.44, 0, Math.PI * 2);
+            ctx.fill();
+          } else if (dotStyle === 'rounded') {
+            drawRoundedRect(
+              x + cellSize * 0.04,
+              y + cellSize * 0.04,
+              cellSize * 0.92,
+              cellSize * 0.92,
+              cellSize * 0.32
+            );
+          } else {
+            ctx.fillRect(x, y, Math.ceil(cellSize), Math.ceil(cellSize));
+          }
+        }
+      }
+
+      // Optional bottom caption frame badge
+      if (showBadgeLabel && badgeLabelText.trim()) {
+        const badgeW = qrSizePx * 0.64;
+        const badgeH = badgeExtraH * 0.72;
+        const badgeX = (qrSizePx - badgeW) / 2;
+        const badgeY = qrSizePx + (badgeExtraH - badgeH) / 2 - 4;
+        ctx.fillStyle = useCustomEyeColor ? eyeColor : fgPrimary;
+        drawRoundedRect(badgeX, badgeY, badgeW, badgeH, badgeH / 2);
+
+        ctx.fillStyle = '#FFFFFF';
+        ctx.font = `800 ${Math.round(badgeH * 0.52)}px Inter, system-ui, sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(
+          badgeLabelText.trim().slice(0, 26),
+          qrSizePx / 2,
+          badgeY + badgeH / 2 + 1
+        );
+      }
+    } catch (err) {
+      console.error('QR render error:', err);
+    }
+  }, [
+    resolvedQrPayload,
+    fgPrimary,
+    fgSecondary,
+    useGradient,
+    useCustomEyeColor,
+    eyeColor,
+    bgColor,
+    dotStyle,
+    errorLevel,
+    qrSizePx,
+    quietMargin,
+    showBadgeLabel,
+    badgeLabelText,
+  ]);
+
+  const handleDownloadPng = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    canvas.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const cleanBase =
+        outputFileName.trim().replace(/\.[^.]+$/, '') || 'Custom_QR_Code';
+      a.href = url;
+      a.download = `${cleanBase}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      setFeedback(`Downloaded high-resolution PNG "${cleanBase}.png".`);
+    }, 'image/png');
+  };
+
+  const handleDownloadSvg = () => {
+    try {
+      const qr = QRCode.create(resolvedQrPayload || 'https://elimikapdf.app', {
+        errorCorrectionLevel: errorLevel,
+      });
+      const moduleCount = qr.modules.size;
+      const data = qr.modules.data;
+      const totalModules = moduleCount + quietMargin * 2;
+      const size = qrSizePx;
+      const cellSize = size / totalModules;
+      const badgeExtraH =
+        showBadgeLabel && badgeLabelText.trim() ? Math.round(size * 0.14) : 0;
+      const totalH = size + badgeExtraH;
+
+      const isFinderEyeModule = (r: number, c: number): boolean => {
+        const inTopLeft = r < 7 && c < 7;
+        const inTopRight = r < 7 && c >= moduleCount - 7;
+        const inBottomLeft = r >= moduleCount - 7 && c < 7;
+        return inTopLeft || inTopRight || inBottomLeft;
+      };
+
+      const elements: string[] = [];
+      for (let r = 0; r < moduleCount; r++) {
+        for (let c = 0; c < moduleCount; c++) {
+          if (!data[r * moduleCount + c]) continue;
+          const x = (c + quietMargin) * cellSize;
+          const y = (r + quietMargin) * cellSize;
+          const isEye = isFinderEyeModule(r, c);
+          const fill =
+            isEye && useCustomEyeColor
+              ? eyeColor
+              : useGradient
+                ? 'url(#qrGrad)'
+                : fgPrimary;
+
+          if (dotStyle === 'dots' && !isEye) {
+            elements.push(
+              `<circle cx="${(x + cellSize / 2).toFixed(2)}" cy="${(
+                y +
+                cellSize / 2
+              ).toFixed(2)}" r="${(cellSize * 0.44).toFixed(
+                2
+              )}" fill="${fill}" />`
+            );
+          } else if (dotStyle === 'rounded') {
+            elements.push(
+              `<rect x="${(x + cellSize * 0.04).toFixed(2)}" y="${(
+                y +
+                cellSize * 0.04
+              ).toFixed(2)}" width="${(cellSize * 0.92).toFixed(2)}" height="${(
+                cellSize * 0.92
+              ).toFixed(2)}" rx="${(cellSize * 0.3).toFixed(
+                2
+              )}" fill="${fill}" />`
+            );
+          } else {
+            elements.push(
+              `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${cellSize.toFixed(
+                2
+              )}" height="${cellSize.toFixed(2)}" fill="${fill}" />`
+            );
+          }
+        }
+      }
+
+      if (showBadgeLabel && badgeLabelText.trim()) {
+        const badgeW = size * 0.64;
+        const badgeH = badgeExtraH * 0.72;
+        const badgeX = (size - badgeW) / 2;
+        const badgeY = size + (badgeExtraH - badgeH) / 2 - 4;
+        const badgeFill = useCustomEyeColor ? eyeColor : fgPrimary;
+        const safeLabel = badgeLabelText
+          .trim()
+          .slice(0, 26)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+        elements.push(
+          `<rect x="${badgeX.toFixed(2)}" y="${badgeY.toFixed(
+            2
+          )}" width="${badgeW.toFixed(2)}" height="${badgeH.toFixed(
+            2
+          )}" rx="${(badgeH / 2).toFixed(2)}" fill="${badgeFill}" />`,
+          `<text x="${(size / 2).toFixed(2)}" y="${(
+            badgeY +
+            badgeH / 2 +
+            badgeH * 0.18
+          ).toFixed(
+            2
+          )}" text-anchor="middle" fill="#FFFFFF" font-family="Inter, system-ui, sans-serif" font-weight="800" font-size="${Math.round(
+            badgeH * 0.52
+          )}">${safeLabel}</text>`
+        );
+      }
+
+      const svgMarkup = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${totalH}" width="${size}" height="${totalH}">
+  <defs>
+    <linearGradient id="qrGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${fgPrimary}" />
+      <stop offset="100%" stop-color="${fgSecondary}" />
+    </linearGradient>
+  </defs>
+  <rect width="100%" height="100%" fill="${bgColor}" rx="16" />
+  ${elements.join('\n  ')}
+</svg>`;
+
+      const bytes = new TextEncoder().encode(svgMarkup);
+      const cleanBase =
+        outputFileName.trim().replace(/\.[^.]+$/, '') || 'Custom_QR_Code';
+      downloadBytesAsFile(bytes, `${cleanBase}.svg`, 'image/svg+xml');
+      setFeedback(`Downloaded vector SVG "${cleanBase}.svg".`);
+    } catch (err) {
+      console.error('SVG export error:', err);
+    }
+  };
+
+  const handleGeneratePrintablePdf = async (openInEditorAfter = false) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    setIsBusy(true);
+    setFeedback(null);
+    try {
+      const pngDataUrl = canvas.toDataURL('image/png');
+      const pngBytes = Uint8Array.from(
+        atob(pngDataUrl.split(',')[1]),
+        (c) => c.charCodeAt(0)
+      );
+
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([595.28, 841.89]); // A4
+      const { width, height } = page.getSize();
+      const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const qrImg = await pdfDoc.embedPng(pngBytes);
+      const aspect = canvas.height / canvas.width;
+
+      if (pdfSheetLayout === 'single') {
+        page.drawText('CUSTOM COLOR QR CODE', {
+          x: 56,
+          y: height - 64,
+          size: 16,
+          font: fontBold,
+          color: rgb(0.29, 0.11, 0.37),
+        });
+        page.drawText(
+          `Content: ${resolvedQrPayload.replace(/\s+/g, ' ').slice(0, 78)}`,
+          {
+            x: 56,
+            y: height - 86,
+            size: 10,
+            font: fontRegular,
+            color: rgb(0.38, 0.35, 0.44),
+          }
+        );
+
+        const drawW = 320;
+        const drawH = Math.min(440, drawW * aspect);
+        const drawX = (width - drawW) / 2;
+        const drawY = (height - drawH) / 2 - 10;
+
+        page.drawRectangle({
+          x: drawX - 14,
+          y: drawY - 14,
+          width: drawW + 28,
+          height: drawH + 28,
+          borderColor: rgb(0.85, 0.82, 0.9),
+          borderWidth: 1.5,
+          color: rgb(1, 1, 1),
+        });
+
+        page.drawImage(qrImg, {
+          x: drawX,
+          y: drawY,
+          width: drawW,
+          height: drawH,
+        });
+      } else {
+        // 12-Up Sticker Sheet Grid (3 cols x 4 rows)
+        const cols = 3;
+        const rows = 4;
+        const marginX = 42;
+        const marginY = 48;
+        const cellW = (width - marginX * 2) / cols;
+        const cellH = (height - marginY * 2) / rows;
+
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const boxX = marginX + c * cellW;
+            const boxY = height - marginY - (r + 1) * cellH;
+            const qrW = Math.min(cellW - 24, (cellH - 24) / aspect);
+            const qrH = qrW * aspect;
+            const qrX = boxX + (cellW - qrW) / 2;
+            const qrY = boxY + (cellH - qrH) / 2;
+
+            page.drawRectangle({
+              x: boxX + 4,
+              y: boxY + 4,
+              width: cellW - 8,
+              height: cellH - 8,
+              borderColor: rgb(0.88, 0.86, 0.92),
+              borderWidth: 0.8,
+            });
+            page.drawImage(qrImg, {
+              x: qrX,
+              y: qrY,
+              width: qrW,
+              height: qrH,
+            });
+          }
+        }
+      }
+
+      const pdfBytes = await pdfDoc.save();
+      const cleanBase =
+        outputFileName.trim().replace(/\.[^.]+$/, '') || 'Custom_QR_Code';
+      const outPdfName = `${cleanBase}.pdf`;
+
+      const newDoc: StoredDocument = {
+        id: `doc-qr-${Date.now()}`,
+        name: outPdfName,
+        category: 'Other',
+        starred: false,
+        sizeBytes: pdfBytes.byteLength,
+        pageCount: 1,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        lastOpenedAt: new Date().toISOString(),
+        pdfData: pdfBytes,
+        ocrText: resolvedQrPayload,
+      };
+
+      await onSaveNewDocument(newDoc);
+      setSavedQrPdfDoc(newDoc);
+
+      if (openInEditorAfter && onOpenInEditor) {
+        onOpenInEditor(newDoc);
+      } else {
+        downloadBytesAsFile(pdfBytes, outPdfName, 'application/pdf');
+        setFeedback(
+          `Saved "${outPdfName}" to My Files and downloaded printable QR PDF.`
+        );
+      }
+    } catch (err) {
+      console.error('QR PDF error:', err);
+      setFeedback('Could not generate printable QR PDF.');
+    } finally {
+      setIsBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
+        <div>
+          <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+            Multi-Color QR Code Generator Studio
+          </h2>
+          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
+            Create custom QR codes in any color, dual-tone gradient, custom corner eyes, and dot styles — export as PNG, Vector SVG, or Printable PDF.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleDownloadPng}
+            className="px-4 py-2 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Download PNG</span>
+          </button>
+          <button
+            type="button"
+            onClick={handleDownloadSvg}
+            className="px-3.5 py-2 rounded-lg bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs"
+          >
+            <Code2 className="w-3.5 h-3.5" />
+            <span>Download SVG</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleGeneratePrintablePdf(false)}
+            disabled={isBusy}
+            className="px-3.5 py-2 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-40"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            <span>Save &amp; Download PDF</span>
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {/* Left 7 Columns: Content + Color & Style Controls */}
+        <div className="lg:col-span-7 space-y-5">
+          {/* 1. QR Content Type Selector */}
+          <div className="p-4 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                1. Choose QR Content Type
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {(
+                  [
+                    { id: 'url', label: 'Website URL' },
+                    { id: 'text', label: 'Plain Text' },
+                    { id: 'wifi', label: 'Wi-Fi' },
+                    { id: 'vcard', label: 'vCard Contact' },
+                    { id: 'email', label: 'Email' },
+                    { id: 'phone', label: 'Phone' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setContentType(tab.id)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                      contentType === tab.id
+                        ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12]'
+                        : 'bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-[#6E667D] dark:text-[#A39BB5]'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {contentType === 'url' && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                  Website or Document Link URL
+                </label>
+                <input
+                  type="url"
+                  value={urlInput}
+                  onChange={(e) => setUrlInput(e.target.value)}
+                  placeholder="https://example.com"
+                  className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-medium"
+                />
+              </div>
+            )}
+
+            {contentType === 'text' && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                  Text, Document Serial Number, or Message
+                </label>
+                <textarea
+                  rows={3}
+                  value={textInput}
+                  onChange={(e) => setTextInput(e.target.value)}
+                  placeholder="Enter any text or note to encode..."
+                  className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-medium"
+                />
+              </div>
+            )}
+
+            {contentType === 'wifi' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Wi-Fi Network Name (SSID)
+                  </label>
+                  <input
+                    type="text"
+                    value={wifiSsid}
+                    onChange={(e) => setWifiSsid(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Wi-Fi Password
+                  </label>
+                  <input
+                    type="text"
+                    value={wifiPassword}
+                    onChange={(e) => setWifiPassword(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Security Type
+                  </label>
+                  <select
+                    value={wifiEncryption}
+                    onChange={(e) =>
+                      setWifiEncryption(
+                        e.target.value as 'WPA' | 'WEP' | 'nopass'
+                      )
+                    }
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold"
+                  >
+                    <option value="WPA">WPA / WPA2 / WPA3</option>
+                    <option value="WEP">WEP</option>
+                    <option value="nopass">Open (No Password)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            {contentType === 'vcard' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Full Name
+                  </label>
+                  <input
+                    type="text"
+                    value={vcardName}
+                    onChange={(e) => setVcardName(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Company / Organization
+                  </label>
+                  <input
+                    type="text"
+                    value={vcardOrg}
+                    onChange={(e) => setVcardOrg(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Phone Number
+                  </label>
+                  <input
+                    type="tel"
+                    value={vcardPhone}
+                    onChange={(e) => setVcardPhone(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={vcardEmail}
+                    onChange={(e) => setVcardEmail(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+              </div>
+            )}
+
+            {contentType === 'email' && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Recipient Email
+                  </label>
+                  <input
+                    type="email"
+                    value={emailTo}
+                    onChange={(e) => setEmailTo(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Subject Line
+                  </label>
+                  <input
+                    type="text"
+                    value={emailSubject}
+                    onChange={(e) => setEmailSubject(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                    Message Body
+                  </label>
+                  <input
+                    type="text"
+                    value={emailBody}
+                    onChange={(e) => setEmailBody(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                  />
+                </div>
+              </div>
+            )}
+
+            {contentType === 'phone' && (
+              <div>
+                <label className="block text-[11px] font-semibold text-[#6E667D] mb-1">
+                  Phone Number (with country code)
+                </label>
+                <input
+                  type="tel"
+                  value={phoneInput}
+                  onChange={(e) => setPhoneInput(e.target.value)}
+                  placeholder="+255700123456"
+                  className="w-full px-3.5 py-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* 2. Color Theme Presets & Custom Color Pickers */}
+          <div className="p-4 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                2. Multi-Color Palette &amp; Custom Colors
+              </span>
+              <span className="text-[11px] text-[#6E667D]">
+                Click a preset or pick any custom hex color
+              </span>
+            </div>
+
+            {/* One-Click Color Theme Presets */}
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+              {QR_COLOR_PRESETS.map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  onClick={() => {
+                    setFgPrimary(preset.fgPrimary);
+                    setFgSecondary(preset.fgSecondary);
+                    setUseGradient(preset.useGradient);
+                    setEyeColor(preset.eyeColor);
+                    setUseCustomEyeColor(preset.useCustomEye);
+                    setBgColor(preset.bgColor);
+                  }}
+                  className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] hover:border-[#4A1D5E] flex items-center gap-2 text-left cursor-pointer transition-all"
+                >
+                  <div className="flex -space-x-1 shrink-0">
+                    <span
+                      style={{ backgroundColor: preset.fgPrimary }}
+                      className="w-4 h-4 rounded-full border border-white shadow-2xs"
+                    />
+                    <span
+                      style={{ backgroundColor: preset.eyeColor }}
+                      className="w-4 h-4 rounded-full border border-white shadow-2xs"
+                    />
+                  </div>
+                  <span className="text-[11px] font-bold truncate">
+                    {preset.label}
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            {/* Custom Color Pickers Grid */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+              {/* Primary Foreground Color */}
+              <div className="p-2.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+                <label className="block text-[11px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Primary QR Color
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={fgPrimary}
+                    onChange={(e) => setFgPrimary(e.target.value)}
+                    className="w-8 h-8 rounded-lg cursor-pointer border-0 bg-transparent"
+                  />
+                  <input
+                    type="text"
+                    value={fgPrimary}
+                    onChange={(e) => setFgPrimary(e.target.value)}
+                    className="w-full px-2 py-1 rounded bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs uppercase"
+                  />
+                </div>
+              </div>
+
+              {/* Secondary Gradient Color */}
+              <div className="p-2.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    2nd Gradient Color
+                  </label>
+                  <input
+                    type="checkbox"
+                    checked={useGradient}
+                    onChange={(e) => setUseGradient(e.target.checked)}
+                    className="accent-[#4A1D5E] cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={fgSecondary}
+                    disabled={!useGradient}
+                    onChange={(e) => setFgSecondary(e.target.value)}
+                    className="w-8 h-8 rounded-lg cursor-pointer border-0 bg-transparent disabled:opacity-40"
+                  />
+                  <input
+                    type="text"
+                    value={fgSecondary}
+                    disabled={!useGradient}
+                    onChange={(e) => setFgSecondary(e.target.value)}
+                    className="w-full px-2 py-1 rounded bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs uppercase disabled:opacity-40"
+                  />
+                </div>
+              </div>
+
+              {/* Corner Finder Eye Color */}
+              <div className="p-2.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Corner Eye Color
+                  </label>
+                  <input
+                    type="checkbox"
+                    checked={useCustomEyeColor}
+                    onChange={(e) => setUseCustomEyeColor(e.target.checked)}
+                    className="accent-[#4A1D5E] cursor-pointer"
+                  />
+                </div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={eyeColor}
+                    disabled={!useCustomEyeColor}
+                    onChange={(e) => setEyeColor(e.target.value)}
+                    className="w-8 h-8 rounded-lg cursor-pointer border-0 bg-transparent disabled:opacity-40"
+                  />
+                  <input
+                    type="text"
+                    value={eyeColor}
+                    disabled={!useCustomEyeColor}
+                    onChange={(e) => setEyeColor(e.target.value)}
+                    className="w-full px-2 py-1 rounded bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs uppercase disabled:opacity-40"
+                  />
+                </div>
+              </div>
+
+              {/* Background Color */}
+              <div className="p-2.5 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+                <label className="block text-[11px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Background Color
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    value={bgColor}
+                    onChange={(e) => setBgColor(e.target.value)}
+                    className="w-8 h-8 rounded-lg cursor-pointer border-0 bg-transparent"
+                  />
+                  <input
+                    type="text"
+                    value={bgColor}
+                    onChange={(e) => setBgColor(e.target.value)}
+                    className="w-full px-2 py-1 rounded bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] font-mono text-xs uppercase"
+                  />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. Dot Pattern Style, Frame Badge & PDF Export Settings */}
+          <div className="p-4 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div>
+              <label className="block text-[11px] font-bold text-[#6E667D] mb-1">
+                QR Module Shape
+              </label>
+              <div className="flex gap-1">
+                {(
+                  [
+                    { id: 'square', label: 'Square' },
+                    { id: 'rounded', label: 'Rounded' },
+                    { id: 'dots', label: 'Dots' },
+                  ] as const
+                ).map((st) => (
+                  <button
+                    key={st.id}
+                    type="button"
+                    onClick={() => setDotStyle(st.id)}
+                    className={`flex-1 py-1.5 rounded-lg text-xs font-bold border cursor-pointer ${
+                      dotStyle === st.id
+                        ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] border-[#4A1D5E]'
+                        : 'bg-white dark:bg-[#16111F] border-[#E4DFEC] dark:border-[#261F33]'
+                    }`}
+                  >
+                    {st.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#6E667D] mb-1">
+                Error Correction &amp; Size
+              </label>
+              <div className="flex gap-2">
+                <select
+                  value={errorLevel}
+                  onChange={(e) =>
+                    setErrorLevel(e.target.value as 'L' | 'M' | 'Q' | 'H')
+                  }
+                  className="flex-1 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold"
+                >
+                  <option value="L">Low (7%)</option>
+                  <option value="M">Medium (15%)</option>
+                  <option value="Q">Quartile (25%)</option>
+                  <option value="H">High (30%)</option>
+                </select>
+                <select
+                  value={qrSizePx}
+                  onChange={(e) => setQrSizePx(Number(e.target.value))}
+                  className="w-24 px-2 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold"
+                >
+                  <option value={320}>320px</option>
+                  <option value={512}>512px</option>
+                  <option value={800}>800px</option>
+                  <option value={1024}>1024px</option>
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#6E667D] mb-1">
+                Quiet Margin ({quietMargin} modules)
+              </label>
+              <input
+                type="range"
+                min={1}
+                max={6}
+                value={quietMargin}
+                onChange={(e) => setQuietMargin(Number(e.target.value))}
+                className="w-full accent-[#4A1D5E] cursor-pointer mt-1"
+              />
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] font-bold text-[#6E667D]">
+                  Bottom Caption Badge
+                </label>
+                <input
+                  type="checkbox"
+                  checked={showBadgeLabel}
+                  onChange={(e) => setShowBadgeLabel(e.target.checked)}
+                  className="accent-[#4A1D5E] cursor-pointer"
+                />
+              </div>
+              <input
+                type="text"
+                value={badgeLabelText}
+                disabled={!showBadgeLabel}
+                onChange={(e) => setBadgeLabelText(e.target.value)}
+                placeholder="SCAN ME"
+                className="w-full px-3 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold disabled:opacity-40"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#6E667D] mb-1">
+                Printable PDF Layout
+              </label>
+              <select
+                value={pdfSheetLayout}
+                onChange={(e) =>
+                  setPdfSheetLayout(e.target.value as 'single' | 'grid-12')
+                }
+                className="w-full px-3 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold"
+              >
+                <option value="single">Single Large QR Poster (A4)</option>
+                <option value="grid-12">12-Up Sticker Sheet (3×4 Grid)</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-[#6E667D] mb-1">
+                Output Filename
+              </label>
+              <input
+                type="text"
+                value={outputFileName}
+                onChange={(e) => setOutputFileName(e.target.value)}
+                placeholder="Custom_QR_Code"
+                className="w-full px-3 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Right 5 Columns: Live Multi-Color QR Preview & Instant Export Actions */}
+        <div className="lg:col-span-5 flex flex-col items-center p-5 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-4">
+          <div className="w-full flex items-center justify-between">
+            <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1.5">
+              <QrCode className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+              <span>Live Multi-Color QR Preview</span>
+            </span>
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80]">
+              Scannable Ready
+            </span>
+          </div>
+
+          <div className="p-4 rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] shadow-sm flex items-center justify-center">
+            <canvas
+              ref={canvasRef}
+              className="max-w-full h-auto w-64 sm:w-72 rounded-xl"
+            />
+          </div>
+
+          <div className="w-full grid grid-cols-2 gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={handleDownloadPng}
+              className="py-2.5 px-3 rounded-xl bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <Download className="w-4 h-4" />
+              <span>Download PNG</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadSvg}
+              className="py-2.5 px-3 rounded-xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow-xs"
+            >
+              <Code2 className="w-4 h-4" />
+              <span>Download SVG</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleGeneratePrintablePdf(false)}
+              disabled={isBusy}
+              className="col-span-2 py-2.5 px-4 rounded-xl bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-xs disabled:opacity-40"
+            >
+              <FileText className="w-4 h-4" />
+              <span>
+                {pdfSheetLayout === 'grid-12'
+                  ? 'Generate 12-Up QR Sticker Sheet PDF'
+                  : 'Generate Printable QR Poster PDF'}
+              </span>
+            </button>
+
+            {savedQrPdfDoc && onOpenInEditor && (
+              <button
+                type="button"
+                onClick={() => onOpenInEditor(savedQrPdfDoc)}
+                className="col-span-2 py-2 px-3 rounded-xl border border-[#4A1D5E] dark:border-[#9D5CE5] text-[#4A1D5E] dark:text-[#D5B3FF] text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>Open Saved QR PDF in Document Editor</span>
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+

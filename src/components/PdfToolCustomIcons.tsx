@@ -920,7 +920,33 @@ export const PdfToolCustomIcon: React.FC<ToolIconProps> = ({
         </svg>
       );
 
-    // 34. WORKFLOW PDF
+    // 34. MULTI-COLOR QR CODE GENERATOR: Vibrant multi-colored QR code finder eyes & data modules
+    case 'qr-generator':
+      return (
+        <svg viewBox="0 0 44 44" fill="none" className={className}>
+          <rect x="2" y="2" width="40" height="40" rx="10" fill="#F5F0FF" />
+          {/* Top-left purple finder eye */}
+          <rect x="7" y="7" width="12" height="12" rx="3" stroke="#6D28D9" strokeWidth="2.4" />
+          <rect x="10.5" y="10.5" width="5" height="5" rx="1.2" fill="#6D28D9" />
+          {/* Top-right teal finder eye */}
+          <rect x="25" y="7" width="12" height="12" rx="3" stroke="#0D9488" strokeWidth="2.4" />
+          <rect x="28.5" y="10.5" width="5" height="5" rx="1.2" fill="#0D9488" />
+          {/* Bottom-left coral finder eye */}
+          <rect x="7" y="25" width="12" height="12" rx="3" stroke="#E11D48" strokeWidth="2.4" />
+          <rect x="10.5" y="28.5" width="5" height="5" rx="1.2" fill="#E11D48" />
+          {/* Colorful bottom-right & center data modules */}
+          <rect x="25" y="25" width="4.2" height="4.2" rx="1.2" fill="#2563EB" />
+          <rect x="32.5" y="25" width="4.5" height="4.2" rx="1.2" fill="#D97706" />
+          <rect x="28.5" y="29" width="4.5" height="4.2" rx="1.2" fill="#6D28D9" />
+          <rect x="25" y="33" width="4.2" height="4" rx="1.2" fill="#0D9488" />
+          <rect x="32.5" y="33" width="4.5" height="4" rx="1.2" fill="#E11D48" />
+          <rect x="20.5" y="14" width="3" height="3" rx="0.9" fill="#2563EB" />
+          <rect x="20.5" y="20.5" width="3" height="3" rx="0.9" fill="#D97706" />
+          <rect x="14" y="20.5" width="3" height="3" rx="0.9" fill="#0D9488" />
+        </svg>
+      );
+
+    // 35. WORKFLOW PDF
     case 'workflow-pdf':
     default:
       return (

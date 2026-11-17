@@ -57,6 +57,7 @@ import {
   ChevronDown,
   ChevronUp,
   BookOpen,
+  QrCode,
 } from 'lucide-react';
 import { StoredDocument, ToolId } from '../types/document';
 import {
@@ -89,6 +90,8 @@ import {
   WordContentBlock,
   PdfPageWordContent,
   PdfToWordMode,
+  prepareBrowserFidelityHtml,
+  wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
 import { formatBytes } from '../services/storageService';
 import {
@@ -431,6 +434,16 @@ export const PDF_TOOLS_CATALOG: PdfCatalogToolItem[] = [
     categories: ['Optimize PDF', 'Edit PDF'],
     icon: Sparkles,
     badgeColor: 'bg-[#F5EFFF] text-[#7C3AED] dark:bg-[#7C3AED]/20 dark:text-[#C4B5FD]',
+  },
+  {
+    id: 'qr-generator',
+    label: 'QR Code Generator',
+    description:
+      'Generate custom multi-color QR codes with gradients, custom corner eyes, and logos for URLs, Wi-Fi, contacts, or PDFs.',
+    categories: ['Edit PDF', 'Convert PDF', 'PDF Intelligence'],
+    icon: QrCode,
+    badgeColor: 'bg-[#F5EFFF] text-[#6D28D9] dark:bg-[#6D28D9]/20 dark:text-[#C4B5FD]',
+    isNew: true,
   },
   {
     id: 'workflow-pdf',
@@ -1715,7 +1728,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   // 8B. SMART COLOR-PRESERVING WATERMARK REMOVER STATE & HANDLERS
   const [wmRemovePreserveColor, setWmRemovePreserveColor] = useState(true);
   const [wmRemoveStrength, setWmRemoveStrength] = useState(0); // -30 (Gentle) to +45 (Max)
-  const [wmTextClarityBoost, setWmTextClarityBoost] = useState(32); // 0 to 60 (Darkens & sharpens faint words)
+  const [wmTextClarityBoost, setWmTextClarityBoost] = useState(22); // 0 to 50 (Natural crisp words & thin math symbols +, =)
   const [wmRemoveSolidBanners, setWmRemoveSolidBanners] = useState(false);
   const [wmTargetRgb, setWmTargetRgb] = useState<[number, number, number] | null>(
     null
@@ -1885,6 +1898,10 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
   );
   const [wordBlocks, setWordBlocks] = useState<WordContentBlock[]>([]);
   const [wordPlainText, setWordPlainText] = useState<string>('');
+  const [wordHtmlPreview, setWordHtmlPreview] = useState<string>('');
+  const [wordPreviewMode, setWordPreviewMode] = useState<'arranged' | 'text'>(
+    'arranged'
+  );
   const [wordTextEdited, setWordTextEdited] = useState<boolean>(false);
   const [wordPageSize, setWordPageSize] = useState<'A4' | 'Letter' | 'Legal'>(
     'A4'
@@ -1916,6 +1933,8 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
       setWordFileName(baseName || 'Converted_Word_Document');
       setWordBlocks(parsed.blocks);
       setWordPlainText(parsed.plainText);
+      setWordHtmlPreview(parsed.htmlPreview);
+      setWordPreviewMode('arranged');
       setWordTextEdited(false);
 
       // Immediately generate the PDF preview and save to Local Vault so it's ready right away
@@ -1983,9 +2002,14 @@ Prepared by: ElimikaPDF Document Engineering
 Date: ${new Date().toISOString().slice(0, 10)}
 Status: Approved for Production Distribution`;
 
+    const sampleBlocks = plainTextToWordBlocks(sampleText);
     setWordFileName('Service_Agreement_2026');
     setWordPlainText(sampleText);
-    setWordBlocks(plainTextToWordBlocks(sampleText));
+    setWordBlocks(sampleBlocks);
+    setWordHtmlPreview(
+      wordBlocksToCleanHtml(sampleBlocks, 'Service_Agreement_2026')
+    );
+    setWordPreviewMode('arranged');
     setWordTextEdited(false);
     setConvertedWordPdfResult(null);
   };
@@ -2015,6 +2039,11 @@ Status: Approved for Production Distribution`;
         ? wordFileName.trim()
         : `${wordFileName.trim() || 'Converted_Word'}.pdf`;
 
+      const htmlForDoc =
+        !wordTextEdited && wordHtmlPreview.trim()
+          ? wordHtmlPreview
+          : wordBlocksToCleanHtml(blocksToUse, cleanName);
+
       const newDoc: StoredDocument = {
         id: convertedWordPdfResult?.doc.id || `doc-word2pdf-${Date.now()}`,
         name: cleanName,
@@ -2026,6 +2055,9 @@ Status: Approved for Production Distribution`;
         updatedAt: new Date().toISOString(),
         lastOpenedAt: new Date().toISOString(),
         pdfData: pdfBytes,
+        ocrText: wordPlainText,
+        rawHtmlContent: htmlForDoc,
+        sourceFormat: convertedWordPdfResult?.doc.sourceFormat || 'docx',
       };
       await onSaveNewDocument(newDoc);
       setConvertedWordPdfResult({
@@ -2214,7 +2246,7 @@ Status: Approved for Production Distribution`;
       case 'ppt-to-pdf':
         return '.pptx,.ppt,.odp,.pdf,.txt,.md,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,text/plain';
       case 'excel-to-pdf':
-        return '.csv,.tsv,.xlsx,.xls,.ods,.txt,text/csv,text/tab-separated-values,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain';
+        return '.xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,application/vnd.oasis.opendocument.spreadsheet,text/csv,text/tab-separated-values,application/csv,application/excel,application/x-excel,application/x-msexcel,text/plain';
       case 'html-to-pdf':
       case 'html-reader':
         return SUPPORTED_DOCUMENT_ACCEPT;
@@ -2558,41 +2590,43 @@ Status: Approved for Production Distribution`;
           </div>
 
           {/* Universal File Upload & Active Document Selector (Available for EVERY Tool) */}
-          <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-1.5">
-            {activeTool !== 'merge-pdf' &&
-              activeTool !== 'img-to-pdf' &&
-              activeTool !== 'word-to-pdf' &&
-              activeTool !== 'ppt-to-pdf' &&
-              activeTool !== 'excel-to-pdf' &&
-              activeTool !== 'html-to-pdf' &&
-              documents.length > 0 && (
-                <select
-                  value={selectedDocId}
-                  onChange={(e) => setSelectedDocId(e.target.value)}
-                  className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2.5 py-1.5 text-[#14101B] dark:text-[#F4F1F8] flex-1 min-w-0 max-w-[220px] sm:max-w-xs truncate cursor-pointer"
-                >
-                  {documents.map((doc) => (
-                    <option key={doc.id} value={doc.id}>
-                      {doc.name} ({doc.pageCount}p)
-                    </option>
-                  ))}
-                </select>
-              )}
+          {activeTool !== 'qr-generator' && (
+            <div className="flex flex-wrap items-center gap-2 bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-1.5">
+              {activeTool !== 'merge-pdf' &&
+                activeTool !== 'img-to-pdf' &&
+                activeTool !== 'word-to-pdf' &&
+                activeTool !== 'ppt-to-pdf' &&
+                activeTool !== 'excel-to-pdf' &&
+                activeTool !== 'html-to-pdf' &&
+                documents.length > 0 && (
+                  <select
+                    value={selectedDocId}
+                    onChange={(e) => setSelectedDocId(e.target.value)}
+                    className="text-xs font-bold bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#342B47] rounded-lg px-2.5 py-1.5 text-[#14101B] dark:text-[#F4F1F8] flex-1 min-w-0 max-w-[220px] sm:max-w-xs truncate cursor-pointer"
+                  >
+                    {documents.map((doc) => (
+                      <option key={doc.id} value={doc.id}>
+                        {doc.name} ({doc.pageCount}p)
+                      </option>
+                    ))}
+                  </select>
+                )}
 
-            <label className="px-3.5 py-2 rounded-lg bg-[#E5322D] hover:bg-[#C8231E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-xs transition-colors">
-              <Upload className="w-3.5 h-3.5 shrink-0" />
-              <span>{getToolUploadLabel(activeTool)}</span>
-              <input
-                type="file"
-                accept={getToolUploadAccept(activeTool)}
-                multiple={
-                  activeTool === 'merge-pdf' || activeTool === 'img-to-pdf'
-                }
-                className="hidden"
-                onChange={handleUniversalToolFileUpload}
-              />
-            </label>
-          </div>
+              <label className="px-3.5 py-2 rounded-lg bg-[#E5322D] hover:bg-[#C8231E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 shadow-xs transition-colors">
+                <Upload className="w-3.5 h-3.5 shrink-0" />
+                <span>{getToolUploadLabel(activeTool)}</span>
+                <input
+                  type="file"
+                  accept={getToolUploadAccept(activeTool)}
+                  multiple={
+                    activeTool === 'merge-pdf' || activeTool === 'img-to-pdf'
+                  }
+                  className="hidden"
+                  onChange={handleUniversalToolFileUpload}
+                />
+              </label>
+            </div>
+          )}
         </div>
         {/* 1. MERGE PDF */}
         {activeTool === 'merge-pdf' && (
@@ -4492,10 +4526,10 @@ Status: Approved for Production Distribution`;
                 <div className="flex items-center gap-1.5">
                   {(
                     [
-                      { label: 'Gentle', val: -15, clarity: 28 },
-                      { label: 'Balanced HD', val: 0, clarity: 35 },
-                      { label: 'Strong', val: 15, clarity: 42 },
-                      { label: 'Max Clarity', val: 25, clarity: 55 },
+                      { label: 'Gentle', val: -15, clarity: 16 },
+                      { label: 'Natural HD', val: 0, clarity: 22 },
+                      { label: 'Crisp Ink', val: 10, clarity: 30 },
+                      { label: 'Strong Clean', val: 20, clarity: 38 },
                     ] as const
                   ).map((preset) => (
                     <button
@@ -4535,14 +4569,14 @@ Status: Approved for Production Distribution`;
 
                 <div className="space-y-1">
                   <div className="flex justify-between text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
-                    <span>Word Sharpness &amp; Ink Darkness Boost</span>
+                    <span>Word &amp; Symbol (+, =) Clarity</span>
                     <span>+{wmTextClarityBoost}%</span>
                   </div>
                   <input
                     type="range"
-                    min={0}
-                    max={60}
-                    step={4}
+                    min={5}
+                    max={50}
+                    step={3}
                     value={wmTextClarityBoost}
                     onChange={(e) =>
                       setWmTextClarityBoost(Number(e.target.value))
@@ -4935,29 +4969,72 @@ Status: Approved for Production Distribution`;
               </div>
             )}
 
-            {/* Editable Word Content Preview & Composer */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  Word Content Preview & Live Editor (Use # for Headings, * for Bullets)
-                </label>
-                {wordBlocks.some((b) => b.type === 'table' || b.type === 'image') &&
-                  !wordTextEdited && (
-                    <span className="text-[11px] font-semibold text-[#2563EB]">
-                      ✓ Preserving extracted Word tables & embedded images
+            {/* Arranged Microsoft Word Page Preview & Editable Text Composer */}
+            <div className="space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Microsoft Word Document Arrangement &amp; Live Editor
+                  </label>
+                  {wordBlocks.length > 0 && !wordTextEdited && (
+                    <span className="px-2 py-0.5 rounded-full bg-[#2563EB]/10 text-[#2563EB] text-[10px] font-bold">
+                      ✓ Exact Word Layout Preserved (Alignments, Tables, Colors &amp; Indents)
                     </span>
                   )}
+                </div>
+
+                {wordHtmlPreview.trim() && (
+                  <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <button
+                      type="button"
+                      onClick={() => setWordPreviewMode('arranged')}
+                      className={`px-3 py-1 rounded-md text-xs font-bold cursor-pointer ${
+                        wordPreviewMode === 'arranged'
+                          ? 'bg-[#2563EB] text-white'
+                          : 'text-[#6E667D]'
+                      }`}
+                    >
+                      Word Page View (Arranged)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setWordPreviewMode('text')}
+                      className={`px-3 py-1 rounded-md text-xs font-bold cursor-pointer ${
+                        wordPreviewMode === 'text'
+                          ? 'bg-[#4A1D5E] text-white'
+                          : 'text-[#6E667D]'
+                      }`}
+                    >
+                      Edit Plain Text
+                    </button>
+                  </div>
+                )}
               </div>
-              <textarea
-                rows={11}
-                value={wordPlainText}
-                onChange={(e) => {
-                  setWordPlainText(e.target.value);
-                  setWordTextEdited(true);
-                }}
-                placeholder="Upload a .DOCX / .DOC file above, click 'Load Sample Word Doc', or type/paste your document content here to convert into a PDF..."
-                className="w-full p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs leading-relaxed text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
-              />
+
+              {wordHtmlPreview.trim() && wordPreviewMode === 'arranged' ? (
+                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-[#E8ECF2] overflow-hidden h-[520px] shadow-xs">
+                  <iframe
+                    title="Microsoft Word Print Layout Preview"
+                    sandbox="allow-scripts allow-same-origin"
+                    srcDoc={prepareBrowserFidelityHtml(
+                      wordHtmlPreview,
+                      wordFileName
+                    )}
+                    className="w-full h-full border-0 bg-[#E8ECF2]"
+                  />
+                </div>
+              ) : (
+                <textarea
+                  rows={11}
+                  value={wordPlainText}
+                  onChange={(e) => {
+                    setWordPlainText(e.target.value);
+                    setWordTextEdited(true);
+                  }}
+                  placeholder="Upload a .DOCX / .DOC file above, click 'Load Sample Word Doc', or type/paste your document content here to convert into a PDF..."
+                  className="w-full p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs leading-relaxed text-[#14101B] dark:text-[#F4F1F8] focus:outline-none focus:border-[#4A1D5E]"
+                />
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-3">

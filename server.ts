@@ -232,6 +232,224 @@ async function startServer() {
   });
 
   // =========================================================================
+  // FIREBASE-FREE GOOGLE DRIVE DIRECT LINK / FILE ID PROXY
+  // Downloads any shared Google Drive file, Google Sheet (.xlsx), Google Doc (.pdf/.docx),
+  // or Google Presentation (.pptx/.pdf) without requiring Firebase Auth!
+  // =========================================================================
+  app.get('/api/google-drive/fetch-link', async (req, res) => {
+    try {
+      const rawUrl = String(req.query.url || '').trim();
+      if (!rawUrl) {
+        res.status(400).json({ error: 'Missing Google Drive URL or File ID.' });
+        return;
+      }
+
+      // Extract Google Drive / Docs / Sheets / Slides file ID
+      const idFromPath =
+        rawUrl.match(/\/d\/([a-zA-Z0-9_-]{10,})/)?.[1] ||
+        rawUrl.match(/[?&]id=([a-zA-Z0-9_-]{10,})/)?.[1] ||
+        (/^[a-zA-Z0-9_-]{15,}$/.test(rawUrl) ? rawUrl : '');
+
+      const isGoogleSheet = /docs\.google\.com\/spreadsheets/i.test(rawUrl);
+      const isGoogleDoc = /docs\.google\.com\/document/i.test(rawUrl);
+      const isGoogleSlides = /docs\.google\.com\/presentation/i.test(rawUrl);
+
+      const candidateUrls: Array<{
+        url: string;
+        fallbackName: string;
+        fallbackMime: string;
+      }> = [];
+
+      if (idFromPath) {
+        if (isGoogleSheet) {
+          candidateUrls.push({
+            url: `https://docs.google.com/spreadsheets/d/${idFromPath}/export?format=xlsx`,
+            fallbackName: `Google_Sheet_${idFromPath.slice(0, 8)}.xlsx`,
+            fallbackMime:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          });
+        } else if (isGoogleDoc) {
+          candidateUrls.push({
+            url: `https://docs.google.com/document/d/${idFromPath}/export?format=pdf`,
+            fallbackName: `Google_Doc_${idFromPath.slice(0, 8)}.pdf`,
+            fallbackMime: 'application/pdf',
+          });
+        } else if (isGoogleSlides) {
+          candidateUrls.push({
+            url: `https://docs.google.com/presentation/d/${idFromPath}/export/pdf`,
+            fallbackName: `Google_Slides_${idFromPath.slice(0, 8)}.pdf`,
+            fallbackMime: 'application/pdf',
+          });
+        }
+
+        // Standard Google Drive direct download endpoints
+        candidateUrls.push(
+          {
+            url: `https://drive.usercontent.google.com/download?id=${idFromPath}&export=download&confirm=t`,
+            fallbackName: `Drive_File_${idFromPath.slice(0, 8)}`,
+            fallbackMime: 'application/octet-stream',
+          },
+          {
+            url: `https://drive.google.com/uc?export=download&id=${idFromPath}&confirm=t`,
+            fallbackName: `Drive_File_${idFromPath.slice(0, 8)}`,
+            fallbackMime: 'application/octet-stream',
+          },
+          {
+            url: `https://docs.google.com/spreadsheets/d/${idFromPath}/export?format=xlsx`,
+            fallbackName: `Google_Sheet_${idFromPath.slice(0, 8)}.xlsx`,
+            fallbackMime:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          },
+          {
+            url: `https://docs.google.com/document/d/${idFromPath}/export?format=pdf`,
+            fallbackName: `Google_Doc_${idFromPath.slice(0, 8)}.pdf`,
+            fallbackMime: 'application/pdf',
+          }
+        );
+      } else if (/^https?:\/\//i.test(rawUrl)) {
+        candidateUrls.push({
+          url: rawUrl,
+          fallbackName: 'Imported_Cloud_Document.pdf',
+          fallbackMime: 'application/octet-stream',
+        });
+      } else {
+        res.status(400).json({
+          error:
+            'Invalid Google Drive link or File ID. Paste a link like https://drive.google.com/file/d/... or https://docs.google.com/spreadsheets/d/...',
+        });
+        return;
+      }
+
+      for (const candidate of candidateUrls) {
+        try {
+          const upstream = await fetch(candidate.url, {
+            redirect: 'follow',
+            headers: {
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            },
+          });
+
+          if (!upstream.ok) continue;
+
+          const contentType = (
+            upstream.headers.get('content-type') || ''
+          ).toLowerCase();
+          const contentDisp =
+            upstream.headers.get('content-disposition') || '';
+
+          // Extract filename from Content-Disposition if present
+          let detectedFilename = '';
+          const utf8Match = contentDisp.match(/filename\*=UTF-8''([^;\r\n]+)/i);
+          const quotedMatch = contentDisp.match(/filename="([^"]+)"/i);
+          const plainMatch = contentDisp.match(/filename=([^;\r\n]+)/i);
+          if (utf8Match) {
+            try {
+              detectedFilename = decodeURIComponent(utf8Match[1].trim());
+            } catch {
+              detectedFilename = utf8Match[1].trim();
+            }
+          } else if (quotedMatch) {
+            detectedFilename = quotedMatch[1].trim();
+          } else if (plainMatch) {
+            detectedFilename = plainMatch[1].trim();
+          }
+
+          const arrBuf = await upstream.arrayBuffer();
+          const buf = Buffer.from(arrBuf);
+          if (buf.length === 0) continue;
+
+          // If Google returned a login or permission HTML page instead of the actual file (unless the file itself had a content-disposition attachment header)
+          const isAttachment = /attachment/i.test(contentDisp) || Boolean(detectedFilename);
+          if (contentType.includes('text/html') && !isAttachment) {
+            const htmlSample = buf.subarray(0, 4096).toString('utf8');
+            if (
+              /accounts\.google\.com|ServiceLogin|Sign in - Google Accounts/i.test(
+                htmlSample
+              )
+            ) {
+              continue;
+            }
+          }
+
+          // Infer extension from magic bytes or content-type if filename has no extension
+          let finalName = detectedFilename || candidate.fallbackName;
+          let finalMime =
+            contentType && !contentType.includes('text/html')
+              ? contentType.split(';')[0].trim()
+              : candidate.fallbackMime;
+
+          if (!/\.[a-z0-9]{2,5}$/i.test(finalName)) {
+            if (
+              buf.length >= 4 &&
+              buf[0] === 0x25 &&
+              buf[1] === 0x50 &&
+              buf[2] === 0x44 &&
+              buf[3] === 0x46
+            ) {
+              finalName += '.pdf';
+              finalMime = 'application/pdf';
+            } else if (
+              buf.length >= 4 &&
+              buf[0] === 0x50 &&
+              buf[1] === 0x4b
+            ) {
+              if (finalMime.includes('spreadsheet')) {
+                finalName += '.xlsx';
+              } else if (finalMime.includes('wordprocessingml')) {
+                finalName += '.docx';
+              } else if (finalMime.includes('presentationml')) {
+                finalName += '.pptx';
+              } else if (finalMime.includes('epub')) {
+                finalName += '.epub';
+              } else {
+                finalName += '.xlsx';
+                finalMime =
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+              }
+            } else if (
+              buf.length >= 4 &&
+              buf[0] === 0xd0 &&
+              buf[1] === 0xcf &&
+              buf[2] === 0x11 &&
+              buf[3] === 0xe0
+            ) {
+              finalName += '.xls';
+              finalMime = 'application/vnd.ms-excel';
+            } else if (finalMime.includes('csv')) {
+              finalName += '.csv';
+            } else {
+              finalName += '.pdf';
+            }
+          }
+
+          res.setHeader('Content-Type', finalMime);
+          res.setHeader('X-Drive-Filename', encodeURIComponent(finalName));
+          res.setHeader('X-Drive-Mimetype', finalMime);
+          res.setHeader(
+            'Access-Control-Expose-Headers',
+            'X-Drive-Filename, X-Drive-Mimetype'
+          );
+          res.status(200).send(buf);
+          return;
+        } catch {
+          // Try next candidate URL
+        }
+      }
+
+      res.status(422).json({
+        error:
+          'Could not download this Google Drive link directly. Make sure the file link sharing is set to "Anyone with the link", or click "Select from Google Drive App (Device Picker)" below to pick any private file directly from your device.',
+      });
+    } catch (err) {
+      console.error('Error in /api/google-drive/fetch-link:', err);
+      res.status(500).json({
+        error: 'Failed to fetch file from Google Drive link.',
+      });
+    }
+  });
+
+  // =========================================================================
   // DROPBOX 3P OAUTH 2.0 ENDPOINTS (Popup Flow for Iframe Environment)
   // =========================================================================
   const getDropboxRedirectUri = (req: express.Request): string => {

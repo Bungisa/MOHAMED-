@@ -201,16 +201,18 @@ public class PdfOpenActivity extends Activity {
         // Only append an extension if the resolved display name has no extension at all
         if (!result.contains(".")) {
             String lowerMime = mimeType != null ? mimeType.toLowerCase() : "";
-            if (lowerMime.contains("epub")) {
-                result = result + ".epub";
-            } else if (lowerMime.contains("kpf")) {
+            if (lowerMime.contains("kpf") || lowerMime.contains("amazon.ebook")) {
                 result = result + ".kpf";
+            } else if (lowerMime.contains("epub")) {
+                result = result + ".epub";
+            } else if (lowerMime.contains("wordprocessingml")) {
+                result = result + ".docx";
+            } else if (lowerMime.contains("msword") || lowerMime.contains("ms-word")) {
+                result = result + ".doc";
             } else if (lowerMime.contains("html") || lowerMime.contains("xhtml")) {
                 result = result + ".html";
             } else if (lowerMime.contains("mobi")) {
                 result = result + ".mobi";
-            } else if (lowerMime.contains("wordprocessingml")) {
-                result = result + ".docx";
             } else if (lowerMime.contains("opendocument.text")) {
                 result = result + ".odt";
             } else {
@@ -222,7 +224,7 @@ public class PdfOpenActivity extends Activity {
 
     private static byte[] readAllBytes(InputStream is) throws Exception {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] data = new byte[16384];
+        byte[] data = new byte[65536];
         int nRead;
         while ((nRead = is.read(data, 0, data.length)) != -1) {
             buffer.write(data, 0, nRead);
@@ -237,5 +239,11 @@ public class PdfOpenActivity extends Activity {
 
     private void showToastOnUi(String message) {
         runOnUiThread(() -> Toast.makeText(getApplicationContext(), message, Toast.LENGTH_LONG).show());
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        executor.shutdownNow();
     }
 }

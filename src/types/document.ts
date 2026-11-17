@@ -44,6 +44,7 @@ export type ToolId =
   | 'translate-pdf'
   | 'pdf-to-markdown'
   | 'pdf-to-kpf'
+  | 'qr-generator'
   | 'workflow-pdf';
 
 export type DocumentCategory =

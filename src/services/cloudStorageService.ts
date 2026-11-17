@@ -9,40 +9,71 @@ import {
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // ============================================================================
-// 1. GOOGLE DRIVE CONFIGURATION (1P Workspace OAuth via Firebase Auth)
+// 1. GOOGLE DRIVE INTEGRATION (Direct Google Account Sign-In + Drive API v3)
 // ============================================================================
+const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+const auth = getAuth(app);
+
 export const SCOPES = [
   'https://www.googleapis.com/auth/drive.readonly',
   'https://www.googleapis.com/auth/drive.file',
 ];
 
-const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
-const auth = getAuth(app);
-
 const googleProvider = new GoogleAuthProvider();
 SCOPES.forEach((scope) => googleProvider.addScope(scope));
+googleProvider.setCustomParameters({
+  prompt: 'select_account',
+});
 
-// Flag to indicate if we are in the middle of a sign-in flow
+export interface GoogleAccountProfile {
+  email?: string | null;
+  displayName?: string | null;
+  photoURL?: string | null;
+}
+
+const GOOGLE_CLIENT_ID =
+  (import.meta as unknown as { env?: Record<string, string> }).env
+    ?.VITE_GOOGLE_CLIENT_ID ||
+  firebaseConfig.oAuthClientId ||
+  '';
+
+// Single-flight lock to prevent duplicate signInWithPopup calls from cancelling each other
 let isSigningInGoogle = false;
+let activeGoogleSignInPromise: Promise<{
+  user: GoogleAccountProfile;
+  accessToken: string;
+} | null> | null = null;
+let useDirectGisFallback = false;
 
 // Strictly in-memory token cache (never stored in localStorage or sessionStorage)
 let cachedGoogleAccessToken: string | null = null;
+let cachedGoogleUser: GoogleAccountProfile | null = null;
 let cachedDropboxAccessToken: string | null = null;
 let cachedDropboxAccountName: string | null = null;
 
 type GoogleAuthListener = {
-  onSuccess?: (user: User, token: string) => void;
+  onSuccess?: (user: GoogleAccountProfile, token: string) => void;
   onFailure?: () => void;
+  onSigningInChange?: (signingIn: boolean) => void;
 };
 const googleAuthListeners = new Set<GoogleAuthListener>();
 
-function notifyGoogleAuthListeners(user: User | null, token: string | null) {
+function notifyGoogleAuthListeners(
+  user: GoogleAccountProfile | null,
+  token: string | null
+) {
   googleAuthListeners.forEach((listener) => {
     if (user && token) {
       listener.onSuccess?.(user, token);
     } else {
       listener.onFailure?.();
     }
+  });
+}
+
+function notifyGoogleSigningInState(signingIn: boolean) {
+  googleAuthListeners.forEach((listener) => {
+    listener.onSigningInChange?.(signingIn);
   });
 }
 
@@ -58,28 +89,43 @@ export interface CloudFileEntry {
 }
 
 export const initGoogleDriveAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: () => void
+  onAuthSuccess?: (user: GoogleAccountProfile, token: string) => void,
+  onAuthFailure?: () => void,
+  onSigningInChange?: (signingIn: boolean) => void
 ) => {
   const listenerEntry: GoogleAuthListener = {
     onSuccess: onAuthSuccess,
     onFailure: onAuthFailure,
+    onSigningInChange,
   };
   googleAuthListeners.add(listenerEntry);
+
+  onSigningInChange?.(isSigningInGoogle);
+
+  if (cachedGoogleAccessToken && cachedGoogleUser) {
+    onAuthSuccess?.(cachedGoogleUser, cachedGoogleAccessToken);
+  } else if (!isSigningInGoogle) {
+    onAuthFailure?.();
+  }
 
   const unsubscribeFirebase = onAuthStateChanged(
     auth,
     async (user: User | null) => {
       if (user) {
+        const profile: GoogleAccountProfile = {
+          email: user.email,
+          displayName: user.displayName,
+          photoURL: user.photoURL,
+        };
+        cachedGoogleUser = profile;
         if (cachedGoogleAccessToken) {
-          if (onAuthSuccess) onAuthSuccess(user, cachedGoogleAccessToken);
+          onAuthSuccess?.(profile, cachedGoogleAccessToken);
         } else if (!isSigningInGoogle) {
-          cachedGoogleAccessToken = null;
-          if (onAuthFailure) onAuthFailure();
+          onAuthFailure?.();
         }
-      } else {
-        cachedGoogleAccessToken = null;
-        if (onAuthFailure) onAuthFailure();
+      } else if (!cachedGoogleAccessToken && !isSigningInGoogle) {
+        cachedGoogleUser = null;
+        onAuthFailure?.();
       }
     }
   );
@@ -90,57 +136,205 @@ export const initGoogleDriveAuth = (
   };
 };
 
-let inFlightGoogleSignInPromise: Promise<{
-  user: User;
+async function fetchGoogleUserProfile(
+  accessToken: string
+): Promise<GoogleAccountProfile> {
+  try {
+    const res = await fetch(
+      'https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress,photoLink)',
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      }
+    );
+    if (res.ok) {
+      const data = (await res.json()) as {
+        user?: {
+          displayName?: string;
+          emailAddress?: string;
+          photoLink?: string;
+        };
+      };
+      if (data.user) {
+        return {
+          displayName: data.user.displayName || 'Google Drive User',
+          email: data.user.emailAddress,
+          photoURL: data.user.photoLink,
+        };
+      }
+    }
+  } catch {
+    // Fallback below
+  }
+  return { displayName: 'Google Account' };
+}
+
+async function signInViaGoogleIdentityServices(): Promise<{
+  user: GoogleAccountProfile;
   accessToken: string;
-} | null> | null = null;
+} | null> {
+  if (!GOOGLE_CLIENT_ID) {
+    throw new Error('Google OAuth Client ID is not configured.');
+  }
+
+  const win = window as unknown as {
+    google?: {
+      accounts?: {
+        oauth2?: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            callback: (response: {
+              access_token?: string;
+              error?: string;
+              error_description?: string;
+            }) => void;
+            error_callback?: (err: { type?: string; message?: string }) => void;
+          }) => { requestAccessToken: (opts?: { prompt?: string }) => void };
+        };
+      };
+    };
+  };
+
+  const oauth2 = win.google?.accounts?.oauth2;
+  if (!oauth2) {
+    throw new Error(
+      'Google Sign-In service is still loading. Please tap "Sign in with Google" again.'
+    );
+  }
+
+  const token = await new Promise<string | null>((resolve, reject) => {
+    const tokenClient = oauth2.initTokenClient({
+      client_id: GOOGLE_CLIENT_ID,
+      scope: SCOPES.join(' '),
+      callback: (response) => {
+        if (response.error) {
+          if (
+            response.error === 'access_denied' ||
+            response.error === 'popup_closed_by_user'
+          ) {
+            resolve(null);
+            return;
+          }
+          reject(
+            new Error(
+              response.error_description ||
+                `Google Sign-In error: ${response.error}`
+            )
+          );
+          return;
+        }
+        resolve(response.access_token || null);
+      },
+      error_callback: (err) => {
+        if (err?.type === 'popup_closed') {
+          resolve(null);
+          return;
+        }
+        reject(
+          new Error(
+            err?.message ||
+              'Google Sign-In popup was blocked by the browser. Please tap "Sign in with Google" to continue.'
+          )
+        );
+      },
+    });
+
+    tokenClient.requestAccessToken({ prompt: 'select_account' });
+  });
+
+  if (!token) return null;
+
+  cachedGoogleAccessToken = token;
+  cachedGoogleUser = await fetchGoogleUserProfile(token);
+  notifyGoogleAuthListeners(cachedGoogleUser, cachedGoogleAccessToken);
+  return { user: cachedGoogleUser, accessToken: cachedGoogleAccessToken };
+}
 
 export const isGoogleDriveSignInInProgress = (): boolean => {
-  return isSigningInGoogle || inFlightGoogleSignInPromise !== null;
+  return isSigningInGoogle;
 };
 
-export const googleDriveSignIn = async (): Promise<{
-  user: User;
+/**
+ * Directs the user to sign in with their Google Account and returns a Google Drive OAuth access token.
+ * Deduplicates concurrent calls so a single click never opens competing popups.
+ */
+export const googleDriveSignIn = (): Promise<{
+  user: GoogleAccountProfile;
   accessToken: string;
 } | null> => {
-  if (inFlightGoogleSignInPromise) {
-    return inFlightGoogleSignInPromise;
+  if (activeGoogleSignInPromise) {
+    return activeGoogleSignInPromise;
   }
-  inFlightGoogleSignInPromise = (async () => {
+
+  isSigningInGoogle = true;
+  notifyGoogleSigningInState(true);
+
+  activeGoogleSignInPromise = (async () => {
     try {
-      isSigningInGoogle = true;
+      if (useDirectGisFallback) {
+        return await signInViaGoogleIdentityServices();
+      }
+
       const result = await signInWithPopup(auth, googleProvider);
       const credential = GoogleAuthProvider.credentialFromResult(result);
       if (!credential?.accessToken) {
-        throw new Error('Failed to get Google Drive access token from sign-in.');
+        throw new Error(
+          'Could not obtain Google Drive permission token. Please sign in again and allow Google Drive access.'
+        );
       }
+
       cachedGoogleAccessToken = credential.accessToken;
-      notifyGoogleAuthListeners(result.user, cachedGoogleAccessToken);
-      return { user: result.user, accessToken: cachedGoogleAccessToken };
+      cachedGoogleUser = {
+        email: result.user.email,
+        displayName: result.user.displayName,
+        photoURL: result.user.photoURL,
+      };
+      notifyGoogleAuthListeners(cachedGoogleUser, cachedGoogleAccessToken);
+      return { user: cachedGoogleUser, accessToken: cachedGoogleAccessToken };
     } catch (error: unknown) {
       const errCode =
-        error && typeof error === 'object' && 'code' in error
-          ? String((error as { code?: unknown }).code)
-          : '';
-      const errMsg = error instanceof Error ? error.message : String(error);
+        (error as { code?: string })?.code ||
+        (error instanceof Error ? error.message : '');
 
-      // User closed the popup or duplicate popup was cancelled: return null cleanly without console.error
+      // User closed the popup or duplicate request was superseded
       if (
-        errCode === 'auth/popup-closed-by-user' ||
-        errCode === 'auth/cancelled-popup-request' ||
-        errMsg.includes('auth/popup-closed-by-user') ||
-        errMsg.includes('auth/cancelled-popup-request')
+        errCode.includes('auth/popup-closed-by-user') ||
+        errCode.includes('auth/cancelled-popup-request') ||
+        errCode.includes('auth/user-cancelled')
       ) {
         return null;
       }
 
-      throw error;
+      // If Firebase Auth rejects the domain or environment, fall back to direct Google Identity Services
+      if (
+        errCode.includes('auth/unauthorized-domain') ||
+        errCode.includes('auth/operation-not-supported-in-this-environment')
+      ) {
+        useDirectGisFallback = true;
+        return await signInViaGoogleIdentityServices();
+      }
+
+      if (errCode.includes('auth/popup-blocked')) {
+        throw new Error(
+          'Your browser blocked the Google Sign-In window. Tap "Sign in with Google" below to open your Google Account.'
+        );
+      }
+
+      const cleanMsg =
+        error instanceof Error
+          ? error.message.replace(/^Firebase:\s*/i, '')
+          : 'Could not complete Google Sign-In. Please try again.';
+      throw new Error(cleanMsg);
     } finally {
       isSigningInGoogle = false;
-      inFlightGoogleSignInPromise = null;
+      activeGoogleSignInPromise = null;
+      notifyGoogleSigningInState(false);
     }
   })();
-  return inFlightGoogleSignInPromise;
+
+  return activeGoogleSignInPromise;
 };
 
 export const getGoogleDriveAccessTokenSync = (): string | null => {
@@ -151,18 +345,32 @@ export const getGoogleDriveAccessToken = async (): Promise<string | null> => {
   return cachedGoogleAccessToken;
 };
 
-export const getCurrentGoogleUser = (): User | null => {
-  return auth.currentUser;
+export const getCurrentGoogleUser = (): GoogleAccountProfile | null => {
+  if (cachedGoogleUser) return cachedGoogleUser;
+  if (auth.currentUser) {
+    return {
+      email: auth.currentUser.email,
+      displayName: auth.currentUser.displayName,
+      photoURL: auth.currentUser.photoURL,
+    };
+  }
+  return null;
 };
 
 export const googleDriveSignOut = async (): Promise<void> => {
-  await auth.signOut();
+  try {
+    await auth.signOut();
+  } catch {
+    // Ignore sign-out errors
+  }
   cachedGoogleAccessToken = null;
+  cachedGoogleUser = null;
   notifyGoogleAuthListeners(null, null);
 };
 
 /**
- * Lists PDF, Word (.docx/.doc), Google Docs, and image files from the user's Google Drive.
+ * Lists PDF, Excel (.xlsx/.xls/.csv/.ods), Google Sheets, Word (.docx/.doc), Google Docs,
+ * PowerPoint (.pptx/.ppt), Google Slides, eBooks (.epub/.kpf), HTML, and image files from Google Drive.
  */
 export async function listGoogleDriveFiles(
   searchQuery = ''
@@ -174,9 +382,19 @@ export async function listGoogleDriveFiles(
 
   const mimeConditions = [
     "mimeType='application/pdf'",
+    "mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'",
+    "mimeType='application/vnd.ms-excel'",
+    "mimeType='application/vnd.google-apps.spreadsheet'",
+    "mimeType='text/csv'",
+    "mimeType='application/vnd.oasis.opendocument.spreadsheet'",
     "mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document'",
     "mimeType='application/msword'",
     "mimeType='application/vnd.google-apps.document'",
+    "mimeType='application/vnd.openxmlformats-officedocument.presentationml.presentation'",
+    "mimeType='application/vnd.ms-powerpoint'",
+    "mimeType='application/vnd.google-apps.presentation'",
+    "mimeType='application/epub+zip'",
+    "mimeType='text/html'",
     "mimeType='image/jpeg'",
     "mimeType='image/png'",
     "mimeType='image/webp'",
@@ -191,7 +409,7 @@ export async function listGoogleDriveFiles(
 
   const params = new URLSearchParams({
     q,
-    pageSize: '40',
+    pageSize: '50',
     orderBy: 'modifiedTime desc',
     fields:
       'files(id,name,mimeType,size,modifiedTime,webViewLink,iconLink)',
@@ -242,7 +460,7 @@ export async function listGoogleDriveFiles(
 
 /**
  * Downloads a file from Google Drive and returns a standard browser File object.
- * If the file is a Google Doc, exports it directly as a PDF.
+ * Exports Google Sheets as .xlsx (preserving all sheets & rows) and Google Docs/Slides as .pdf.
  */
 export async function downloadGoogleDriveFile(
   entry: CloudFileEntry
@@ -252,11 +470,18 @@ export async function downloadGoogleDriveFile(
     throw new Error('AUTH_REQUIRED');
   }
 
-  const isGoogleDoc = entry.mimeType.startsWith(
+  const isGoogleSheet =
+    entry.mimeType === 'application/vnd.google-apps.spreadsheet';
+  const isGoogleWorkspaceDoc = entry.mimeType.startsWith(
     'application/vnd.google-apps.'
   );
-  const url = isGoogleDoc
-    ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.id)}/export?mimeType=application/pdf`
+
+  const exportMime = isGoogleSheet
+    ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    : 'application/pdf';
+
+  const url = isGoogleWorkspaceDoc
+    ? `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.id)}/export?mimeType=${encodeURIComponent(exportMime)}`
     : `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(entry.id)}?alt=media&supportsAllDrives=true`;
 
   const res = await fetch(url, {
@@ -277,11 +502,20 @@ export async function downloadGoogleDriveFile(
   }
 
   const blob = await res.blob();
-  const finalMime = isGoogleDoc ? 'application/pdf' : entry.mimeType || blob.type || 'application/pdf';
-  const finalName =
-    isGoogleDoc && !entry.name.toLowerCase().endsWith('.pdf')
-      ? `${entry.name}.pdf`
-      : entry.name;
+  const finalMime = isGoogleWorkspaceDoc
+    ? exportMime
+    : entry.mimeType || blob.type || inferMimeFromFilename(entry.name);
+
+  let finalName = entry.name;
+  if (isGoogleSheet && !/\.(xlsx|xls|csv)$/i.test(finalName)) {
+    finalName = `${finalName}.xlsx`;
+  } else if (
+    isGoogleWorkspaceDoc &&
+    !isGoogleSheet &&
+    !finalName.toLowerCase().endsWith('.pdf')
+  ) {
+    finalName = `${finalName}.pdf`;
+  }
 
   return new File([blob], finalName, { type: finalMime });
 }
@@ -420,7 +654,24 @@ export async function listDropboxFiles(
         query: trimmed,
         options: {
           max_results: 40,
-          file_extensions: ['pdf', 'docx', 'doc', 'jpg', 'jpeg', 'png'],
+          file_extensions: [
+            'pdf',
+            'xlsx',
+            'xls',
+            'csv',
+            'ods',
+            'docx',
+            'doc',
+            'pptx',
+            'ppt',
+            'epub',
+            'kpf',
+            'html',
+            'htm',
+            'jpg',
+            'jpeg',
+            'png',
+          ],
         },
       }),
     });
@@ -502,7 +753,9 @@ export async function listDropboxFiles(
     .filter(
       (e) =>
         e['.tag'] === 'file' &&
-        /\.(pdf|docx|doc|jpg|jpeg|png|webp)$/i.test(e.name)
+        /\.(pdf|xlsx|xls|xlsm|xlsb|ods|csv|tsv|docx|doc|odt|pptx|ppt|epub|kpf|mobi|fb2|html|htm|xhtml|jpg|jpeg|png|webp)$/i.test(
+          e.name
+        )
     )
     .map((f) => ({
       id: f.id,
@@ -602,9 +855,20 @@ export async function uploadFileToDropbox(
 function inferMimeFromFilename(name: string): string {
   const lower = name.toLowerCase();
   if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.xlsx'))
+    return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.csv')) return 'text/csv';
+  if (lower.endsWith('.ods'))
+    return 'application/vnd.oasis.opendocument.spreadsheet';
   if (lower.endsWith('.docx'))
     return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
   if (lower.endsWith('.doc')) return 'application/msword';
+  if (lower.endsWith('.pptx'))
+    return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+  if (lower.endsWith('.ppt')) return 'application/vnd.ms-powerpoint';
+  if (lower.endsWith('.epub')) return 'application/epub+zip';
+  if (lower.endsWith('.html') || lower.endsWith('.htm')) return 'text/html';
   if (lower.endsWith('.png')) return 'image/png';
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.webp')) return 'image/webp';

@@ -1,4 +1,5 @@
 import * as pdfjsLib from 'pdfjs-dist';
+import * as XLSX from 'xlsx';
 import {
   PDFDocument,
   StandardFonts,
@@ -17,6 +18,35 @@ import {
   parseUploadedWordFile,
   generatePdfFromWordBlocks,
 } from './wordConversionService';
+
+/**
+ * Ensures any string passed to pdf-lib StandardFonts (WinAnsi encoding)
+ * never throws "WinAnsi cannot encode ..." on Unicode symbols, newlines, tabs, or emojis.
+ */
+function toWinAnsiSafeText(input: string): string {
+  return String(input ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014\u2015]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\u2022/g, '*')
+    .replace(/\u00A0/g, ' ')
+    .replace(/\u20A6/g, 'NGN ')
+    .replace(/\u20B9/g, 'INR ')
+    .replace(/\u20B5/g, 'GHS ')
+    .replace(/\u20AA/g, 'ILS ')
+    .replace(/\u20A9/g, 'KRW ')
+    .replace(/\u20B1/g, 'PHP ')
+    .replace(/\u20AB/g, 'VND ')
+    .replace(/\u0E3F/g, 'THB ')
+    .replace(/\u20B4/g, 'UAH ')
+    .replace(/\u20B8/g, 'KZT ')
+    .replace(/\u20BA/g, 'TRY ')
+    .replace(/\u20BD/g, 'RUB ')
+    .replace(/[\u2190-\u21FF]/g, '->')
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '');
+}
 
 function hexToRgbComponents(hex: string): { r: number; g: number; b: number } {
   const clean = hex.replace('#', '').trim();
@@ -1001,72 +1031,103 @@ export async function convertSpreadsheetRowsToPdf(
 
   const pageW = orientation === 'landscape' ? 841.89 : 595.28;
   const pageH = orientation === 'landscape' ? 595.28 : 841.89;
-  const margin = 34;
+  const margin = 30;
 
-  const nonEmptyRows = rows.filter((r) => r.some((c) => String(c).trim() !== ''));
+  const nonEmptyRows = rows.filter(
+    (r) => Array.isArray(r) && r.some((c) => String(c ?? '').trim() !== '')
+  );
   const safeRows =
     nonEmptyRows.length > 0
       ? nonEmptyRows
       : [
           ['Item', 'Description', 'Quantity', 'Amount'],
-          ['1', 'Sample Spreadsheet Row', '1', '0.00'],
+          ['1', 'Spreadsheet Row', '1', '0.00'],
         ];
 
   const colCount = Math.max(
     1,
-    Math.min(10, Math.max(...safeRows.map((r) => r.length)))
+    Math.min(14, Math.max(...safeRows.map((r) => r.length)))
   );
   const tableW = pageW - margin * 2;
   const colW = tableW / colCount;
-  const rowH = 22;
+  const fontSize = colCount > 10 ? 7.5 : colCount > 7 ? 8.5 : 9.5;
+  const rowH = 21;
 
   let page = doc.addPage([pageW, pageH]);
   let y = pageH - margin;
 
+  const safeTitle =
+    toWinAnsiSafeText(title || 'Spreadsheet Report').trim() ||
+    'Spreadsheet Report';
+
   // Title banner
-  page.drawText(title || 'Spreadsheet Report', {
+  page.drawText(safeTitle.slice(0, 95), {
     x: margin,
     y: y - 14,
-    size: 14,
+    size: 13,
     font: fontBold,
     color: rgb(0.08, 0.45, 0.22),
   });
-  y -= 28;
+  y -= 26;
 
   for (let rIdx = 0; rIdx < safeRows.length; rIdx++) {
-    if (y - rowH < margin + 20) {
+    if (y - rowH < margin + 18) {
       page = doc.addPage([pageW, pageH]);
       y = pageH - margin;
     }
 
-    const isHeader = rIdx === 0;
+    const row = safeRows[rIdx];
+    const firstCellRaw = String(row[0] ?? '').trim();
+    const isSheetBanner =
+      /^===\s*Sheet:/i.test(firstCellRaw) &&
+      row.slice(1).every((c) => !String(c ?? '').trim());
+    const isHeader = rIdx === 0 || isSheetBanner;
+
     page.drawRectangle({
       x: margin,
       y: y - rowH,
       width: tableW,
       height: rowH,
-      color: isHeader
-        ? rgb(0.08, 0.5, 0.24)
-        : rIdx % 2 === 1
-          ? rgb(0.96, 0.97, 0.98)
-          : rgb(1, 1, 1),
+      color: isSheetBanner
+        ? rgb(0.18, 0.33, 0.24)
+        : isHeader
+          ? rgb(0.08, 0.5, 0.24)
+          : rIdx % 2 === 1
+            ? rgb(0.96, 0.97, 0.98)
+            : rgb(1, 1, 1),
       borderColor: rgb(0.82, 0.85, 0.88),
       borderWidth: 0.6,
     });
 
-    const row = safeRows[rIdx];
+    if (isSheetBanner) {
+      const bannerText = toWinAnsiSafeText(
+        firstCellRaw.replace(/^===\s*|\s*===$/g, '')
+      ).trim();
+      page.drawText(bannerText.slice(0, 110), {
+        x: margin + 8,
+        y: y - rowH + 6.5,
+        size: 9.5,
+        font: fontBold,
+        color: rgb(1, 1, 1),
+      });
+      y -= rowH;
+      continue;
+    }
+
     for (let cIdx = 0; cIdx < colCount; cIdx++) {
-      const cellText = String(row[cIdx] ?? '').trim();
-      const maxChars = Math.max(6, Math.floor((colW - 10) / 5.2));
+      const cellText = toWinAnsiSafeText(String(row[cIdx] ?? '')).trim();
+      if (!cellText) continue;
+      const charWidthApprox = fontSize * 0.54;
+      const maxChars = Math.max(4, Math.floor((colW - 10) / charWidthApprox));
       const clipped =
         cellText.length > maxChars
-          ? cellText.slice(0, maxChars - 1) + '…'
+          ? cellText.slice(0, Math.max(1, maxChars - 2)) + '..'
           : cellText;
 
       page.drawText(clipped, {
-        x: margin + cIdx * colW + 6,
-        y: y - rowH + 7,
-        size: 9.5,
+        x: margin + cIdx * colW + 5,
+        y: y - rowH + 6.5,
+        size: fontSize,
         font: isHeader ? fontBold : fontReg,
         color: isHeader ? rgb(1, 1, 1) : rgb(0.1, 0.1, 0.14),
       });
@@ -1592,11 +1653,153 @@ export async function compareTwoPdfDocuments(
 // 13. PDF TO KPF (AMAZON KINDLE PACKAGE FORMAT .KPF / KINDLE CREATE & .EPUB)
 // ============================================================================
 
+export interface PdfValidationReport {
+  valid: boolean;
+  errorType?: 'empty' | 'not-pdf' | 'encrypted' | 'corrupted';
+  errorMessage?: string;
+  pageCount: number;
+  fileSizeBytes: number;
+  isEncrypted?: boolean;
+}
+
+/**
+ * Validates a PDF byte stream before conversion to KPF/Word/HTML.
+ * Gracefully detects empty files, non-PDF files, password-protected/encrypted PDFs, and corrupted headers.
+ */
+export async function validatePdfBytesForConversion(
+  pdfBytes: Uint8Array
+): Promise<PdfValidationReport> {
+  const fileSizeBytes = pdfBytes ? pdfBytes.byteLength : 0;
+  if (!pdfBytes || fileSizeBytes === 0) {
+    return {
+      valid: false,
+      errorType: 'empty',
+      errorMessage:
+        'The selected PDF file is empty (0 bytes). Please choose a valid PDF document.',
+      pageCount: 0,
+      fileSizeBytes: 0,
+    };
+  }
+
+  // Search first 1024 bytes for %PDF- signature
+  const headerSlice = pdfBytes.subarray(0, Math.min(1024, fileSizeBytes));
+  let hasPdfSignature = false;
+  for (let i = 0; i <= headerSlice.length - 5; i++) {
+    if (
+      headerSlice[i] === 0x25 && // %
+      headerSlice[i + 1] === 0x50 && // P
+      headerSlice[i + 2] === 0x44 && // D
+      headerSlice[i + 3] === 0x46 && // F
+      headerSlice[i + 4] === 0x2d // -
+    ) {
+      hasPdfSignature = true;
+      break;
+    }
+  }
+
+  if (!hasPdfSignature) {
+    return {
+      valid: false,
+      errorType: 'not-pdf',
+      errorMessage:
+        'Invalid PDF file format: Missing %PDF- header. Please select a valid, uncorrupted PDF file.',
+      pageCount: 0,
+      fileSizeBytes,
+    };
+  }
+
+  try {
+    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) });
+    const pdf = await loadingTask.promise;
+    const numPages = pdf.numPages;
+    await loadingTask.destroy();
+    if (numPages <= 0) {
+      return {
+        valid: false,
+        errorType: 'corrupted',
+        errorMessage: 'This PDF file contains 0 readable pages.',
+        pageCount: 0,
+        fileSizeBytes,
+      };
+    }
+    return {
+      valid: true,
+      pageCount: numPages,
+      fileSizeBytes,
+      isEncrypted: false,
+    };
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err || '');
+    const name =
+      err && typeof err === 'object' && 'name' in err
+        ? String((err as { name?: string }).name)
+        : '';
+    if (
+      name === 'PasswordException' ||
+      /password|encrypt/i.test(msg)
+    ) {
+      return {
+        valid: false,
+        errorType: 'encrypted',
+        errorMessage:
+          'This PDF is password-protected or encrypted. Please unlock it first using the Unlock PDF tool before converting to KPF.',
+        pageCount: 0,
+        fileSizeBytes,
+        isEncrypted: true,
+      };
+    }
+
+    // Fallback check with pdf-lib
+    try {
+      const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: false });
+      const count = doc.getPageCount();
+      if (count > 0) {
+        return {
+          valid: true,
+          pageCount: count,
+          fileSizeBytes,
+        };
+      }
+    } catch (libErr: unknown) {
+      const libMsg =
+        libErr instanceof Error ? libErr.message : String(libErr || '');
+      if (/encrypt|password/i.test(libMsg)) {
+        return {
+          valid: false,
+          errorType: 'encrypted',
+          errorMessage:
+            'This PDF is encrypted or password-protected. Unlock it first before converting to KPF.',
+          pageCount: 0,
+          fileSizeBytes,
+          isEncrypted: true,
+        };
+      }
+    }
+
+    return {
+      valid: false,
+      errorType: 'corrupted',
+      errorMessage:
+        'Could not parse PDF structure. The file may be corrupted or truncated.',
+      pageCount: 0,
+      fileSizeBytes,
+    };
+  }
+}
+
 export interface KindleKpfChapter {
   chapterNumber: number;
   title: string;
   paragraphs: string[];
+  tables?: string[][][];
+  equations?: string[];
+  links?: { text: string; url: string }[];
   pageNumber: number;
+  widthPt?: number;
+  heightPt?: number;
+  orientation?: 'portrait' | 'landscape';
+  isScannedPage?: boolean;
+  ocrApplied?: boolean;
   imageDataUrl?: string;
 }
 
@@ -1607,6 +1810,17 @@ export interface KindleKpfBookOptions {
   publisher?: string;
   layoutMode: 'reflowable' | 'print-replica';
   fontScalePct?: number;
+  sourcePdfBytes?: Uint8Array;
+}
+
+export interface KpfExtractionProgressOptions {
+  enableOcrForScanned?: boolean;
+  onProgress?: (
+    currentPage: number,
+    totalPages: number,
+    statusText: string
+  ) => void;
+  shouldCancel?: () => boolean;
 }
 
 function escapeXmlText(str: string): string {
@@ -1618,63 +1832,288 @@ function escapeXmlText(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
+function isMathOrEquationLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length < 3 || trimmed.length > 180) return false;
+  if (
+    /[∑∫√±≤≥≠≈∞πΔαβγθλμσω∂∇∈∉⊂⊃∪∩∀∃⇒⇔]/.test(trimmed)
+  ) {
+    return true;
+  }
+  if (
+    /(?:^|\s)(?:[a-zA-Z0-9_()^\-+*/]+\s*=\s*[a-zA-Z0-9_()^\-+*/]+)(?:\s|$)/.test(
+      trimmed
+    ) &&
+    /[+\-*/^=()]/.test(trimmed) &&
+    trimmed.split(/\s+/).length <= 18
+  ) {
+    return true;
+  }
+  return false;
+}
+
 export async function extractPdfToKindleChapters(
   pdfBytes: Uint8Array,
-  docName = 'Document.pdf'
+  docName = 'Document.pdf',
+  options?: KpfExtractionProgressOptions
 ): Promise<KindleKpfChapter[]> {
-  const pages = await extractAllPdfText(pdfBytes);
+  const validation = await validatePdfBytesForConversion(pdfBytes);
+  if (!validation.valid) {
+    throw new Error(
+      validation.errorMessage || 'Unable to validate PDF file for conversion.'
+    );
+  }
+
   const chapters: KindleKpfChapter[] = [];
   const fallbackBaseTitle = docName.replace(/\.pdf$/i, '') || 'Section';
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) });
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
 
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
-    const rawLines = page.text
-      .split(/\n+/)
-      .map((l) => l.trim())
-      .filter(Boolean);
-
-    let title = `Chapter ${i + 1} — Page ${page.pageNumber}`;
-    const bodyLines: string[] = [];
-
-    if (rawLines.length > 0) {
-      const firstCandidate = rawLines[0];
-      if (firstCandidate.length >= 3 && firstCandidate.length <= 95) {
-        title = firstCandidate;
-        bodyLines.push(...rawLines.slice(1));
-      } else {
-        title = `${fallbackBaseTitle} — Page ${page.pageNumber}`;
-        bodyLines.push(...rawLines);
+  try {
+    for (let pNum = 1; pNum <= totalPages; pNum++) {
+      if (options?.shouldCancel?.()) {
+        throw new Error('Conversion cancelled by user.');
       }
-    } else {
-      bodyLines.push(
-        `[Illustrated / Scanned Page ${page.pageNumber} from ${fallbackBaseTitle}]`
-      );
-    }
 
-    let imageDataUrl: string | undefined;
-    try {
-      const rendered = await renderPdfPage(
-        pdfBytes,
-        page.pageNumber,
-        1.15,
-        'image/jpeg',
-        0.84
+      options?.onProgress?.(
+        pNum,
+        totalPages,
+        `Extracting layout, text, tables & graphics on page ${pNum} of ${totalPages}...`
       );
-      imageDataUrl = rendered.dataUrl;
-    } catch {
-      // Optional page snapshot fallback
-    }
 
-    chapters.push({
-      chapterNumber: i + 1,
-      title,
-      paragraphs:
-        bodyLines.length > 0
-          ? bodyLines
-          : [`Page ${page.pageNumber} content ready for Kindle publishing.`],
-      pageNumber: page.pageNumber,
-      imageDataUrl,
-    });
+      const page = await pdf.getPage(pNum);
+      const baseViewport = page.getViewport({ scale: 1.0 });
+      const widthPt = Math.round(baseViewport.width || 595);
+      const heightPt = Math.round(baseViewport.height || 842);
+      const orientation: 'portrait' | 'landscape' =
+        widthPt > heightPt ? 'landscape' : 'portrait';
+
+      // Extract spatial text items grouped by baseline row
+      const textContent = await page.getTextContent();
+      interface SpatialRowItem {
+        x: number;
+        y: number;
+        w: number;
+        str: string;
+      }
+      const rawItems: SpatialRowItem[] = [];
+      for (const item of textContent.items) {
+        if ('str' in item && item.str.trim() && item.transform) {
+          const x = item.transform[4];
+          const y = item.transform[5];
+          const w = item.width || item.str.length * 5.5;
+          rawItems.push({ x, y, w, str: item.str.trim() });
+        }
+      }
+
+      // Sort top-to-bottom (descending PDF Y), then left-to-right (ascending PDF X)
+      rawItems.sort((a, b) => {
+        if (Math.abs(b.y - a.y) > 4.5) return b.y - a.y;
+        return a.x - b.x;
+      });
+
+      const lineGroups: SpatialRowItem[][] = [];
+      for (const it of rawItems) {
+        const lastGroup = lineGroups[lineGroups.length - 1];
+        if (lastGroup && Math.abs(lastGroup[0].y - it.y) <= 4.5) {
+          lastGroup.push(it);
+        } else {
+          lineGroups.push([it]);
+        }
+      }
+
+      const rawLines: string[] = [];
+      const pageTables: string[][][] = [];
+      let currentTableRows: string[][] = [];
+
+      const flushDetectedTable = () => {
+        if (currentTableRows.length >= 2) {
+          pageTables.push([...currentTableRows]);
+        }
+        currentTableRows = [];
+      };
+
+      for (const group of lineGroups) {
+        group.sort((a, b) => a.x - b.x);
+        const cells: string[] = [];
+        let curCell = group[0].str;
+        let lastRight = group[0].x + group[0].w;
+
+        for (let idx = 1; idx < group.length; idx++) {
+          const gap = group[idx].x - lastRight;
+          if (gap > 26) {
+            cells.push(curCell.trim());
+            curCell = group[idx].str;
+          } else {
+            curCell += ' ' + group[idx].str;
+          }
+          lastRight = Math.max(lastRight, group[idx].x + group[idx].w);
+        }
+        if (curCell.trim()) cells.push(curCell.trim());
+
+        if (cells.length >= 2) {
+          currentTableRows.push(cells);
+        } else {
+          flushDetectedTable();
+        }
+
+        const joinedLine = cells.join('   ').trim();
+        if (joinedLine) {
+          rawLines.push(joinedLine);
+        }
+      }
+      flushDetectedTable();
+
+      // Extract hyperlinks from PDF link annotations & inline URLs
+      const pageLinks: { text: string; url: string }[] = [];
+      const seenUrls = new Set<string>();
+      try {
+        const annotations = await page.getAnnotations();
+        for (const ann of annotations) {
+          const url = ann?.url || ann?.unsafeUrl;
+          if (typeof url === 'string' && /^https?:\/\/|^mailto:/i.test(url)) {
+            if (!seenUrls.has(url)) {
+              seenUrls.add(url);
+              pageLinks.push({ text: url, url });
+            }
+          }
+        }
+      } catch {
+        // Ignore annotation link errors
+      }
+
+      for (const line of rawLines) {
+        const urlMatches =
+          line.match(/(?:https?:\/\/|www\.)[^\s)<>"']+/gi) || [];
+        for (const rawUrl of urlMatches) {
+          const normalizedUrl = rawUrl.startsWith('www.')
+            ? `https://${rawUrl}`
+            : rawUrl;
+          if (!seenUrls.has(normalizedUrl)) {
+            seenUrls.add(normalizedUrl);
+            pageLinks.push({ text: rawUrl, url: normalizedUrl });
+          }
+        }
+      }
+
+      // Render high-resolution page replica for diagrams, layouts, and scanned pages
+      let imageDataUrl: string | undefined;
+      try {
+        const hiScale = totalPages > 40 ? 1.15 : 1.35;
+        const viewport = page.getViewport({ scale: hiScale });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({
+            canvasContext: ctx,
+            canvas,
+            viewport,
+          }).promise;
+          imageDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+          // Release canvas memory immediately for large PDFs
+          canvas.width = 1;
+          canvas.height = 1;
+        }
+      } catch {
+        // Fallback to renderPdfPage helper
+        try {
+          const rendered = await renderPdfPage(
+            pdfBytes,
+            pNum,
+            1.2,
+            'image/jpeg',
+            0.85
+          );
+          imageDataUrl = rendered.dataUrl;
+        } catch {
+          // Optional snapshot fallback
+        }
+      }
+
+      const nativeCharCount = rawLines.join('').length;
+      const isScannedPage = nativeCharCount < 15;
+      let ocrApplied = false;
+
+      // Optional OCR for scanned pages when requested
+      if (
+        isScannedPage &&
+        options?.enableOcrForScanned &&
+        imageDataUrl
+      ) {
+        try {
+          options?.onProgress?.(
+            pNum,
+            totalPages,
+            `Running OCR text recognition on scanned page ${pNum} of ${totalPages}...`
+          );
+          const Tesseract = await import('tesseract.js');
+          const ocrResult = await Tesseract.recognize(imageDataUrl, 'eng');
+          const ocrText = (ocrResult?.data?.text || '').trim();
+          if (ocrText.length > 0) {
+            const ocrLines = ocrText
+              .split(/\n+/)
+              .map((l) => l.trim())
+              .filter(Boolean);
+            if (ocrLines.length > 0) {
+              rawLines.push(...ocrLines);
+              ocrApplied = true;
+            }
+          }
+        } catch {
+          // Keep visual replica fallback if offline OCR fails
+        }
+      }
+
+      let title = `Chapter ${pNum} — Page ${pNum}`;
+      const bodyLines: string[] = [];
+
+      if (rawLines.length > 0) {
+        const firstCandidate = rawLines[0];
+        if (firstCandidate.length >= 3 && firstCandidate.length <= 95) {
+          title = firstCandidate;
+          bodyLines.push(...rawLines.slice(1));
+        } else {
+          title = `${fallbackBaseTitle} — Page ${pNum}`;
+          bodyLines.push(...rawLines);
+        }
+      } else {
+        title = `${fallbackBaseTitle} — Page ${pNum}`;
+        bodyLines.push(
+          `[Illustrated / Scanned Page ${pNum} from ${fallbackBaseTitle}]`
+        );
+      }
+
+      const equations = rawLines.filter((l) => isMathOrEquationLine(l));
+
+      chapters.push({
+        chapterNumber: pNum,
+        title,
+        paragraphs:
+          bodyLines.length > 0
+            ? bodyLines
+            : [title],
+        tables: pageTables.length > 0 ? pageTables : undefined,
+        equations: equations.length > 0 ? equations : undefined,
+        links: pageLinks.length > 0 ? pageLinks : undefined,
+        pageNumber: pNum,
+        widthPt,
+        heightPt,
+        orientation,
+        isScannedPage,
+        ocrApplied,
+        imageDataUrl,
+      });
+
+      // Yield to UI thread so large multi-page PDFs never freeze the browser/WebView
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } finally {
+    await loadingTask.destroy();
   }
 
   if (chapters.length === 0) {
@@ -1683,6 +2122,7 @@ export async function extractPdfToKindleChapters(
       title: fallbackBaseTitle,
       paragraphs: ['Converted Kindle KPF chapter content.'],
       pageNumber: 1,
+      orientation: 'portrait',
     });
   }
 
@@ -1819,17 +2259,23 @@ export function buildKindleKpfPackageBytes(
   });
 
   // 2. Amazon Kindle Package Format (KPF / KDF) manifest descriptor
+  // Includes both `bookMetadata`+`chapters` and top-level `title`/`author`/`resources` for 100% compatibility
   const kdfManifest = {
     format: 'Amazon Kindle Package Format (KPF)',
-    kpfVersion: '2.0',
-    generator: 'Kindle Create / KDP Ready Package Studio',
+    kpfVersion: '2.1',
+    generator: 'ElimikaPDF KPF Conversion Engine',
     createdAt: new Date().toISOString(),
+    title: bookTitle,
+    author: bookAuthor,
+    language: bookLang,
+    layoutMode: options.layoutMode,
+    hasSourcePdfReplica: Boolean(options.sourcePdfBytes),
     bookMetadata: {
       bookId: bookUuid,
       title: bookTitle,
       author: bookAuthor,
       language: bookLang,
-      publisher: options.publisher || 'Independent KDP Publisher',
+      publisher: options.publisher || 'ElimikaPDF KDP Studio',
       layoutMode: options.layoutMode,
       chapterCount: chapters.length,
     },
@@ -1838,8 +2284,21 @@ export function buildKindleKpfPackageBytes(
       chapterNumber: ch.chapterNumber,
       title: ch.title,
       sourcePageNumber: ch.pageNumber,
+      widthPt: ch.widthPt || 595,
+      heightPt: ch.heightPt || 842,
+      orientation: ch.orientation || 'portrait',
+      isScannedPage: Boolean(ch.isScannedPage),
+      ocrApplied: Boolean(ch.ocrApplied),
       paragraphCount: ch.paragraphs.length,
+      tableCount: ch.tables?.length || 0,
+      equationCount: ch.equations?.length || 0,
       href: `OEBPS/chapter-${ch.chapterNumber}.xhtml`,
+    })),
+    resources: chapters.map((ch) => ({
+      id: `chapter-${ch.chapterNumber}`,
+      path: `OEBPS/chapter-${ch.chapterNumber}.xhtml`,
+      role: 'chapter',
+      mediaType: 'application/xhtml+xml',
     })),
   };
 
@@ -1886,11 +2345,46 @@ p.first-para {
 }
 .replica-figure {
   text-align: center;
-  margin: 0.75em 0;
+  margin: 0.85em 0;
+  page-break-inside: avoid;
 }
 .replica-figure img {
   max-width: 100%;
   height: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+}
+table.kpf-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.92em;
+}
+table.kpf-table th, table.kpf-table td {
+  border: 1px solid #cbd5e1;
+  padding: 6px 10px;
+  text-align: left;
+}
+table.kpf-table tr:first-child td, table.kpf-table th {
+  background-color: #f8fafc;
+  font-weight: bold;
+}
+.kpf-math {
+  font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+  font-style: italic;
+  background-color: #f8fafc;
+  border-left: 3px solid #E47911;
+  padding: 6px 12px;
+  margin: 0.65em 0;
+  text-indent: 0;
+}
+.kpf-links {
+  margin-top: 0.75em;
+  font-size: 0.9em;
+}
+.kpf-links a {
+  color: #003FE8;
+  text-decoration: underline;
 }`;
   entries.push({
     path: 'OEBPS/styles.css',
@@ -1905,6 +2399,13 @@ p.first-para {
   const spineItems: string[] = [];
   const tocLinks: string[] = [];
 
+  const linkifyEscapedXml = (escapedText: string): string => {
+    return escapedText.replace(
+      /(https?:\/\/[^\s&<>"']+)/gi,
+      '<a href="$1">$1</a>'
+    );
+  };
+
   chapters.forEach((ch, idx) => {
     const chId = `chapter-${idx + 1}`;
     const fileName = `${chId}.xhtml`;
@@ -1917,30 +2418,69 @@ p.first-para {
     );
 
     const paragraphsHtml = ch.paragraphs
-      .map(
-        (p, pIdx) =>
-          `    <p class="${pIdx === 0 ? 'first-para' : ''}">${escapeXmlText(p)}</p>`
-      )
+      .map((p, pIdx) => {
+        const isEq = isMathOrEquationLine(p);
+        const escaped = linkifyEscapedXml(escapeXmlText(p));
+        if (isEq) {
+          return `    <p class="kpf-math">${escaped}</p>`;
+        }
+        return `    <p class="${pIdx === 0 ? 'first-para' : ''}">${escaped}</p>`;
+      })
       .join('\n');
 
-    const replicaBlock =
-      options.layoutMode === 'print-replica' && ch.imageDataUrl
-        ? `    <div class="replica-figure">\n      <img src="${ch.imageDataUrl}" alt="${escapeXmlText(ch.title)}"/>\n    </div>\n`
+    const tablesHtml =
+      ch.tables && ch.tables.length > 0
+        ? ch.tables
+            .map(
+              (tbl) =>
+                `    <table class="kpf-table">\n      <tbody>\n${tbl
+                  .map(
+                    (row) =>
+                      `        <tr>${row
+                        .map((cell) => `<td>${escapeXmlText(cell)}</td>`)
+                        .join('')}</tr>`
+                  )
+                  .join('\n')}\n      </tbody>\n    </table>`
+            )
+            .join('\n')
         : '';
+
+    const linksHtml =
+      ch.links && ch.links.length > 0
+        ? `    <div class="kpf-links">\n      <ul>\n${ch.links
+            .map(
+              (lnk) =>
+                `        <li><a href="${escapeXmlText(lnk.url)}">${escapeXmlText(
+                  lnk.text
+                )}</a></li>`
+            )
+            .join('\n')}\n      </ul>\n    </div>\n`
+        : '';
+
+    // Include visual replica image in Print Replica mode OR whenever the page has diagrams/scanned content
+    const includeReplica =
+      Boolean(ch.imageDataUrl) &&
+      (options.layoutMode === 'print-replica' || Boolean(ch.isScannedPage));
+    const replicaBlock = includeReplica
+      ? `    <div class="replica-figure">\n      <img src="${ch.imageDataUrl}" alt="${escapeXmlText(
+          ch.title
+        )}"/>\n    </div>\n`
+      : '';
 
     const chapterXhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${escapeXmlText(bookLang)}">
 <head>
   <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>${escapeXmlText(ch.title)}</title>
   <link rel="stylesheet" type="text/css" href="styles.css"/>
 </head>
 <body>
-  <section epub:type="chapter">
+  <section epub:type="chapter" data-page-number="${ch.pageNumber}" data-orientation="${ch.orientation || 'portrait'}">
     <h1>${escapeXmlText(ch.title)}</h1>
-${replicaBlock}${paragraphsHtml}
-  </section>
+${replicaBlock}${tablesHtml ? tablesHtml + '\n' : ''}${paragraphsHtml}
+${linksHtml}  </section>
 </body>
 </html>`;
 
@@ -1973,7 +2513,18 @@ ${tocLinks.join('\n')}
     data: encoder.encode(tocXhtml),
   });
 
-  // 7. Package OPF (OEBPS/content.opf)
+  // 7. Embed original PDF replica inside KPF container if provided so reopening in ElimikaPDF restores 100% page fidelity
+  if (options.sourcePdfBytes && options.sourcePdfBytes.byteLength > 0) {
+    manifestItems.push(
+      `<item id="source-pdf-replica" href="source_replica.pdf" media-type="application/pdf"/>`
+    );
+    entries.push({
+      path: 'OEBPS/source_replica.pdf',
+      data: new Uint8Array(options.sourcePdfBytes),
+    });
+  }
+
+  // 8. Package OPF (OEBPS/content.opf)
   const renditionLayout =
     options.layoutMode === 'print-replica' ? 'pre-paginated' : 'reflowable';
   const contentOpf = `<?xml version="1.0" encoding="UTF-8"?>
@@ -2009,19 +2560,37 @@ async function inflateRawZipChunk(compressed: Uint8Array): Promise<Uint8Array> {
   if (typeof DecompressionStream !== 'undefined') {
     const ds = new DecompressionStream('deflate-raw');
     const writer = ds.writable.getWriter();
-    await writer.write(new Uint8Array(compressed));
-    await writer.close();
     const reader = ds.readable.getReader();
     const chunks: Uint8Array[] = [];
     let total = 0;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        chunks.push(value);
-        total += value.byteLength;
+
+    // Run write and read concurrently so large XML/Excel streams (>16KB) never deadlock on backpressure
+    const writePromise = (async () => {
+      try {
+        await writer.write(new Uint8Array(compressed));
+        await writer.close();
+      } catch {
+        // Ignore trailing stream errors if deflate stream ends early
       }
-    }
+    })();
+
+    const readPromise = (async () => {
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            chunks.push(value);
+            total += value.byteLength;
+          }
+        }
+      } catch {
+        // Return chunks collected so far
+      }
+    })();
+
+    await Promise.all([writePromise, readPromise]);
+
     const out = new Uint8Array(total);
     let offset = 0;
     for (const c of chunks) {
@@ -2143,17 +2712,98 @@ function parseCsvLine(line: string, delimiter: string): string[] {
   return cells;
 }
 
+export interface ParsedExcelSheet {
+  name: string;
+  rows: string[][];
+}
+
+function excelColLettersToIndex(colRef: string): number {
+  let idx = 0;
+  for (let i = 0; i < colRef.length; i++) {
+    const code = colRef.toUpperCase().charCodeAt(i);
+    if (code >= 65 && code <= 90) {
+      idx = idx * 26 + (code - 64);
+    }
+  }
+  return Math.max(0, idx - 1);
+}
+
+function indexToExcelColLetters(index: number): string {
+  let n = index + 1;
+  let col = '';
+  while (n > 0) {
+    const rem = (n - 1) % 26;
+    col = String.fromCharCode(65 + rem) + col;
+    n = Math.floor((n - 1) / 26);
+  }
+  return col;
+}
+
 /**
- * Parses an uploaded Excel (.xlsx, .xls) or CSV/TSV file into clean 2D string[][] rows.
- * Never outputs raw XML tags or PKZIP binary bytes.
+ * Parses an uploaded Excel workbook (.xlsx, .xls, .xlsm, .xlsb, .ods, .csv, .tsv)
+ * into an array of named worksheets with clean 2D string[][] rows.
+ * Uses SheetJS (`xlsx`) for full BIFF8/OpenXML/ODS/CSV support, with a secondary
+ * ZIP/XML/CSV fallback so no valid spreadsheet ever fails to import.
  */
-export async function parseUploadedSpreadsheetFile(
+export async function parseUploadedWorkbookSheets(
   file: File
-): Promise<string[][]> {
+): Promise<ParsedExcelSheet[]> {
   const buf = await file.arrayBuffer();
   const bytes = new Uint8Array(buf);
+  const defaultSheetName =
+    file.name.replace(/\.[^.]+$/, '').slice(0, 31) || 'Sheet1';
 
-  // 1. Check for OpenXML .xlsx ZIP archive (PK\x03\x04)
+  // 1. Primary Parser: SheetJS (handles .xlsx, binary .xls BIFF8/BIFF5, .xlsm, .xlsb, .ods, .csv, .tsv, XML, HTML tables)
+  try {
+    const workbook = XLSX.read(bytes, {
+      type: 'array',
+      cellDates: true,
+      raw: false,
+    });
+    if (workbook && Array.isArray(workbook.SheetNames) && workbook.SheetNames.length > 0) {
+      const parsedSheets: ParsedExcelSheet[] = [];
+      for (const sheetName of workbook.SheetNames) {
+        const ws = workbook.Sheets[sheetName];
+        if (!ws) continue;
+        const rawGrid = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+          header: 1,
+          defval: '',
+          raw: false,
+          blankrows: false,
+        });
+        const cleanedRows: string[][] = [];
+        for (const r of rawGrid) {
+          if (!Array.isArray(r)) continue;
+          const stringCells = r.map((cell) =>
+            cell === null || cell === undefined
+              ? ''
+              : String(cell).replace(/\r\n/g, ' ').replace(/\n/g, ' ').trim()
+          );
+          // Trim trailing empty cells on the right while preserving internal column alignment
+          let lastNonEmpty = stringCells.length - 1;
+          while (lastNonEmpty >= 0 && stringCells[lastNonEmpty] === '') {
+            lastNonEmpty--;
+          }
+          if (lastNonEmpty >= 0) {
+            cleanedRows.push(stringCells.slice(0, lastNonEmpty + 1));
+          }
+        }
+        if (cleanedRows.length > 0) {
+          parsedSheets.push({
+            name: sheetName || defaultSheetName,
+            rows: cleanedRows,
+          });
+        }
+      }
+      if (parsedSheets.length > 0) {
+        return parsedSheets;
+      }
+    }
+  } catch {
+    // Fall through to native ZIP / XML / CSV parser
+  }
+
+  // 2. Fallback OpenXML .xlsx ZIP archive (PK\x03\x04)
   if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
     try {
       const entries = await extractZipTextEntries(bytes);
@@ -2172,20 +2822,27 @@ export async function parseUploadedSpreadsheetFile(
         }
       }
 
-      // Find first worksheet XML
-      const sheetKey =
-        Array.from(entries.keys())
-          .filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(k))
-          .sort()[0] || '';
-      const sheetXml = sheetKey ? entries.get(sheetKey) || '' : '';
+      const sheetKeys = Array.from(entries.keys())
+        .filter((k) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(k))
+        .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
 
-      if (sheetXml) {
+      const sheets: ParsedExcelSheet[] = [];
+      for (let sIdx = 0; sIdx < sheetKeys.length; sIdx++) {
+        const sheetXml = entries.get(sheetKeys[sIdx]) || '';
+        if (!sheetXml) continue;
         const rows: string[][] = [];
         const rowMatches = sheetXml.match(/<row\b[^>]*>[\s\S]*?<\/row>/gi) || [];
         for (const rowXml of rowMatches) {
           const rowCells: string[] = [];
           const cellMatches = rowXml.match(/<c\b[^>]*>[\s\S]*?<\/c>/gi) || [];
           for (const cellXml of cellMatches) {
+            const refMatch = cellXml.match(/\br="([A-Z]+)\d+"/i);
+            const targetColIdx = refMatch
+              ? excelColLettersToIndex(refMatch[1])
+              : rowCells.length;
+            while (rowCells.length < targetColIdx) {
+              rowCells.push('');
+            }
             const typeAttrMatch = cellXml.match(/\bt="([^"]+)"/i);
             const cellType = typeAttrMatch ? typeAttrMatch[1] : '';
             const vMatch = cellXml.match(/<v\b[^>]*>([\s\S]*?)<\/v>/i);
@@ -2200,14 +2857,20 @@ export async function parseUploadedSpreadsheetFile(
             } else if (vMatch) {
               val = vMatch[1].replace(/<[^>]+>/g, '').trim();
             }
-            rowCells.push(val);
+            rowCells[targetColIdx] = val;
           }
-          if (rowCells.some((c) => c.length > 0)) {
+          if (rowCells.some((c) => c && c.length > 0)) {
             rows.push(rowCells);
           }
         }
-        if (rows.length > 0) return rows;
+        if (rows.length > 0) {
+          sheets.push({
+            name: `Sheet ${sIdx + 1}`,
+            rows,
+          });
+        }
       }
+      if (sheets.length > 0) return sheets;
     } catch {
       // Fallback below
     }
@@ -2216,7 +2879,7 @@ export async function parseUploadedSpreadsheetFile(
   const decoder = new TextDecoder('utf-8', { fatal: false });
   const text = decoder.decode(bytes);
 
-  // 2. Check for XML SpreadsheetML (.xls exported by Excel or ElimikaPDF) or HTML Table .xls
+  // 3. Check for XML SpreadsheetML (.xls exported by Excel or ElimikaPDF) or HTML Table .xls
   if (
     /<(?:Workbook|Worksheet|Row|Cell|Data|table|tr|td|th)\b/i.test(text)
   ) {
@@ -2229,7 +2892,6 @@ export async function parseUploadedSpreadsheetFile(
           /<(?:Cell|Data|td|th)\b[^>]*>([\s\S]*?)<\/(?:Cell|Data|td|th)>/gi
         ) || [];
       if (cellMatches.length > 0) {
-        // Prefer <Data> or <td>/<th> leaf values
         const leafMatches =
           rXml.match(/<(?:Data|td|th)\b[^>]*>([\s\S]*?)<\/(?:Data|td|th)>/gi) ||
           cellMatches;
@@ -2249,18 +2911,22 @@ export async function parseUploadedSpreadsheetFile(
         }
       }
     }
-    if (rows.length > 0) return rows;
+    if (rows.length > 0) {
+      return [{ name: defaultSheetName, rows }];
+    }
   }
 
-  // 3. Standard CSV / TSV / semicolon-delimited text
+  // 4. Standard CSV / TSV / semicolon-delimited text
   const cleanLines = text
+    .replace(/\uFEFF/g, '')
     .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, '')
     .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
     .split('\n')
     .filter((l) => l.trim().length > 0);
 
   if (cleanLines.length === 0) {
-    return [['Column 1', 'Column 2', 'Column 3']];
+    return [{ name: defaultSheetName, rows: [['Column 1', 'Column 2', 'Column 3']] }];
   }
 
   const firstLine = cleanLines[0];
@@ -2270,7 +2936,277 @@ export async function parseUploadedSpreadsheetFile(
       ? ';'
       : ',';
 
-  return cleanLines.map((line) => parseCsvLine(line, delimiter));
+  return [
+    {
+      name: defaultSheetName,
+      rows: cleanLines.map((line) => parseCsvLine(line, delimiter)),
+    },
+  ];
+}
+
+/**
+ * Parses an uploaded Excel (.xlsx, .xls, .xlsm, .xlsb, .ods) or CSV/TSV file into clean 2D string[][] rows.
+ * Never outputs raw XML tags or PKZIP binary bytes.
+ */
+export async function parseUploadedSpreadsheetFile(
+  file: File
+): Promise<string[][]> {
+  const sheets = await parseUploadedWorkbookSheets(file);
+  if (sheets.length === 0) {
+    return [['Column 1', 'Column 2', 'Column 3']];
+  }
+  if (sheets.length === 1) {
+    return sheets[0].rows;
+  }
+  const combined: string[][] = [];
+  for (const sheet of sheets) {
+    combined.push([`=== Sheet: ${sheet.name} ===`]);
+    combined.push(...sheet.rows);
+  }
+  return combined;
+}
+
+/**
+ * Builds a complete, interactive Excel Workbook HTML document with sheet tabs,
+ * Excel column headers (A, B, C...), row numbers (1, 2, 3...), and sticky header styling
+ * so opening an Excel file in ElimikaPDF looks and behaves like a real spreadsheet viewer.
+ */
+export function buildInteractiveExcelHtml(
+  sheets: ParsedExcelSheet[],
+  workbookTitle: string
+): string {
+  const safeSheets =
+    sheets.length > 0
+      ? sheets
+      : [{ name: 'Sheet1', rows: [['Column A', 'Column B']] }];
+
+  const sheetPanelsHtml = safeSheets
+    .map((sheet, sIdx) => {
+      const maxCols = Math.max(
+        1,
+        ...sheet.rows.map((r) => r.length)
+      );
+      const colHeaders = Array.from({ length: maxCols }, (_, cIdx) =>
+        `<th>${indexToExcelColLetters(cIdx)}</th>`
+      ).join('');
+
+      const bodyRows = sheet.rows
+        .map((row, rIdx) => {
+          const cellsHtml = Array.from({ length: maxCols }, (_, cIdx) => {
+            const val = String(row[cIdx] ?? '');
+            const isNum =
+              val !== '' && /^-?[$€£¥]?[\d,]+(\.\d+)?%?$/.test(val.trim());
+            const tag = rIdx === 0 ? 'th' : 'td';
+            const cls = isNum && rIdx > 0 ? ' class="num-cell"' : '';
+            return `<${tag}${cls}>${escapeHtmlCell(val)}</${tag}>`;
+          }).join('');
+          return `<tr class="${rIdx === 0 ? 'row-header' : ''}"><td class="row-idx">${
+            rIdx + 1
+          }</td>${cellsHtml}</tr>`;
+        })
+        .join('\n');
+
+      return `<div class="sheet-panel" id="sheet-panel-${sIdx}" style="display:${
+        sIdx === 0 ? 'block' : 'none'
+      };">
+        <div class="table-scroll">
+          <table class="excel-grid">
+            <thead>
+              <tr class="col-letters"><th class="corner-cell">#</th>${colHeaders}</tr>
+            </thead>
+            <tbody>
+              ${bodyRows}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+    })
+    .join('\n');
+
+  const tabsHtml = safeSheets
+    .map(
+      (sheet, sIdx) =>
+        `<button type="button" class="sheet-tab ${
+          sIdx === 0 ? 'active' : ''
+        }" onclick="switchSheet(${sIdx})" id="sheet-tab-${sIdx}">${escapeHtmlCell(
+          sheet.name
+        )} <span class="row-badge">${sheet.rows.length}</span></button>`
+    )
+    .join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>${escapeHtmlCell(workbookTitle)}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 16px;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+    .workbook-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      background: linear-gradient(135deg, #15803d, #0f766e);
+      color: #ffffff;
+      padding: 12px 18px;
+      border-radius: 12px 12px 0 0;
+      box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+    }
+    .workbook-title {
+      font-size: 15px;
+      font-weight: 800;
+      margin: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .excel-badge {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+    }
+    .sheet-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      background: #e2e8f0;
+      padding: 8px 12px;
+      border-left: 1px solid #cbd5e1;
+      border-right: 1px solid #cbd5e1;
+    }
+    .sheet-tab {
+      border: 1px solid #cbd5e1;
+      background: #f1f5f9;
+      color: #334155;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 6px 12px;
+      border-radius: 8px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+    }
+    .sheet-tab.active {
+      background: #ffffff;
+      color: #15803d;
+      border-color: #15803d;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+    .row-badge {
+      background: #e2e8f0;
+      color: #475569;
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 999px;
+    }
+    .sheet-tab.active .row-badge {
+      background: #dcfce7;
+      color: #15803d;
+    }
+    .table-scroll {
+      overflow: auto;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 0 0 12px 12px;
+      max-height: 75vh;
+    }
+    table.excel-grid {
+      border-collapse: collapse;
+      width: 100%;
+      font-size: 12.5px;
+    }
+    .col-letters th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f1f5f9;
+      color: #475569;
+      font-weight: 700;
+      font-size: 11px;
+      text-align: center;
+      padding: 6px 10px;
+      border: 1px solid #cbd5e1;
+    }
+    .corner-cell {
+      width: 42px;
+      background: #e2e8f0 !important;
+    }
+    .row-idx {
+      background: #f8fafc;
+      color: #64748b;
+      font-weight: 600;
+      font-size: 11px;
+      text-align: center;
+      width: 42px;
+      border: 1px solid #cbd5e1;
+      user-select: none;
+    }
+    .excel-grid th, .excel-grid td {
+      border: 1px solid #e2e8f0;
+      padding: 7px 11px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    .row-header th {
+      background: #dcfce7;
+      color: #14532d;
+      font-weight: 700;
+      border-color: #bbf7d0;
+    }
+    .excel-grid tbody tr:nth-child(even) td:not(.row-idx) {
+      background: #f8fafc;
+    }
+    .excel-grid tbody tr:hover td:not(.row-idx) {
+      background: #f0fdf4;
+    }
+    .num-cell {
+      text-align: right !important;
+      font-variant-numeric: tabular-nums;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="workbook-bar">
+    <h1 class="workbook-title">
+      <span class="excel-badge">EXCEL WORKBOOK</span>
+      <span>${escapeHtmlCell(workbookTitle)}</span>
+    </h1>
+    <span style="font-size:12px;opacity:0.9;">${safeSheets.length} ${
+      safeSheets.length === 1 ? 'Worksheet' : 'Worksheets'
+    }</span>
+  </div>
+  <div class="sheet-tabs">
+    ${tabsHtml}
+  </div>
+  ${sheetPanelsHtml}
+  <script>
+    function switchSheet(idx) {
+      var panels = document.querySelectorAll('.sheet-panel');
+      var tabs = document.querySelectorAll('.sheet-tab');
+      for (var i = 0; i < panels.length; i++) {
+        panels[i].style.display = i === idx ? 'block' : 'none';
+      }
+      for (var j = 0; j < tabs.length; j++) {
+        if (j === idx) tabs[j].classList.add('active');
+        else tabs[j].classList.remove('active');
+      }
+    }
+  </script>
+</body>
+</html>`;
 }
 
 /**
@@ -2430,7 +3366,7 @@ export async function parseUploadedPresentationFile(
 // ============================================================================
 
 export const SUPPORTED_DOCUMENT_ACCEPT =
-  '.pdf,.epub,.kpf,.mobi,.azw3,.fb2,.cbz,.docx,.doc,.odt,.rtf,.txt,.md,.html,.htm,.xhtml,.xlsx,.xls,.ods,.csv,.tsv,.pptx,.ppt,.odp,.json,.xml,.svg,.png,.jpg,.jpeg,.webp,.gif,.bmp,application/pdf,application/epub+zip,application/vnd.amazon.ebook,application/x-mobipocket-ebook,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/html,application/xhtml+xml,text/plain,text/markdown,text/csv,application/rtf,application/json,application/xml,text/xml,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/svg+xml';
+  '.pdf,.epub,.kpf,.mobi,.azw3,.fb2,.cbz,.docx,.doc,.odt,.rtf,.txt,.md,.html,.htm,.xhtml,.xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.pptx,.ppt,.odp,.json,.xml,.svg,.png,.jpg,.jpeg,.webp,.gif,.bmp,application/pdf,application/epub+zip,application/vnd.amazon.ebook,application/x-mobipocket-ebook,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.oasis.opendocument.text,application/vnd.oasis.opendocument.spreadsheet,application/vnd.oasis.opendocument.presentation,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/csv,application/excel,application/x-excel,application/x-msexcel,text/csv,text/comma-separated-values,text/tab-separated-values,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/html,application/xhtml+xml,text/plain,text/markdown,application/rtf,application/json,application/xml,text/xml,image/png,image/jpeg,image/webp,image/gif,image/bmp,image/svg+xml';
 
 export interface ConvertedUniversalDocumentResult {
   pdfBytes: Uint8Array;
@@ -2464,20 +3400,209 @@ function readImageFileAsDataUrl(file: File): Promise<string> {
  * Web/Markup (.html, .htm, .xhtml, .md, .rtf, .txt, .json, .xml), or Image
  * into a multi-page searchable PDF + rich HTML representation for the HTML & eBook Reader.
  */
+/**
+ * Extracts a specific binary entry (such as `OEBPS/source_replica.pdf`) from a ZIP/KPF archive.
+ */
+async function extractBinaryEntryFromZip(
+  zipBytes: Uint8Array,
+  targetEntryPath: string
+): Promise<Uint8Array | null> {
+  if (zipBytes.byteLength < 22) return null;
+  const view = new DataView(
+    zipBytes.buffer,
+    zipBytes.byteOffset,
+    zipBytes.byteLength
+  );
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+
+  let eocdPos = -1;
+  for (
+    let i = zipBytes.byteLength - 22;
+    i >= Math.max(0, zipBytes.byteLength - 65557);
+    i--
+  ) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocdPos = i;
+      break;
+    }
+  }
+  if (eocdPos < 0) return null;
+
+  const entryCount = view.getUint16(eocdPos + 10, true);
+  let cdPos = view.getUint32(eocdPos + 16, true);
+  const targetLower = targetEntryPath.toLowerCase();
+
+  for (let i = 0; i < entryCount; i++) {
+    if (
+      cdPos + 46 > zipBytes.byteLength ||
+      view.getUint32(cdPos, true) !== 0x02014b50
+    ) {
+      break;
+    }
+    const compressionMethod = view.getUint16(cdPos + 10, true);
+    const compressedSize = view.getUint32(cdPos + 20, true);
+    const nameLen = view.getUint16(cdPos + 28, true);
+    const extraLen = view.getUint16(cdPos + 30, true);
+    const commentLen = view.getUint16(cdPos + 32, true);
+    const localHeaderOffset = view.getUint32(cdPos + 42, true);
+
+    const fileName = decoder.decode(
+      zipBytes.subarray(cdPos + 46, cdPos + 46 + nameLen)
+    );
+    cdPos += 46 + nameLen + extraLen + commentLen;
+
+    if (fileName.toLowerCase() !== targetLower) continue;
+
+    if (
+      localHeaderOffset + 30 <= zipBytes.byteLength &&
+      view.getUint32(localHeaderOffset, true) === 0x04034b50
+    ) {
+      const localNameLen = view.getUint16(localHeaderOffset + 26, true);
+      const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+      const dataStart = localHeaderOffset + 30 + localNameLen + localExtraLen;
+      const dataEnd = Math.min(zipBytes.byteLength, dataStart + compressedSize);
+      const rawSlice = zipBytes.subarray(dataStart, dataEnd);
+      if (compressionMethod === 0) {
+        return new Uint8Array(rawSlice);
+      }
+      if (compressionMethod === 8) {
+        return await inflateRawZipChunk(rawSlice);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Universal file format detector that identifies supported file formats using
+ * MIME type, file extension, and binary magic-byte inspection (handling missing/incorrect MIME types).
+ */
+export function detectUniversalDocumentFormat(
+  fileName: string,
+  mimeType: string,
+  rawBytes: Uint8Array
+): string {
+  const lowerName = (fileName || '').toLowerCase().trim();
+  const mime = (mimeType || '').toLowerCase().trim();
+  const extMatch = lowerName.match(/\.([a-z0-9]+)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase() : '';
+
+  // 1. Check %PDF- magic header
+  if (
+    rawBytes.length >= 4 &&
+    rawBytes[0] === 0x25 &&
+    rawBytes[1] === 0x50 &&
+    rawBytes[2] === 0x44 &&
+    rawBytes[3] === 0x46
+  ) {
+    return 'pdf';
+  }
+
+  // 2. Check PKZIP container (KPF, DOCX, EPUB, XLSX, PPTX, ODT)
+  if (
+    rawBytes.length >= 4 &&
+    rawBytes[0] === 0x50 &&
+    rawBytes[1] === 0x4b &&
+    rawBytes[2] === 0x03 &&
+    rawBytes[3] === 0x04
+  ) {
+    const headerAscii = new TextDecoder('utf-8', { fatal: false }).decode(
+      rawBytes.subarray(0, Math.min(4096, rawBytes.length))
+    );
+    if (
+      ext === 'kpf' ||
+      mime.includes('kpf') ||
+      headerAscii.includes('kdf_manifest.json')
+    ) {
+      return 'kpf';
+    }
+    if (
+      ext === 'docx' ||
+      mime.includes('wordprocessingml') ||
+      headerAscii.includes('word/document.xml')
+    ) {
+      return 'docx';
+    }
+    if (
+      ext === 'xlsx' ||
+      ext === 'xlsm' ||
+      mime.includes('spreadsheetml') ||
+      headerAscii.includes('xl/workbook.xml')
+    ) {
+      return 'xlsx';
+    }
+    if (
+      ext === 'pptx' ||
+      mime.includes('presentationml') ||
+      headerAscii.includes('ppt/presentation.xml')
+    ) {
+      return 'pptx';
+    }
+    if (
+      ext === 'epub' ||
+      mime.includes('epub') ||
+      headerAscii.includes('application/epub+zip')
+    ) {
+      return 'epub';
+    }
+  }
+
+  // 3. Check OLE2 Compound Document (.doc, .xls, .ppt)
+  if (
+    rawBytes.length >= 8 &&
+    rawBytes[0] === 0xd0 &&
+    rawBytes[1] === 0xcf &&
+    rawBytes[2] === 0x11 &&
+    rawBytes[3] === 0xe0
+  ) {
+    if (ext === 'xls' || mime.includes('excel')) return 'xls';
+    if (ext === 'ppt' || mime.includes('powerpoint')) return 'ppt';
+    return 'doc';
+  }
+
+  // 4. Extension & MIME fallback
+  if (ext) return ext;
+  if (mime.includes('pdf')) return 'pdf';
+  if (mime.includes('kpf') || mime.includes('amazon.ebook')) return 'kpf';
+  if (mime.includes('wordprocessingml')) return 'docx';
+  if (mime.includes('msword')) return 'doc';
+  if (mime.includes('html') || mime.includes('xhtml')) return 'html';
+  if (mime.includes('epub')) return 'epub';
+  if (mime.includes('spreadsheet') || mime.includes('excel')) return 'xlsx';
+  if (mime.includes('csv')) return 'csv';
+  return 'pdf';
+}
+
+/**
+ * Converts ANY uploaded document, eBook (.epub, .kpf, .mobi, .fb2), Office file
+ * (.docx, .doc, .odt, .xlsx, .xls, .ods, .csv, .tsv, .pptx, .ppt, .odp),
+ * Web/Markup (.html, .htm, .xhtml, .md, .rtf, .txt, .json, .xml), or Image
+ * into a multi-page searchable PDF + rich HTML representation for the Universal Reader.
+ */
 export async function convertAnyUploadedFileToPdfAndHtml(
   file: File
 ): Promise<ConvertedUniversalDocumentResult> {
   const lowerName = (file.name || '').toLowerCase();
   const mime = (file.type || '').toLowerCase();
   const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
-  const extMatch = lowerName.match(/\.([a-z0-9]+)$/i);
-  const ext = extMatch ? extMatch[1].toLowerCase() : 'pdf';
   const outputPdfName = lowerName.endsWith('.pdf')
     ? file.name
     : `${baseTitle}.pdf`;
 
   const buf = await file.arrayBuffer();
   const rawBytes = new Uint8Array(buf);
+
+  if (rawBytes.byteLength === 0) {
+    throw new Error(
+      `The selected file "${file.name}" is empty (0 bytes) and cannot be opened.`
+    );
+  }
+
+  const detectedExt = detectUniversalDocumentFormat(
+    file.name || '',
+    mime,
+    rawBytes
+  );
 
   // 1. Native PDF file (%PDF-)
   const isPdfHeader =
@@ -2487,7 +3612,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     rawBytes[2] === 0x44 &&
     rawBytes[3] === 0x46;
 
-  if ((lowerName.endsWith('.pdf') || mime === 'application/pdf') && isPdfHeader) {
+  if (detectedExt === 'pdf' && isPdfHeader) {
     let pageCount = 1;
     let extractedText = '';
     try {
@@ -2526,45 +3651,39 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     };
   }
 
-  // 2. Spreadsheets (.xlsx, .xls, .csv, .tsv)
+  // 2. Spreadsheets (.xlsx, .xls, .xlsm, .xlsb, .ods, .csv, .tsv)
   if (
-    lowerName.endsWith('.xlsx') ||
-    lowerName.endsWith('.xls') ||
-    lowerName.endsWith('.csv') ||
-    lowerName.endsWith('.tsv') ||
+    ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'csv', 'tsv'].includes(detectedExt) ||
     mime.includes('spreadsheet') ||
     mime.includes('excel') ||
-    mime === 'text/csv'
+    mime.includes('csv') ||
+    mime.includes('tab-separated')
   ) {
-    const rows = await parseUploadedSpreadsheetFile(file);
+    const sheets = await parseUploadedWorkbookSheets(file);
+    const rows: string[][] =
+      sheets.length === 1
+        ? sheets[0].rows
+        : sheets.flatMap((s) => [[`=== Sheet: ${s.name} ===`], ...s.rows]);
     const { pdfBytes, pageCount } = await convertSpreadsheetRowsToPdf(
       rows,
       baseTitle,
       'landscape'
     );
-    const tableHtmlRows = rows
-      .map((r, rIdx) => {
-        const cellTag = rIdx === 0 ? 'th' : 'td';
-        return `<tr>${r
-          .map((c) => `<${cellTag}>${escapeHtmlCell(c)}</${cellTag}>`)
-          .join('')}</tr>`;
-      })
-      .join('\n');
+    const interactiveExcelHtml = buildInteractiveExcelHtml(sheets, baseTitle);
 
     return {
       pdfBytes,
       pageCount,
       extractedText: rows.map((r) => r.join(' | ')).join('\n'),
-      rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n<table>\n${tableHtmlRows}\n</table>`,
-      sourceFormat: ext,
+      rawHtmlContent: interactiveExcelHtml,
+      sourceFormat: detectedExt,
       outputPdfName,
     };
   }
 
   // 3. Presentations (.pptx, .ppt)
   if (
-    lowerName.endsWith('.pptx') ||
-    lowerName.endsWith('.ppt') ||
+    ['pptx', 'ppt'].includes(detectedExt) ||
     mime.includes('presentation') ||
     mime.includes('powerpoint')
   ) {
@@ -2591,7 +3710,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
         .map((s) => `${s.title}\n${s.bullets.join('\n')}`)
         .join('\n\n'),
       rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n${slideHtml}`,
-      sourceFormat: ext,
+      sourceFormat: detectedExt,
       outputPdfName,
     };
   }
@@ -2616,22 +3735,49 @@ export async function convertAnyUploadedFileToPdfAndHtml(
       )}</h1><figure><img src="${dataUrl}" alt="${escapeHtmlCell(
         baseTitle
       )}" /></figure>`,
-      sourceFormat: ext,
+      sourceFormat: detectedExt,
       outputPdfName,
     };
   }
 
-  // 5. eBooks (.epub, .kpf, .mobi, .azw3, .fb2), HTML (.html, .htm, .xhtml),
+  // 5. eBooks (.kpf, .epub, .mobi, .azw3, .fb2), HTML (.html, .htm, .xhtml),
   //    Word & OpenDocument (.docx, .doc, .odt, .ods, .odp), Markdown (.md), RTF, JSON, XML, TXT
   const parsed = await parseUploadedWordFile(file);
+
+  // If this is a KPF package containing an embedded `OEBPS/source_replica.pdf`, restore its exact PDF pages!
+  if (detectedExt === 'kpf' || lowerName.endsWith('.kpf')) {
+    try {
+      const embeddedPdf = await extractBinaryEntryFromZip(
+        rawBytes,
+        'OEBPS/source_replica.pdf'
+      );
+      if (
+        embeddedPdf &&
+        embeddedPdf.byteLength > 64 &&
+        embeddedPdf[0] === 0x25 &&
+        embeddedPdf[1] === 0x50
+      ) {
+        const replicaPageCount = await getPdfPageCount(embeddedPdf);
+        return {
+          pdfBytes: embeddedPdf,
+          pageCount: replicaPageCount,
+          extractedText: parsed.plainText,
+          rawHtmlContent: parsed.htmlPreview,
+          sourceFormat: 'kpf',
+          outputPdfName,
+        };
+      }
+    } catch {
+      // Fallback to block-generated PDF below
+    }
+  }
+
   const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
     parsed.blocks,
     {
       pageSize: 'A4',
       fontFamily:
-        lowerName.endsWith('.epub') || lowerName.endsWith('.kpf')
-          ? 'times'
-          : 'helvetica',
+        detectedExt === 'epub' || detectedExt === 'kpf' ? 'times' : 'helvetica',
       baseFontSize: 11.5,
       lineSpacing: 1.4,
       addPageNumbers: true,
@@ -2643,7 +3789,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     pageCount,
     extractedText: parsed.plainText,
     rawHtmlContent: parsed.htmlPreview,
-    sourceFormat: ext,
+    sourceFormat: detectedExt,
     outputPdfName,
   };
 }

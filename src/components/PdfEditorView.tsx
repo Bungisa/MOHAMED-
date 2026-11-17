@@ -59,6 +59,8 @@ import {
   HardDrive,
   Mail,
   Minimize2,
+  BookOpen,
+  Volume2,
 } from 'lucide-react';
 import {
   ActiveView,
@@ -190,10 +192,20 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     Boolean(
       activeDocument?.sourceFormat &&
         [
+          'docx',
+          'doc',
+          'odt',
           'html',
           'htm',
           'xhtml',
           'svg',
+          'xlsx',
+          'xls',
+          'xlsm',
+          'xlsb',
+          'ods',
+          'csv',
+          'tsv',
           'epub',
           'kpf',
           'mobi',
@@ -224,7 +236,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       ''
     ).toLowerCase();
     if (
-      ['html', 'htm', 'xhtml', 'svg'].includes(fmt) ||
+      [
+        'docx',
+        'doc',
+        'odt',
+        'html',
+        'htm',
+        'xhtml',
+        'svg',
+        'xlsx',
+        'xls',
+        'xlsm',
+        'xlsb',
+        'ods',
+        'csv',
+        'tsv',
+      ].includes(fmt) ||
       /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
         activeDocument?.rawHtmlContent || ''
       )
@@ -236,6 +263,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [showReflowToc, setShowReflowToc] = useState<boolean>(false);
   const [reflowSearchQuery, setReflowSearchQuery] = useState<string>('');
   const [isReflowSpeaking, setIsReflowSpeaking] = useState<boolean>(false);
+  const [showReaderToolsDrawer, setShowReaderToolsDrawer] =
+    useState<boolean>(false);
+  const [bookmarkedPages, setBookmarkedPages] = useState<number[]>([]);
 
   // Active grouped bottom drawer tab ('none' keeps the PDF in almost-full-screen view by default)
   const [bottomPanelTab, setBottomPanelTab] = useState<BottomPanelTab>('none');
@@ -682,7 +712,37 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     setSelectedEmbedded(null);
     setSelectedPictureRegion(null);
     setIsComparingOriginal(false);
-    setCurrentPage(1);
+    setShowReaderToolsDrawer(false);
+
+    // Restore last reading position and bookmarks for this document
+    let restoredPage = 1;
+    try {
+      const posMapRaw = localStorage.getItem('elimikapdf_reading_pos_v1');
+      if (posMapRaw) {
+        const posMap = JSON.parse(posMapRaw) as Record<string, number>;
+        const savedPage = posMap[activeDocument.id];
+        if (
+          typeof savedPage === 'number' &&
+          savedPage >= 1 &&
+          savedPage <= (activeDocument.pageCount || 9999)
+        ) {
+          restoredPage = savedPage;
+        }
+      }
+      const bmMapRaw = localStorage.getItem('elimikapdf_bookmarks_v1');
+      if (bmMapRaw) {
+        const bmMap = JSON.parse(bmMapRaw) as Record<string, number[]>;
+        setBookmarkedPages(
+          Array.isArray(bmMap[activeDocument.id]) ? bmMap[activeDocument.id] : []
+        );
+      } else {
+        setBookmarkedPages([]);
+      }
+    } catch {
+      setBookmarkedPages([]);
+    }
+
+    setCurrentPage(restoredPage);
     setFitMode('fit-page');
     setZoom(1.0);
     const savedFilter = activeDocument.appliedFilter || 'original';
@@ -710,6 +770,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       'pdf'
     ).toLowerCase();
     const isReflowBookOrHtml = [
+      'docx',
+      'doc',
+      'odt',
       'epub',
       'kpf',
       'mobi',
@@ -720,6 +783,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       'htm',
       'xhtml',
       'svg',
+      'xlsx',
+      'xls',
+      'xlsm',
+      'xlsb',
+      'ods',
+      'csv',
+      'tsv',
       'md',
       'txt',
       'rtf',
@@ -727,7 +797,22 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       'xml',
     ].includes(detectedFmt);
     const shouldOpenInBrowserView =
-      ['html', 'htm', 'xhtml', 'svg'].includes(detectedFmt) ||
+      [
+        'docx',
+        'doc',
+        'odt',
+        'html',
+        'htm',
+        'xhtml',
+        'svg',
+        'xlsx',
+        'xls',
+        'xlsm',
+        'xlsb',
+        'ods',
+        'csv',
+        'tsv',
+      ].includes(detectedFmt) ||
       /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
         activeDocument.rawHtmlContent || ''
       );
@@ -747,6 +832,42 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       hasInitializedDocRef.current = true;
     });
   }, [activeDocument, renderAllPages, initialReaderMode]);
+
+  // Persist last reading position whenever currentPage changes
+  useEffect(() => {
+    if (!activeDocument || currentPage < 1) return;
+    try {
+      const posMapRaw = localStorage.getItem('elimikapdf_reading_pos_v1');
+      const posMap: Record<string, number> = posMapRaw
+        ? JSON.parse(posMapRaw)
+        : {};
+      posMap[activeDocument.id] = currentPage;
+      localStorage.setItem('elimikapdf_reading_pos_v1', JSON.stringify(posMap));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [activeDocument?.id, currentPage]);
+
+  const toggleBookmarkOnPage = (pageNum: number) => {
+    if (!activeDocument) return;
+    setBookmarkedPages((prev) => {
+      const exists = prev.includes(pageNum);
+      const next = exists
+        ? prev.filter((p) => p !== pageNum)
+        : [...prev, pageNum].sort((a, b) => a - b);
+      try {
+        const bmMapRaw = localStorage.getItem('elimikapdf_bookmarks_v1');
+        const bmMap: Record<string, number[]> = bmMapRaw
+          ? JSON.parse(bmMapRaw)
+          : {};
+        bmMap[activeDocument.id] = next;
+        localStorage.setItem('elimikapdf_bookmarks_v1', JSON.stringify(bmMap));
+      } catch {
+        // Ignore storage errors
+      }
+      return next;
+    });
+  };
 
   const jumpToPage = (pageNum: number) => {
     const clamped = Math.max(1, Math.min(pages.length || 1, pageNum));
@@ -2455,10 +2576,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       } else if (destination === 'cloud' || destination === 'gdrive') {
         setShowSaveModal(false);
         setShowCompressModal(false);
-        if (destination === 'gdrive') {
-          if (!getGoogleDriveAccessTokenSync()) {
-            void googleDriveSignIn().catch(() => {});
-          }
+        if (destination === 'gdrive' && !getGoogleDriveAccessTokenSync()) {
+          void googleDriveSignIn().catch(() => {});
         }
         setCloudModalState({
           isOpen: true,
@@ -2794,61 +2913,117 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
-        {/* Right: Read / HTML Reader / Edit Switch + Share + Prominent Save Button */}
-        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          {/* Clean Read / HTML Reader / Edit Toggle */}
+        {/* Right: Single Prominent "Reader" Button + Edit Switch + Share + Save */}
+        <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
+          {/* Top-Right Single "Reader" Button & "Edit" Switch */}
           <div className="flex items-center p-0.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47]">
             <button
               type="button"
               onClick={() => {
                 setWorkspaceMode('reader');
-                setIsHtmlReflowMode(false);
                 setBottomPanelTab('none');
+                const fmt = (
+                  activeDocument.sourceFormat ||
+                  activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+                  'pdf'
+                ).toLowerCase();
+                const isRichOrBook =
+                  [
+                    'docx',
+                    'doc',
+                    'odt',
+                    'html',
+                    'htm',
+                    'xhtml',
+                    'svg',
+                    'xlsx',
+                    'xls',
+                    'xlsm',
+                    'xlsb',
+                    'ods',
+                    'csv',
+                    'tsv',
+                    'epub',
+                    'kpf',
+                    'mobi',
+                    'azw3',
+                    'azw',
+                    'fb2',
+                    'md',
+                    'txt',
+                    'rtf',
+                  ].includes(fmt) ||
+                  Boolean(
+                    activeDocument.rawHtmlContent &&
+                      activeDocument.rawHtmlContent.trim()
+                  );
+                setIsHtmlReflowMode(isRichOrBook);
               }}
-              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                isReaderMode && !isHtmlReflowMode
+              title="Universal Document Reader — Automatically read any PDF, Word, Excel, EPUB, KPF, or HTML document"
+              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap ${
+                isReaderMode
                   ? 'bg-[#003FE8] text-white shadow-xs'
-                  : 'text-[#6E667D] dark:text-[#A39BB5]'
+                  : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
               }`}
             >
-              Read
+              <BookOpen className="w-3.5 h-3.5" />
+              <span>Reader</span>
             </button>
-            <button
-              type="button"
-              onClick={() => {
-                setWorkspaceMode('reader');
-                setIsHtmlReflowMode(true);
-                setBottomPanelTab('none');
-              }}
-              title="Reflowable HTML & eBook Reader Mode"
-              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                isReaderMode && isHtmlReflowMode
-                  ? 'bg-[#0D9488] text-white shadow-xs'
-                  : 'text-[#6E667D] dark:text-[#A39BB5]'
-              }`}
-            >
-              HTML Reader
-            </button>
+
             <button
               type="button"
               onClick={() => {
                 setIsHtmlReflowMode(false);
                 setWorkspaceMode('content-edit');
               }}
-              className={`px-2 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
                 !isReaderMode
                   ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] shadow-xs'
-                  : 'text-[#6E667D] dark:text-[#A39BB5]'
+                  : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
               }`}
             >
               Edit
             </button>
           </div>
 
+          {isReaderMode && (
+            <>
+              <button
+                type="button"
+                onClick={() => toggleBookmarkOnPage(currentPage)}
+                title={
+                  bookmarkedPages.includes(currentPage)
+                    ? `Remove Bookmark on Page ${currentPage}`
+                    : `Bookmark Page ${currentPage}`
+                }
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                  bookmarkedPages.includes(currentPage)
+                    ? 'bg-[#E47911]/15 text-[#E47911]'
+                    : 'text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                }`}
+              >
+                <Sparkles className="w-4 h-4" />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowReaderToolsDrawer((prev) => !prev)}
+                title="Search, TOC, Bookmarks, Dark Mode & File Info"
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                  showReaderToolsDrawer
+                    ? 'bg-[#003FE8] text-white'
+                    : 'text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
+                }`}
+              >
+                <Search className="w-4 h-4" />
+              </button>
+            </>
+          )}
+
           <button
             type="button"
             onClick={handleSharePdf}
-            title="Share PDF"
+            title="Share Document"
             className="w-8 h-8 rounded-lg flex items-center justify-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer shrink-0"
           >
             <Share2 className="w-4 h-4" />
@@ -2865,6 +3040,164 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </button>
         </div>
       </header>
+
+      {/* Compact On-Demand Floating Reader Popover (Only shown when user taps the Search/Tools icon in Header; closed by default so Reader Mode is 100% full-screen) */}
+      {isReaderMode && showReaderToolsDrawer && (
+        <div className="absolute top-13 right-2.5 sm:right-4 z-40 w-[92vw] max-w-sm rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] shadow-2xl p-3.5 space-y-3 text-xs">
+          <div className="flex items-center justify-between border-b border-[#E4DFEC] dark:border-[#261F33] pb-2">
+            <span className="font-bold text-[#14101B] dark:text-[#F4F1F8]">
+              Reader Tools &amp; Navigation
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowReaderToolsDrawer(false)}
+              className="p-1 rounded-lg hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Search Within Document */}
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 text-[#6E667D] absolute left-2.5 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={reflowSearchQuery}
+              onChange={(e) => {
+                setReflowSearchQuery(e.target.value);
+                if (e.target.value.trim() && !isHtmlReflowMode) {
+                  setIsHtmlReflowMode(true);
+                  setHtmlReflowSubMode('reflow');
+                }
+              }}
+              placeholder="Search words or chapters in document..."
+              className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
+            />
+          </div>
+
+          {/* View Mode & Dark Reading Theme */}
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <div className="flex items-center gap-1 bg-[#F2EFF6] dark:bg-[#261F33] p-0.5 rounded-lg">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHtmlReflowMode(true);
+                  setHtmlReflowSubMode('webpage');
+                }}
+                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                  isHtmlReflowMode && htmlReflowSubMode === 'webpage'
+                    ? 'bg-[#003FE8] text-white'
+                    : 'text-[#6E667D] dark:text-[#A39BB5]'
+                }`}
+              >
+                Original Layout
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHtmlReflowMode(true);
+                  setHtmlReflowSubMode('reflow');
+                }}
+                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                  isHtmlReflowMode && htmlReflowSubMode === 'reflow'
+                    ? 'bg-[#003FE8] text-white'
+                    : 'text-[#6E667D] dark:text-[#A39BB5]'
+                }`}
+              >
+                Reflow Text
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsHtmlReflowMode(false)}
+                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                  !isHtmlReflowMode
+                    ? 'bg-[#003FE8] text-white'
+                    : 'text-[#6E667D] dark:text-[#A39BB5]'
+                }`}
+              >
+                PDF Pages
+              </button>
+            </div>
+
+            <div className="flex items-center gap-1">
+              {(['paper', 'sepia', 'night'] as const).map((th) => (
+                <button
+                  key={th}
+                  type="button"
+                  onClick={() => {
+                    setHtmlReflowTheme(th);
+                  }}
+                  className={`px-2 py-1 rounded text-[10px] font-bold capitalize cursor-pointer ${
+                    htmlReflowTheme === th
+                      ? 'bg-[#4A1D5E] text-white'
+                      : 'bg-[#F2EFF6] dark:bg-[#261F33] text-[#6E667D] dark:text-[#A39BB5]'
+                  }`}
+                >
+                  {th}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Bookmarks & Table of Contents */}
+          <div className="space-y-1.5 max-h-36 overflow-y-auto border-t border-[#E4DFEC] dark:border-[#261F33] pt-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-bold uppercase tracking-wider text-[#6E667D]">
+                Bookmarks ({bookmarkedPages.length})
+              </span>
+              <button
+                type="button"
+                onClick={() => toggleBookmarkOnPage(currentPage)}
+                className="text-[10px] font-bold text-[#003FE8] dark:text-[#60A5FA] cursor-pointer"
+              >
+                {bookmarkedPages.includes(currentPage)
+                  ? `Remove Page ${currentPage}`
+                  : `+ Bookmark Page ${currentPage}`}
+              </button>
+            </div>
+            {bookmarkedPages.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {bookmarkedPages.map((bmPage) => (
+                  <button
+                    key={bmPage}
+                    type="button"
+                    onClick={() => {
+                      setIsHtmlReflowMode(false);
+                      jumpToPage(bmPage);
+                      setShowReaderToolsDrawer(false);
+                    }}
+                    className="px-2 py-0.5 rounded bg-[#E47911]/15 text-[#C25E00] dark:text-[#FDBA74] text-[10px] font-bold cursor-pointer"
+                  >
+                    Page {bmPage}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* File Info & Reading Progress */}
+          <div className="border-t border-[#E4DFEC] dark:border-[#261F33] pt-2 flex items-center justify-between text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+            <span>
+              Format:{' '}
+              <strong>
+                {(activeDocument.sourceFormat || 'pdf').toUpperCase()}
+              </strong>{' '}
+              · { pages.length || activeDocument.pageCount }p
+            </span>
+            <span>
+              Progress:{' '}
+              <strong>
+                {Math.round(
+                  (currentPage /
+                    Math.max(1, pages.length || activeDocument.pageCount || 1)) *
+                    100
+                )}
+                %
+              </strong>
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main Almost-Full-Screen Studio Body */}
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
@@ -2991,229 +3324,17 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           className="flex-1 min-w-0 min-h-0 w-full h-full overflow-auto bg-[#D8D8DC] dark:bg-[#09070D] touch-pan-x touch-pan-y"
         >
           {isReaderMode && isHtmlReflowMode ? (
-            <div className="max-w-4xl mx-auto p-3 sm:p-6 space-y-3 select-text">
-              {/* Multi-Purpose eBook & HTML Reader Controls Bar */}
-              <div className="sticky top-2 z-20 p-2.5 sm:p-3 rounded-2xl bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border border-[#E4DFEC] dark:border-[#261F33] shadow-md space-y-2">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="px-2 py-0.5 rounded-md bg-[#0D9488] text-white text-[10px] font-extrabold uppercase tracking-wide">
-                      {(activeDocument.sourceFormat || 'BOOK / HTML').toUpperCase()} READER
-                    </span>
-                    <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
-                      <button
-                        type="button"
-                        onClick={() => setHtmlReflowSubMode('webpage')}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
-                          htmlReflowSubMode === 'webpage'
-                            ? 'bg-[#0D9488] text-white'
-                            : 'text-[#6E667D]'
-                        }`}
-                      >
-                        Browser View (HTML / Animations)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setHtmlReflowSubMode('reflow')}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
-                          htmlReflowSubMode === 'reflow'
-                            ? 'bg-[#0D9488] text-white'
-                            : 'text-[#6E667D]'
-                        }`}
-                      >
-                        Reflow Book
-                      </button>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => setShowReflowToc((v) => !v)}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border cursor-pointer ${
-                        showReflowToc
-                          ? 'bg-[#4A1D5E] text-white border-[#4A1D5E]'
-                          : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8]'
-                      }`}
-                    >
-                      Chapters ({resolvedReaderBlocks.filter((b) => b.type === 'h1' || b.type === 'h2' || b.type === 'h3').length})
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
-                        if (isReflowSpeaking) {
-                          window.speechSynthesis.cancel();
-                          setIsReflowSpeaking(false);
-                        } else {
-                          window.speechSynthesis.cancel();
-                          const textToRead = resolvedReaderBlocks
-                            .map((b) => b.text || '')
-                            .join('. ')
-                            .slice(0, 12000);
-                          const utterance = new SpeechSynthesisUtterance(textToRead);
-                          utterance.onend = () => setIsReflowSpeaking(false);
-                          utterance.onerror = () => setIsReflowSpeaking(false);
-                          setIsReflowSpeaking(true);
-                          window.speechSynthesis.speak(utterance);
-                        }
-                      }}
-                      className={`px-2.5 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
-                        isReflowSpeaking
-                          ? 'bg-[#DC2626] text-white'
-                          : 'bg-[#0D9488]/15 text-[#0D9488] dark:text-[#5EEAD4]'
-                      }`}
-                    >
-                      {isReflowSpeaking ? 'Stop Audio' : 'Read Aloud'}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {/* Font Family */}
-                    <div className="inline-flex p-0.5 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
-                      {(
-                        [
-                          { id: 'serif', label: 'Serif' },
-                          { id: 'sans', label: 'Sans' },
-                          { id: 'mono', label: 'Mono' },
-                        ] as const
-                      ).map((f) => (
-                        <button
-                          key={f.id}
-                          type="button"
-                          onClick={() => setHtmlReflowFontFamily(f.id)}
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
-                            htmlReflowFontFamily === f.id
-                              ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
-                              : 'text-[#6E667D]'
-                          }`}
-                        >
-                          {f.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Themes */}
-                    {(
-                      [
-                        { id: 'paper', label: 'Paper' },
-                        { id: 'sepia', label: 'Sepia' },
-                        { id: 'dusk', label: 'Dusk' },
-                        { id: 'night', label: 'Night' },
-                      ] as const
-                    ).map((t) => (
-                      <button
-                        key={t.id}
-                        type="button"
-                        onClick={() => setHtmlReflowTheme(t.id)}
-                        className={`px-2 py-1 rounded-lg text-[11px] font-bold cursor-pointer ${
-                          htmlReflowTheme === t.id
-                            ? 'bg-[#4A1D5E] text-white dark:bg-[#9D5CE5] dark:text-[#0D0A12]'
-                            : 'bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#6E667D]'
-                        }`}
-                      >
-                        {t.label}
-                      </button>
-                    ))}
-
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setHtmlReflowFontSize((s) => Math.max(12, s - 1))
-                      }
-                      className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
-                    >
-                      A-
-                    </button>
-                    <span className="text-[11px] font-mono font-bold text-[#6E667D]">
-                      {htmlReflowFontSize}px
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setHtmlReflowFontSize((s) => Math.min(28, s + 1))
-                      }
-                      className="px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-extrabold cursor-pointer"
-                    >
-                      A+
-                    </button>
-                  </div>
-                </div>
-
-                {/* Search bar inside book / HTML */}
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="w-3.5 h-3.5 text-[#6E667D] absolute left-2.5 top-1/2 -translate-y-1/2" />
-                    <input
-                      type="text"
-                      value={reflowSearchQuery}
-                      onChange={(e) => setReflowSearchQuery(e.target.value)}
-                      placeholder="Search words or chapters inside this book / HTML document..."
-                      className="w-full pl-8 pr-3 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs"
-                    />
-                  </div>
-                  {reflowSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => setReflowSearchQuery('')}
-                      className="px-2 py-1 rounded-lg text-[11px] font-semibold text-[#6E667D] hover:bg-[#F2EFF6] cursor-pointer"
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-
-                {/* Expandable Chapter / Table of Contents Drawer */}
-                {showReflowToc && (
-                  <div className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] max-h-48 overflow-y-auto space-y-1">
-                    <p className="text-[10px] font-extrabold uppercase tracking-wider text-[#6E667D] px-1">
-                      Table of Contents &amp; Headings
-                    </p>
-                    {resolvedReaderBlocks
-                      .map((b, i) => ({ b, i }))
-                      .filter(
-                        ({ b }) =>
-                          b.type === 'h1' || b.type === 'h2' || b.type === 'h3'
-                      )
-                      .map(({ b, i }) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onClick={() => {
-                            const target = document.getElementById(
-                              `reflow-heading-${i}`
-                            );
-                            if (target) {
-                              target.scrollIntoView({
-                                behavior: 'smooth',
-                                block: 'start',
-                              });
-                            }
-                            setShowReflowToc(false);
-                          }}
-                          className={`w-full text-left px-2 py-1 rounded-lg text-xs hover:bg-[#0D9488]/10 hover:text-[#0D9488] transition-colors cursor-pointer truncate ${
-                            b.type === 'h1'
-                              ? 'font-bold'
-                              : b.type === 'h2'
-                                ? 'pl-4 font-semibold'
-                                : 'pl-6 text-[11px]'
-                          }`}
-                        >
-                          {b.text}
-                        </button>
-                      ))}
-                  </div>
-                )}
-              </div>
-
+            <div className="w-full h-full select-text">
               {htmlReflowSubMode === 'webpage' ? (
-                <div className="rounded-2xl border border-[#E4DFEC] dark:border-[#261F33] bg-white overflow-hidden h-[78vh] shadow-md">
+                <div className="w-full h-full bg-white overflow-hidden">
                   <iframe
-                    title="Full Browser HTML Reader"
+                    title="Full Screen Document Reader"
                     sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
                     srcDoc={prepareBrowserFidelityHtml(
                       resolvedReaderHtml,
                       docBaseTitle
                     )}
-                    className="w-full h-full border-0 bg-white"
+                    className="w-full h-full border-0 bg-white block"
                   />
                 </div>
               ) : (
@@ -3222,7 +3343,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     fontSize: `${htmlReflowFontSize}px`,
                     lineHeight: 1.75,
                   }}
-                  className={`rounded-2xl border p-6 sm:p-10 shadow-md space-y-4 transition-colors ${
+                  className={`min-h-full max-w-4xl mx-auto p-6 sm:p-10 space-y-4 transition-colors ${
                     htmlReflowFontFamily === 'serif'
                       ? 'font-serif'
                       : htmlReflowFontFamily === 'mono'
@@ -3230,12 +3351,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                         : 'font-sans'
                   } ${
                     htmlReflowTheme === 'sepia'
-                      ? 'bg-[#F6EFE2] text-[#2B2218] border-[#DFD2BA]'
+                      ? 'bg-[#F6EFE2] text-[#2B2218]'
                       : htmlReflowTheme === 'dusk'
-                        ? 'bg-[#1E222D] text-[#D8DEE9] border-[#2E3440]'
+                        ? 'bg-[#1E222D] text-[#D8DEE9]'
                         : htmlReflowTheme === 'night'
-                          ? 'bg-[#111318] text-[#E4E2E8] border-[#262936]'
-                          : 'bg-white text-[#14101B] border-[#E4DFEC]'
+                          ? 'bg-[#111318] text-[#E4E2E8]'
+                          : 'bg-white text-[#14101B]'
                   }`}
                 >
                   {resolvedReaderBlocks
@@ -4515,146 +4636,147 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
-        {/* Stable Floating PDF-Only Zoom Controls on Bottom-Left of Stage */}
-        <div className="absolute bottom-3 left-3 z-30 h-9 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 shadow-md backdrop-blur-xs select-none">
-          <button
-            type="button"
-            onClick={() => applyPdfZoom(zoom - 0.2)}
-            disabled={zoom <= 0.5}
-            title="Zoom out PDF content"
-            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
-          >
-            <ZoomOut className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPdfZoom(1.0)}
-            title="Reset PDF zoom to 100%"
-            className="w-12 py-0.5 text-[11px] font-mono font-bold tabular-nums text-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer shrink-0"
-          >
-            {Math.round(zoom * 100)}%
-          </button>
-          <button
-            type="button"
-            onClick={() => applyPdfZoom(zoom + 0.2)}
-            disabled={zoom >= 4.0}
-            title="Zoom in PDF content"
-            className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
-          >
-            <ZoomIn className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
-          </button>
-        </div>
-
-        {/* Top-Left "A4" Page Size Badge & Top-Right "1/9" + Up/Down Stepper on Stage (Matches Reference Screenshots) */}
-        <button
-          type="button"
-          onClick={() => {
-            const sizes: ('A4' | 'Letter' | 'Legal' | 'Fit')[] = [
-              'A4',
-              'Letter',
-              'Legal',
-              'Fit',
-            ];
-            const next =
-              sizes[(sizes.indexOf(pdfPageSize) + 1) % sizes.length];
-            setPdfPageSize(next);
-            setStatusMessage(`PDF Page Size set to ${next}.`);
-          }}
-          title="Tap to change PDF Page Size (A4 / Letter / Legal / Fit)"
-          className="absolute top-3 left-3 z-30 px-2.5 py-0.5 rounded-md bg-white/85 dark:bg-[#16111F]/85 border border-neutral-300/80 dark:border-[#261F33] text-[#2563EB] dark:text-[#60A5FA] text-xs font-semibold shadow-xs backdrop-blur-xs cursor-pointer"
-        >
-          {pdfPageSize}
-        </button>
-
-        <div className="absolute top-2.5 right-3 z-30 flex items-center gap-2">
-          <span className="px-2.5 py-0.5 rounded-md bg-white/85 dark:bg-[#16111F]/85 border border-neutral-300/80 dark:border-[#261F33] text-[#5A5565] dark:text-[#A39BB5] text-xs font-mono font-semibold shadow-xs backdrop-blur-xs">
-            {currentPage}/{pages.length || 1}
-          </span>
-          {pages.length > 1 && (
-            <div className="flex flex-col items-center bg-white/90 dark:bg-[#16111F]/90 border border-neutral-300/80 dark:border-[#261F33] rounded-full p-0.5 shadow-sm backdrop-blur-xs">
+        {/* Stable Floating PDF-Only Controls (Hidden in Full-Screen Reader Mode) */}
+        {!isReaderMode && (
+          <>
+            <div className="absolute bottom-3 left-3 z-30 h-9 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 shadow-md backdrop-blur-xs select-none">
               <button
                 type="button"
-                onClick={() => jumpToPage(currentPage - 1)}
-                disabled={currentPage <= 1}
-                title="Previous page"
-                className="p-1 rounded-full hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer"
+                onClick={() => applyPdfZoom(zoom - 0.2)}
+                disabled={zoom <= 0.5}
+                title="Zoom out PDF content"
+                className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
               >
-                <ChevronUp className="w-3.5 h-3.5 text-[#3A3545] dark:text-[#F4F1F8]" />
+                <ZoomOut className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
               </button>
               <button
                 type="button"
-                onClick={() => jumpToPage(currentPage + 1)}
-                disabled={currentPage >= pages.length}
-                title="Next page"
-                className="p-1 rounded-full hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer"
+                onClick={() => applyPdfZoom(1.0)}
+                title="Reset PDF zoom to 100%"
+                className="w-12 py-0.5 text-[11px] font-mono font-bold tabular-nums text-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer shrink-0"
               >
-                <ChevronDown className="w-3.5 h-3.5 text-[#3A3545] dark:text-[#F4F1F8]" />
+                {Math.round(zoom * 100)}%
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPdfZoom(zoom + 0.2)}
+                disabled={zoom >= 4.0}
+                title="Zoom in PDF content"
+                className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer shrink-0"
+              >
+                <ZoomIn className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
               </button>
             </div>
-          )}
-        </div>
 
-        {/* Floating Original vs. Edited Indicator Pill when Viewing Original */}
-        {isComparingOriginal && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#14101B]/95 dark:bg-[#16111F]/95 border border-white/15 text-white shadow-xl backdrop-blur-xs">
-            <span className="text-[11px] font-bold whitespace-nowrap">
-              Viewing Original
-            </span>
             <button
               type="button"
-              onClick={() => setIsComparingOriginal(false)}
-              className="px-2.5 py-0.5 rounded-full bg-[#003FE8] hover:bg-[#0035C4] text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
+              onClick={() => {
+                const sizes: ('A4' | 'Letter' | 'Legal' | 'Fit')[] = [
+                  'A4',
+                  'Letter',
+                  'Legal',
+                  'Fit',
+                ];
+                const next =
+                  sizes[(sizes.indexOf(pdfPageSize) + 1) % sizes.length];
+                setPdfPageSize(next);
+                setStatusMessage(`PDF Page Size set to ${next}.`);
+              }}
+              title="Tap to change PDF Page Size (A4 / Letter / Legal / Fit)"
+              className="absolute top-3 left-3 z-30 px-2.5 py-0.5 rounded-md bg-white/85 dark:bg-[#16111F]/85 border border-neutral-300/80 dark:border-[#261F33] text-[#2563EB] dark:text-[#60A5FA] text-xs font-semibold shadow-xs backdrop-blur-xs cursor-pointer"
             >
-              Show Edited
+              {pdfPageSize}
             </button>
-          </div>
-        )}
 
-        {/* Floating Corner Controls on Bottom-Right of Grey Document Stage (Static Positions & Fixed Sizes) */}
-        <div className="absolute bottom-3 right-3 z-30 flex items-center gap-2 select-none">
-          {undoStack.length > 0 && (
-            <button
-              type="button"
-              onClick={handleUndo}
-              title="Undo last change (Ctrl+Z)"
-              className="h-10 px-3.5 rounded-full bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white text-xs font-bold tabular-nums shadow-lg flex items-center gap-1.5 cursor-pointer backdrop-blur-xs shrink-0"
-            >
-              <Undo2 className="w-4 h-4 shrink-0" />
-              <span>Undo ({undoStack.length})</span>
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={() => {
-              setIsComparingOriginal((prev) => {
-                const next = !prev;
-                if (next) {
-                  setSelectedAnnId(null);
-                  setEditingTextAnnId(null);
-                  setSelectedEmbedded(null);
-                  setStatusMessage(
-                    'Showing Original Document (before edits). Tap the button again to return to Edited Document.'
-                  );
-                } else {
-                  setStatusMessage('Showing Edited Document.');
+            <div className="absolute top-2.5 right-3 z-30 flex items-center gap-2">
+              <span className="px-2.5 py-0.5 rounded-md bg-white/85 dark:bg-[#16111F]/85 border border-neutral-300/80 dark:border-[#261F33] text-[#5A5565] dark:text-[#A39BB5] text-xs font-mono font-semibold shadow-xs backdrop-blur-xs">
+                {currentPage}/{pages.length || 1}
+              </span>
+              {pages.length > 1 && (
+                <div className="flex flex-col items-center bg-white/90 dark:bg-[#16111F]/90 border border-neutral-300/80 dark:border-[#261F33] rounded-full p-0.5 shadow-sm backdrop-blur-xs">
+                  <button
+                    type="button"
+                    onClick={() => jumpToPage(currentPage - 1)}
+                    disabled={currentPage <= 1}
+                    title="Previous page"
+                    className="p-1 rounded-full hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronUp className="w-3.5 h-3.5 text-[#3A3545] dark:text-[#F4F1F8]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => jumpToPage(currentPage + 1)}
+                    disabled={currentPage >= pages.length}
+                    title="Next page"
+                    className="p-1 rounded-full hover:bg-neutral-200/70 dark:hover:bg-[#261F33] disabled:opacity-30 cursor-pointer"
+                  >
+                    <ChevronDown className="w-3.5 h-3.5 text-[#3A3545] dark:text-[#F4F1F8]" />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {isComparingOriginal && (
+              <div className="absolute top-3 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#14101B]/95 dark:bg-[#16111F]/95 border border-white/15 text-white shadow-xl backdrop-blur-xs">
+                <span className="text-[11px] font-bold whitespace-nowrap">
+                  Viewing Original
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setIsComparingOriginal(false)}
+                  className="px-2.5 py-0.5 rounded-full bg-[#003FE8] hover:bg-[#0035C4] text-white text-[11px] font-bold cursor-pointer whitespace-nowrap"
+                >
+                  Show Edited
+                </button>
+              </div>
+            )}
+
+            <div className="absolute bottom-3 right-3 z-30 flex items-center gap-2 select-none">
+              {undoStack.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleUndo}
+                  title="Undo last change (Ctrl+Z)"
+                  className="h-10 px-3.5 rounded-full bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white text-xs font-bold tabular-nums shadow-lg flex items-center gap-1.5 cursor-pointer backdrop-blur-xs shrink-0"
+                >
+                  <Undo2 className="w-4 h-4 shrink-0" />
+                  <span>Undo ({undoStack.length})</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  setIsComparingOriginal((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      setSelectedAnnId(null);
+                      setEditingTextAnnId(null);
+                      setSelectedEmbedded(null);
+                      setStatusMessage(
+                        'Showing Original Document (before edits). Tap the button again to return to Edited Document.'
+                      );
+                    } else {
+                      setStatusMessage('Showing Edited Document.');
+                    }
+                    return next;
+                  });
+                }}
+                title={
+                  isComparingOriginal
+                    ? 'Switch back to Edited Document'
+                    : 'Compare with Original Document (Before Edits)'
                 }
-                return next;
-              });
-            }}
-            title={
-              isComparingOriginal
-                ? 'Switch back to Edited Document'
-                : 'Compare with Original Document (Before Edits)'
-            }
-            className={`w-11 h-11 rounded-full shadow-lg flex items-center justify-center cursor-pointer backdrop-blur-xs shrink-0 ${
-              isComparingOriginal
-                ? 'bg-[#003FE8] text-white ring-2 ring-white'
-                : 'bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
-            }`}
-          >
-            <Contrast className="w-5 h-5 shrink-0" />
-          </button>
-        </div>
+                className={`w-11 h-11 rounded-full shadow-lg flex items-center justify-center cursor-pointer backdrop-blur-xs shrink-0 ${
+                  isComparingOriginal
+                    ? 'bg-[#003FE8] text-white ring-2 ring-white'
+                    : 'bg-[#4A1D5E]/95 hover:bg-[#3B174B] text-white'
+                }`}
+              >
+                <Contrast className="w-5 h-5 shrink-0" />
+              </button>
+            </div>
+          </>
+        )}
 
         {/* Optional Right Contextual Inspector (toggled via More -> Side Panels on Desktop) */}
         {showDesktopSidebars && (
@@ -5435,38 +5557,70 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     <span>Edit Footer</span>
                   </button>
 
-                  {/* When Watermark Clean (Color) or OCV BLACK is selected, provide one-tap Watermark Removal Strength presets */}
+                  {/* When Watermark Clean (Color) or OCV BLACK is selected, provide one-tap Watermark Removal Strength & Word Thickness presets */}
                   {(pageColorFilter === 'clean-watermark' ||
                     pageColorFilter === 'ocv-black') && (
-                    <div className="flex items-center gap-1 bg-[#15803D]/10 border border-[#15803D]/30 rounded-lg px-2 py-0.5">
-                      <span className="text-[10px] font-bold text-[#15803D] dark:text-[#4ADE80] whitespace-nowrap">
-                        Watermark Clean:
-                      </span>
-                      {(
-                        [
-                          { label: 'Gentle', b: -15 },
-                          { label: 'Standard', b: 0 },
-                          { label: 'Strong', b: 18 },
-                          { label: 'Max', b: 32 },
-                        ] as const
-                      ).map((preset) => (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          onClick={() => {
-                            setPageBrightness(preset.b);
-                            setBrightnessSwitchOn(preset.b > 0);
-                          }}
-                          className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
-                            pageBrightness === preset.b
-                              ? 'bg-[#15803D] text-white'
-                              : 'text-[#15803D] dark:text-[#4ADE80] hover:bg-[#15803D]/15'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
+                    <>
+                      <div className="flex items-center gap-1 bg-[#15803D]/10 border border-[#15803D]/30 rounded-lg px-2 py-0.5">
+                        <span className="text-[10px] font-bold text-[#15803D] dark:text-[#4ADE80] whitespace-nowrap">
+                          Watermark Clean:
+                        </span>
+                        {(
+                          [
+                            { label: 'Gentle', b: -15 },
+                            { label: 'Standard', b: 0 },
+                            { label: 'Strong', b: 18 },
+                            { label: 'Max', b: 32 },
+                          ] as const
+                        ).map((preset) => (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            onClick={() => {
+                              setPageBrightness(preset.b);
+                              setBrightnessSwitchOn(preset.b > 0);
+                            }}
+                            className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                              pageBrightness === preset.b
+                                ? 'bg-[#15803D] text-white'
+                                : 'text-[#15803D] dark:text-[#4ADE80] hover:bg-[#15803D]/15'
+                            }`}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-1 bg-[#003FE8]/10 border border-[#003FE8]/30 rounded-lg px-2 py-0.5">
+                        <span className="text-[10px] font-bold text-[#003FE8] dark:text-[#60A5FA] whitespace-nowrap">
+                          Symbol &amp; Word Clarity:
+                        </span>
+                        {(
+                          [
+                            { label: 'Natural', c: 22 },
+                            { label: 'Crisp', c: 32 },
+                            { label: 'Dark Ink', c: 42 },
+                          ] as const
+                        ).map((preset) => {
+                          const effectiveC =
+                            pageContrast === 0 ? 22 : pageContrast;
+                          return (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => setPageContrast(preset.c)}
+                              className={`px-1.5 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
+                                effectiveC === preset.c
+                                  ? 'bg-[#003FE8] text-white'
+                                  : 'text-[#003FE8] dark:text-[#60A5FA] hover:bg-[#003FE8]/15'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </>
                   )}
 
                   <span className="h-4 w-px bg-[#E4DFEC] dark:bg-[#261F33] mx-0.5" />
@@ -6070,67 +6224,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </div>
         )}
 
-        {/* Bottom Bar: Clean Reader Controls in Reader Mode OR 6-Button Tool Grid in Edit Mode */}
-        {isReaderMode ? (
-          <div className="h-14 px-3 sm:px-6 flex items-center justify-between gap-2 bg-white dark:bg-[#16111F]">
-            {/* Page Navigation */}
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => jumpToPage(currentPage - 1)}
-                disabled={currentPage <= 1}
-                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center disabled:opacity-30 cursor-pointer"
-                title="Previous page"
-              >
-                <ChevronLeft className="w-4 h-4" />
-              </button>
-              <span className="px-2 text-xs font-mono font-bold text-[#14101B] dark:text-[#F4F1F8] whitespace-nowrap">
-                Page {currentPage} / {pages.length || 1}
-              </span>
-              <button
-                type="button"
-                onClick={() => jumpToPage(currentPage + 1)}
-                disabled={currentPage >= pages.length}
-                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center disabled:opacity-30 cursor-pointer"
-                title="Next page"
-              >
-                <ChevronRight className="w-4 h-4" />
-              </button>
-            </div>
-
-            {/* Zoom & Fit Controls */}
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                onClick={() => applyPdfZoom(zoom - 0.2)}
-                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
-                title="Zoom Out"
-              >
-                <ZoomOut className="w-4 h-4" />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setFitMode((m) =>
-                    m === 'fit-page' ? 'fit-width' : 'fit-page'
-                  );
-                  applyPdfZoom(1.0);
-                }}
-                className="h-9 px-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold cursor-pointer whitespace-nowrap"
-              >
-                {fitMode === 'fit-page' ? 'Fit Width' : 'Fit Page'}
-              </button>
-              <button
-                type="button"
-                onClick={() => applyPdfZoom(zoom + 0.2)}
-                className="w-9 h-9 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-center cursor-pointer"
-                title="Zoom In"
-              >
-                <ZoomIn className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        ) : (
+        {/* Bottom Bar: Hidden in Full-Screen Reader Mode, 6-Button Tool Grid in Edit Mode */}
+        {!isReaderMode && (
           /* Edit Mode: Static 6-Button Grid locked at 60px height with zero layout/font shifts */
           <div className="h-[60px] px-1.5 grid grid-cols-6 items-center gap-1 bg-white dark:bg-[#16111F] shrink-0 select-none">
             {(
