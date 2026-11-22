@@ -394,10 +394,20 @@ export async function listGoogleDriveFiles(
     "mimeType='application/vnd.ms-powerpoint'",
     "mimeType='application/vnd.google-apps.presentation'",
     "mimeType='application/epub+zip'",
+    "mimeType='application/vnd.amazon.kpf'",
+    "mimeType='application/x-kpf'",
+    "mimeType='application/x-sqlite3'",
     "mimeType='text/html'",
     "mimeType='image/jpeg'",
     "mimeType='image/png'",
     "mimeType='image/webp'",
+    "name contains '.kdf'",
+    "name contains '.kpf'",
+    "name contains '.epub'",
+    "name contains '.mobi'",
+    "name contains '.azw3'",
+    "name contains '.fb2'",
+    "name contains '.odt'",
   ].join(' or ');
 
   let q = `trashed = false and (${mimeConditions})`;

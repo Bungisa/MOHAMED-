@@ -12,6 +12,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import { usePWAInstall, useOnlineStatus } from '../hooks/usePWAInstall';
+import { getRuntimePlatform, isNativeApp } from '../services/capacitorBridge';
 
 const ELIMIKA_ICON_URL =
   '/assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg';
@@ -41,6 +42,19 @@ export function PWAInstallButton({
     setCopiedUrl(true);
     setTimeout(() => setCopiedUrl(false), 2000);
   };
+
+  const nativeMode = isNativeApp();
+  const nativePlatform = getRuntimePlatform();
+
+  if (nativeMode) {
+    if (variant !== 'card') return null;
+    return (
+      <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200 text-xs font-semibold">
+        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+        <span>Running as Native {nativePlatform === 'ios' ? 'iOS' : 'Android'} App</span>
+      </div>
+    );
+  }
 
   if (isInstalled && variant !== 'card') {
     return (

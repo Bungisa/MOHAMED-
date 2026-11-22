@@ -29,6 +29,7 @@ import {
   Maximize,
   Eye,
   FileEdit,
+  FileText,
   FileUp,
   Hash,
   Stamp,
@@ -101,6 +102,7 @@ import {
   parseHtmlIntoWordBlocks,
   plainTextToWordBlocks,
   prepareBrowserFidelityHtml,
+  renderDocxWithDocxPreviewToHtml,
   sanitizeHtmlForReader,
   wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
@@ -183,11 +185,18 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   onCloseEditor,
   onNavigate,
 }) => {
+  const activeDocFmt = (
+    activeDocument?.sourceFormat ||
+    activeDocument?.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+    'pdf'
+  ).toLowerCase();
+  const isNativeWordDoc = activeDocFmt === 'docx' || activeDocFmt === 'doc';
+
   // iLovePDF-inspired 3 modes: 'content-edit' (Edit existing PDF text & pictures), 'annotate' (Add elements/markup), 'reader' (Clean viewer)
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(
-    initialReaderMode ? 'reader' : 'content-edit'
+    isNativeWordDoc || initialReaderMode ? 'reader' : 'content-edit'
   );
-  const isReaderMode = workspaceMode === 'reader';
+  const isReaderMode = isNativeWordDoc || workspaceMode === 'reader';
   const [isHtmlReflowMode, setIsHtmlReflowMode] = useState<boolean>(() =>
     Boolean(
       activeDocument?.sourceFormat &&
@@ -208,6 +217,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           'tsv',
           'epub',
           'kpf',
+          'kdf',
           'mobi',
           'azw3',
           'azw',
@@ -244,6 +254,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'htm',
         'xhtml',
         'svg',
+        'kpf',
+        'kdf',
+        'epub',
         'xlsx',
         'xls',
         'xlsm',
@@ -252,7 +265,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'csv',
         'tsv',
       ].includes(fmt) ||
-      /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet/i.test(
         activeDocument?.rawHtmlContent || ''
       )
     ) {
@@ -686,19 +699,34 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   );
 
   const loadedDocIdRef = useRef<string | null>(null);
+  const loadedDocSignatureRef = useRef<string | null>(null);
+  const lastInternalSaveUpdatedAtRef = useRef<string | null>(null);
   const hasInitializedDocRef = useRef(false);
+  const [liveDocxHtmlOverride, setLiveDocxHtmlOverride] = useState<string | null>(null);
 
   useEffect(() => {
     if (!activeDocument) {
       loadedDocIdRef.current = null;
+      loadedDocSignatureRef.current = null;
       hasInitializedDocRef.current = false;
+      setLiveDocxHtmlOverride(null);
       return;
     }
-    // Only reset/re-render when switching to a different document ID so saving the active document in-place never wipes out your edits or view
-    if (loadedDocIdRef.current === activeDocument.id) {
+    const docSignature = `${activeDocument.id}::${activeDocument.updatedAt || ''}::${activeDocument.sizeBytes || 0}::${activeDocument.rawHtmlContent?.length || 0}`;
+    const isSameDocId = loadedDocIdRef.current === activeDocument.id;
+    const isInternalSaveEcho =
+      isSameDocId &&
+      Boolean(lastInternalSaveUpdatedAtRef.current) &&
+      activeDocument.updatedAt === lastInternalSaveUpdatedAtRef.current;
+
+    // Only skip reload for exact signature matches or our own in-place save echoes;
+    // external re-imports update updatedAt/rawHtmlContent/sizeBytes and MUST reload!
+    if (loadedDocSignatureRef.current === docSignature || isInternalSaveEcho) {
+      loadedDocSignatureRef.current = docSignature;
       return;
     }
     loadedDocIdRef.current = activeDocument.id;
+    loadedDocSignatureRef.current = docSignature;
     hasInitializedDocRef.current = false;
 
     const sourceBytes = activeDocument.basePdfData || activeDocument.pdfData;
@@ -775,6 +803,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       'odt',
       'epub',
       'kpf',
+      'kdf',
       'mobi',
       'azw3',
       'azw',
@@ -805,6 +834,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'htm',
         'xhtml',
         'svg',
+        'kpf',
+        'kdf',
+        'epub',
         'xlsx',
         'xls',
         'xlsm',
@@ -813,9 +845,49 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'csv',
         'tsv',
       ].includes(detectedFmt) ||
-      /<(?:style|script|svg|canvas|img)\b|@keyframes/i.test(
+      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet/i.test(
         activeDocument.rawHtmlContent || ''
       );
+
+    if (detectedFmt === 'docx' || detectedFmt === 'doc') {
+      setWorkspaceMode('reader');
+      setIsHtmlReflowMode(true);
+      setHtmlReflowSubMode('webpage');
+      setBottomPanelTab('none');
+      setShowDesktopSidebars(false);
+      setPages([]);
+      setLiveDocxHtmlOverride(null);
+      hasInitializedDocRef.current = true;
+
+      const rawOrigBytes =
+        activeDocument.originalFileBytes && activeDocument.originalFileBytes.length > 4
+          ? activeDocument.originalFileBytes
+          : activeDocument.pdfData &&
+              activeDocument.pdfData.length > 4 &&
+              activeDocument.pdfData[0] === 0x50 &&
+              activeDocument.pdfData[1] === 0x4b
+            ? activeDocument.pdfData
+            : null;
+
+      if (
+        rawOrigBytes &&
+        rawOrigBytes[0] === 0x50 &&
+        rawOrigBytes[1] === 0x4b
+      ) {
+        const cleanTitle = activeDocument.name.replace(/\.(?:pdf|docx?)$/i, '');
+        const targetDocId = activeDocument.id;
+        renderDocxWithDocxPreviewToHtml(rawOrigBytes, cleanTitle)
+          .then((freshHtml) => {
+            if (freshHtml && loadedDocIdRef.current === targetDocId) {
+              setLiveDocxHtmlOverride(freshHtml);
+            }
+          })
+          .catch(() => {
+            // Keep existing rawHtmlContent fallback
+          });
+      }
+      return;
+    }
 
     if (isReflowBookOrHtml) {
       setWorkspaceMode('reader');
@@ -2051,6 +2123,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     nextAnnotations: AnnotationElement[]
   ) => {
     if (!activeDocument) return;
+    const nextUpdatedAt = new Date().toISOString();
+    lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
     await onSaveUpdatedDocument(
       {
         ...activeDocument,
@@ -2058,7 +2132,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         sizeBytes: updatedBytes.byteLength,
         pageCount: newPageCount,
         annotations: nextAnnotations,
-        updatedAt: new Date().toISOString(),
+        updatedAt: nextUpdatedAt,
       },
       true
     );
@@ -2349,9 +2423,37 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       preCompressedBytes?: Uint8Array | null;
     }): Promise<{ bakedBytes: Uint8Array; finalPdfBytes: Uint8Array; finalPdfName: string } | null> => {
       if (!workingPdfBytes || !activeDocument) return null;
+      const docFmtLocal = (
+        activeDocument.sourceFormat ||
+        activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+        'pdf'
+      ).toLowerCase();
+      const isWordLocal = docFmtLocal === 'docx' || docFmtLocal === 'doc';
       const cleanTitle =
         (options?.customDocName ?? saveDocName).trim() ||
-        activeDocument.name.replace(/\.pdf$/i, '');
+        activeDocument.name.replace(/\.(?:pdf|docx?|odt)$/i, '');
+
+      if (isWordLocal && activeDocument.originalFileBytes) {
+        const wordExt = docFmtLocal === 'doc' ? 'doc' : 'docx';
+        const finalWordName = new RegExp(`\\.${wordExt}$`, 'i').test(cleanTitle)
+          ? cleanTitle
+          : `${cleanTitle.replace(/\.pdf$/i, '')}.${wordExt}`;
+        const nextUpdatedAt = new Date().toISOString();
+        lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
+        const updatedDoc: StoredDocument = {
+          ...activeDocument,
+          name: finalWordName,
+          updatedAt: nextUpdatedAt,
+          lastOpenedAt: nextUpdatedAt,
+        };
+        await onSaveUpdatedDocument(updatedDoc, options?.silent ?? false);
+        return {
+          bakedBytes: activeDocument.originalFileBytes,
+          finalPdfBytes: activeDocument.originalFileBytes,
+          finalPdfName: finalWordName,
+        };
+      }
+
       const finalPdfName = cleanTitle.toLowerCase().endsWith('.pdf')
         ? cleanTitle
         : `${cleanTitle}.pdf`;
@@ -2381,13 +2483,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         });
       }
 
+      const nextUpdatedAt = new Date().toISOString();
+      lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
+
       const updatedDoc: StoredDocument = {
         ...activeDocument,
         name: finalPdfName,
         sizeBytes: finalPdfBytes.byteLength,
         pageCount: pages.length || activeDocument.pageCount,
-        updatedAt: new Date().toISOString(),
-        lastOpenedAt: new Date().toISOString(),
+        updatedAt: nextUpdatedAt,
+        lastOpenedAt: nextUpdatedAt,
         pdfData: finalPdfBytes,
         basePdfData: new Uint8Array(workingPdfBytes),
         annotations,
@@ -2564,8 +2669,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         return;
       }
 
+      const isSavedWordFile =
+        /\.docx?$/i.test(finalPdfName) && isNativeWordDoc;
+      const exportMimeType = isSavedWordFile
+        ? finalPdfName.toLowerCase().endsWith('.doc')
+          ? 'application/msword'
+          : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/pdf';
+
       if (destination === 'phone') {
-        downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
+        downloadBytesAsFile(finalPdfBytes, finalPdfName, exportMimeType);
         setStatusMessage(
           `Saved "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) to Phone Storage & My Documents.`
         );
@@ -2587,13 +2700,13 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             {
               name: finalPdfName,
               bytes: finalPdfBytes,
-              mimeType: 'application/pdf',
+              mimeType: exportMimeType,
             },
           ],
         });
         return;
       } else if (destination === 'email') {
-        downloadBytesAsFile(finalPdfBytes, finalPdfName, 'application/pdf');
+        downloadBytesAsFile(finalPdfBytes, finalPdfName, exportMimeType);
         const subject = encodeURIComponent(`Document: ${finalPdfName}`);
         const body = encodeURIComponent(
           `Please find attached the document "${finalPdfName}" (${pages.length} pages, ${formatFileSize(finalPdfBytes.byteLength)}).`
@@ -2632,6 +2745,33 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
   const handleSharePdf = async () => {
     if (!workingPdfBytes || !activeDocument) return;
+    if (isNativeWordDoc && activeDocument.originalFileBytes) {
+      const wordBytes = activeDocument.originalFileBytes;
+      const wordName = activeDocument.name.replace(/\.pdf$/i, `.${activeDocFmt}`);
+      const wordMime =
+        activeDocFmt === 'doc'
+          ? 'application/msword'
+          : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      const wordFile = new File([new Uint8Array(wordBytes)], wordName, {
+        type: wordMime,
+      });
+      if (navigator.canShare && navigator.canShare({ files: [wordFile] })) {
+        try {
+          await navigator.share({
+            title: wordName,
+            text: 'Shared from ElimikaPDF',
+            files: [wordFile],
+          });
+          return;
+        } catch {
+          // Fallback if user cancels
+        }
+      }
+      downloadBytesAsFile(wordBytes, wordName, wordMime);
+      setStatusMessage(`Downloaded "${wordName}" to your device.`);
+      return;
+    }
+
     const saved = await persistCurrentEditsToVault({ silent: true });
     const bytesToShare = saved ? saved.finalPdfBytes : workingPdfBytes;
     const nameToShare = saved ? saved.finalPdfName : activeDocument.name;
@@ -2700,7 +2840,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         <input
           ref={pdfUploadInputRef}
           type="file"
-          accept={SUPPORTED_DOCUMENT_ACCEPT}
+          accept="*/*"
           className="hidden"
           onChange={(e) => {
             if (e.target.files && e.target.files.length > 0) {
@@ -2714,11 +2854,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           <FileEdit className="w-10 h-10 text-[#4A1D5E] dark:text-[#D5B3FF] mx-auto" />
           <div className="space-y-1 max-w-md mx-auto">
             <h1 className="text-xl font-bold text-[#14101B] dark:text-[#F4F1F8]">
-              Open PDF, EPUB, KPF, HTML, Word or Office Document
+              Open PDF, EPUB, KPF, KDF, HTML, Word or Office Document
             </h1>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
               Upload any <code>.pdf</code>, <code>.epub</code>, <code>.kpf</code>,{' '}
-              <code>.html</code>, <code>.docx</code>, <code>.odt</code>,{' '}
+              <code>.kdf</code>, <code>.html</code>, <code>.docx</code>, <code>.odt</code>,{' '}
               <code>.xlsx</code>, or <code>.pptx</code> file from your device or
               select a document from your local vault below.
             </p>
@@ -2728,7 +2868,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             className="px-5 py-2.5 rounded-lg bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] text-xs font-bold inline-flex items-center gap-2 cursor-pointer"
           >
             <FileUp className="w-4 h-4" />
-            <span>Open Document (.PDF, .EPUB, .KPF, .HTML, .DOCX...)</span>
+            <span>Open Document (.PDF, .EPUB, .KPF, .KDF, .DOCX...)</span>
           </button>
         </div>
 
@@ -2760,9 +2900,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   }
 
   const docBaseTitle = activeDocument.name.replace(/\.pdf$/i, '');
+  const effectiveRawHtml = liveDocxHtmlOverride || activeDocument.rawHtmlContent;
   const resolvedReaderHtml =
-    activeDocument.rawHtmlContent && activeDocument.rawHtmlContent.trim()
-      ? activeDocument.rawHtmlContent
+    effectiveRawHtml && effectiveRawHtml.trim()
+      ? effectiveRawHtml
       : wordBlocksToCleanHtml(
           plainTextToWordBlocks(
             activeDocument.ocrText ||
@@ -2781,7 +2922,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       <input
         ref={pdfUploadInputRef}
         type="file"
-        accept={SUPPORTED_DOCUMENT_ACCEPT}
+        accept="*/*"
         className="hidden"
         onChange={(e) => {
           if (e.target.files && e.target.files.length > 0) {
@@ -2899,92 +3040,101 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
             <ChevronLeft className="w-5 h-5" />
           </button>
           <span className="text-xs sm:text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
-            {activeDocument.name}
+            {isNativeWordDoc
+              ? activeDocument.name.replace(/\.pdf$/i, `.${activeDocFmt}`)
+              : activeDocument.name}
           </span>
           {activeDocument.sourceFormat && (
             <span className="hidden sm:inline-flex px-1.5 py-0.5 rounded bg-[#0D9488]/15 text-[#0D9488] dark:text-[#5EEAD4] text-[10px] font-extrabold uppercase shrink-0">
               {activeDocument.sourceFormat}
             </span>
           )}
-          {pages.length > 0 && (
+          {!isNativeWordDoc && pages.length > 0 && (
             <span className="text-[11px] font-mono font-semibold text-[#6E667D] dark:text-[#A39BB5] shrink-0">
               ({currentPage}/{pages.length})
             </span>
           )}
         </div>
 
-        {/* Right: Single Prominent "Reader" Button + Edit Switch + Share + Save */}
+        {/* Right: Single Prominent "Reader" Button + Edit Switch (hidden for native Word docs) + Share + Save */}
         <div className="flex items-center gap-0.5 sm:gap-1.5 shrink-0">
-          {/* Top-Right Single "Reader" Button & "Edit" Switch */}
-          <div className="flex items-center p-0.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47]">
-            <button
-              type="button"
-              onClick={() => {
-                setWorkspaceMode('reader');
-                setBottomPanelTab('none');
-                const fmt = (
-                  activeDocument.sourceFormat ||
-                  activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
-                  'pdf'
-                ).toLowerCase();
-                const isRichOrBook =
-                  [
-                    'docx',
-                    'doc',
-                    'odt',
-                    'html',
-                    'htm',
-                    'xhtml',
-                    'svg',
-                    'xlsx',
-                    'xls',
-                    'xlsm',
-                    'xlsb',
-                    'ods',
-                    'csv',
-                    'tsv',
-                    'epub',
-                    'kpf',
-                    'mobi',
-                    'azw3',
-                    'azw',
-                    'fb2',
-                    'md',
-                    'txt',
-                    'rtf',
-                  ].includes(fmt) ||
-                  Boolean(
-                    activeDocument.rawHtmlContent &&
-                      activeDocument.rawHtmlContent.trim()
-                  );
-                setIsHtmlReflowMode(isRichOrBook);
-              }}
-              title="Universal Document Reader — Automatically read any PDF, Word, Excel, EPUB, KPF, or HTML document"
-              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap ${
-                isReaderMode
-                  ? 'bg-[#003FE8] text-white shadow-xs'
-                  : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
-              }`}
-            >
-              <BookOpen className="w-3.5 h-3.5" />
-              <span>Reader</span>
-            </button>
+          {!isNativeWordDoc ? (
+            <div className="flex items-center p-0.5 rounded-lg bg-[#F2EFF6] dark:bg-[#261F33] border border-[#E4DFEC] dark:border-[#342B47]">
+              <button
+                type="button"
+                onClick={() => {
+                  setWorkspaceMode('reader');
+                  setBottomPanelTab('none');
+                  const fmt = (
+                    activeDocument.sourceFormat ||
+                    activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+                    'pdf'
+                  ).toLowerCase();
+                  const isRichOrBook =
+                    [
+                      'docx',
+                      'doc',
+                      'odt',
+                      'html',
+                      'htm',
+                      'xhtml',
+                      'svg',
+                      'xlsx',
+                      'xls',
+                      'xlsm',
+                      'xlsb',
+                      'ods',
+                      'csv',
+                      'tsv',
+                      'epub',
+                      'kpf',
+                      'kdf',
+                      'mobi',
+                      'azw3',
+                      'azw',
+                      'fb2',
+                      'md',
+                      'txt',
+                      'rtf',
+                    ].includes(fmt) ||
+                    Boolean(
+                      activeDocument.rawHtmlContent &&
+                        activeDocument.rawHtmlContent.trim()
+                    );
+                  setIsHtmlReflowMode(isRichOrBook);
+                }}
+                title="Universal Document Reader — Automatically read any PDF, Word, Excel, EPUB, KPF, or HTML document"
+                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer whitespace-nowrap ${
+                  isReaderMode
+                    ? 'bg-[#003FE8] text-white shadow-xs'
+                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
+                }`}
+              >
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Reader</span>
+              </button>
 
-            <button
-              type="button"
-              onClick={() => {
-                setIsHtmlReflowMode(false);
-                setWorkspaceMode('content-edit');
-              }}
-              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
-                !isReaderMode
-                  ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] shadow-xs'
-                  : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
-              }`}
-            >
-              Edit
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsHtmlReflowMode(false);
+                  setWorkspaceMode('content-edit');
+                }}
+                className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                  !isReaderMode
+                    ? 'bg-[#4A1D5E] dark:bg-[#9D5CE5] text-white dark:text-[#0D0A12] shadow-xs'
+                    : 'text-[#6E667D] dark:text-[#A39BB5] hover:text-[#14101B] dark:hover:text-white'
+                }`}
+              >
+                Edit
+              </button>
+            </div>
+          ) : (
+            <span className="px-2.5 py-1 rounded-md bg-[#2563EB] text-white text-[11px] font-bold flex items-center gap-1 whitespace-nowrap">
+              <FileText className="w-3.5 h-3.5" />
+              <span>Word Doc</span>
+            </span>
+          )}
 
           {isReaderMode && (
             <>
@@ -3032,7 +3182,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           <button
             type="button"
             onClick={handleOpenSaveSheet}
-            title="Save or Download PDF"
+            title={isNativeWordDoc ? 'Save or Download Word Document' : 'Save or Download PDF'}
             className="h-8 px-2.5 sm:px-3 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] text-xs font-bold flex items-center gap-1 transition-colors cursor-pointer shrink-0"
           >
             <Check className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -3106,17 +3256,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               >
                 Reflow Text
               </button>
-              <button
-                type="button"
-                onClick={() => setIsHtmlReflowMode(false)}
-                className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
-                  !isHtmlReflowMode
-                    ? 'bg-[#003FE8] text-white'
-                    : 'text-[#6E667D] dark:text-[#A39BB5]'
-                }`}
-              >
-                PDF Pages
-              </button>
+              {!isNativeWordDoc && (
+                <button
+                  type="button"
+                  onClick={() => setIsHtmlReflowMode(false)}
+                  className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                    !isHtmlReflowMode
+                      ? 'bg-[#003FE8] text-white'
+                      : 'text-[#6E667D] dark:text-[#A39BB5]'
+                  }`}
+                >
+                  PDF Pages
+                </button>
+              )}
             </div>
 
             <div className="flex items-center gap-1">
@@ -3162,8 +3314,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                     key={bmPage}
                     type="button"
                     onClick={() => {
-                      setIsHtmlReflowMode(false);
-                      jumpToPage(bmPage);
+                      if (!isNativeWordDoc) {
+                        setIsHtmlReflowMode(false);
+                        jumpToPage(bmPage);
+                      }
                       setShowReaderToolsDrawer(false);
                     }}
                     className="px-2 py-0.5 rounded bg-[#E47911]/15 text-[#C25E00] dark:text-[#FDBA74] text-[10px] font-bold cursor-pointer"
@@ -3201,8 +3355,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
       {/* Main Almost-Full-Screen Studio Body */}
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
-        {/* Optional Left Thumbnail Rail (toggled via More -> Side Panels on Desktop) */}
-        {showDesktopSidebars && (
+        {/* Optional Left Thumbnail Rail (toggled via More -> Side Panels on Desktop; hidden for native Word docs) */}
+        {showDesktopSidebars && !isNativeWordDoc && (
           <aside className="w-48 sm:w-52 shrink-0 bg-white dark:bg-[#16111F] border-r border-[#E4DFEC] dark:border-[#261F33] overflow-y-auto p-3 space-y-3 hidden lg:block">
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">

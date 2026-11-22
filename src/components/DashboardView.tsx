@@ -424,11 +424,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 pb-24 space-y-6">
-      {/* Hidden File Inputs (Accept PDF, EPUB, KPF, HTML, Word, ODT, Excel, PowerPoint, Text, and Images) */}
+      {/* Hidden File Inputs (Accept All Files on Android/Desktop so .kdf, .kpf, .epub, .pdf, .docx, .xlsx, .html are always visible) */}
       <input
         ref={pdfInputRef}
         type="file"
-        accept={SUPPORTED_DOCUMENT_ACCEPT}
+        accept="*/*"
         multiple
         className="hidden"
         onChange={handlePdfUploadChange}
@@ -709,10 +709,19 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           <div className="space-y-2.5">
             {filteredDocs.map((doc, idx) => {
               const thumbSrc = doc.thumbnailDataUrl || thumbnailsMap[doc.id];
-              const displayTitle = doc.name.replace(/\.pdf$/i, '');
+              const docFmt = (
+                doc.sourceFormat ||
+                doc.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+                'pdf'
+              ).toLowerCase();
+              const isWordDoc = docFmt === 'docx' || docFmt === 'doc';
+              const isPdfDoc = docFmt === 'pdf';
+              const displayTitle = isPdfDoc
+                ? doc.name.replace(/\.pdf$/i, '')
+                : doc.name.replace(/\.pdf$/i, `.${docFmt}`);
               const isMenuOpen = openMenuDocId === doc.id;
               const showPdfBadge =
-                doc.category !== 'Scans' && idx % 3 === 1;
+                isPdfDoc && doc.category !== 'Scans' && idx % 3 === 1;
               const isSelected = selectedDocIds.includes(doc.id);
               const selectionOrder = selectedDocIds.indexOf(doc.id) + 1;
 
@@ -806,26 +815,29 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         {doc.pageCount}
                       </span>
 
-                      {showPdfBadge ? (
-                        /* Red PDF Icon Badge */
-                        <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#E53935] text-white text-[9px] font-extrabold tracking-tight">
-                          PDF
-                        </span>
+                      {isPdfDoc ? (
+                        showPdfBadge ? (
+                          /* Red PDF Icon Badge */
+                          <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#E53935] text-white text-[9px] font-extrabold tracking-tight">
+                            PDF
+                          </span>
+                        ) : (
+                          <>
+                            {/* Red Outlined [N] Badge */}
+                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] border border-[#C62828]/80 text-[11px] font-bold text-[#B71C1C] dark:text-[#F87171]">
+                              N
+                            </span>
+                            {/* Blue Document Lines Icon */}
+                            <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
+                          </>
+                        )
                       ) : (
                         <>
-                          {/* Red Outlined [N] Badge */}
-                          <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] border border-[#C62828]/80 text-[11px] font-bold text-[#B71C1C] dark:text-[#F87171]">
-                            N
+                          <FileText className="w-4 h-4 text-[#2563EB] shrink-0" />
+                          <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#2563EB] text-white text-[9px] font-extrabold uppercase tracking-tight">
+                            {docFmt}
                           </span>
-                          {/* Blue Document Lines Icon */}
-                          <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
                         </>
-                      )}
-
-                      {doc.sourceFormat && doc.sourceFormat !== 'pdf' && (
-                        <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#0891B2] text-white text-[9px] font-extrabold uppercase tracking-tight">
-                          {doc.sourceFormat}
-                        </span>
                       )}
 
                       {doc.starred && (
@@ -880,28 +892,44 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <CheckSquare className="w-4 h-4" />
                         <span>Select / Multi-Select</span>
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpenMenuDocId(null);
-                          onOpenDocumentInEditor(doc, false);
-                        }}
-                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
-                      >
-                        <FileText className="w-4 h-4 text-[#0088FF]" />
-                        <span>Open / Edit PDF</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpenMenuDocId(null);
-                          onOpenDocumentInEditor(doc, true);
-                        }}
-                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
-                      >
-                        <Eye className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                        <span>Read Mode</span>
-                      </button>
+                      {isWordDoc ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpenMenuDocId(null);
+                            onOpenDocumentInEditor(doc, true);
+                          }}
+                          className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#2563EB] dark:text-[#60A5FA] cursor-pointer"
+                        >
+                          <FileText className="w-4 h-4 text-[#2563EB]" />
+                          <span>Open Word Document</span>
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenMenuDocId(null);
+                              onOpenDocumentInEditor(doc, false);
+                            }}
+                            className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                          >
+                            <FileText className="w-4 h-4 text-[#0088FF]" />
+                            <span>Open / Edit PDF</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setOpenMenuDocId(null);
+                              onOpenDocumentInEditor(doc, true);
+                            }}
+                            className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                          >
+                            <Eye className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                            <span>Read Mode</span>
+                          </button>
+                        </>
+                      )}
                       {onOpenToolForDocument && (
                         <>
                           <button

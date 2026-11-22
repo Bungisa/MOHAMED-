@@ -78,7 +78,9 @@ import {
   PdfDiffLine,
   extractPdfToKindleChapters,
   buildKindleKpfPackageBytes,
+  buildKpfQualityReport,
   KindleKpfChapter,
+  KpfConversionQualityReport,
   validatePdfBytesForConversion,
   PdfValidationReport,
   parseUploadedSpreadsheetFile,
@@ -1067,15 +1069,17 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   const [kpfBookAuthor, setKpfBookAuthor] = useState('Author / KDP Publisher');
   const [kpfBookLang, setKpfBookLang] = useState('en');
   const [kpfLayoutMode, setKpfLayoutMode] = useState<
-    'reflowable' | 'print-replica'
-  >('reflowable');
-  const [kpfFontScale, setKpfFontScale] = useState(105);
+    'hybrid' | 'reflowable' | 'print-replica'
+  >('hybrid');
+  const [kpfFontScale, setKpfFontScale] = useState(100);
   const [kpfReaderTheme, setKpfReaderTheme] = useState<
     'paper' | 'sepia' | 'night'
-  >('sepia');
+  >('paper');
   const [kpfEnableOcr, setKpfEnableOcr] = useState(false);
   const [kpfValidationReport, setKpfValidationReport] =
     useState<PdfValidationReport | null>(null);
+  const [kpfQualityReport, setKpfQualityReport] =
+    useState<KpfConversionQualityReport | null>(null);
   const [kpfSourceBytes, setKpfSourceBytes] = useState<Uint8Array | null>(null);
   const [kpfSourceFileName, setKpfSourceFileName] = useState<string>('');
   const [kpfProgressPage, setKpfProgressPage] = useState(0);
@@ -1136,6 +1140,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       });
 
       setKpfChapters(chaps);
+      setKpfQualityReport(buildKpfQualityReport(chaps));
       setActiveKpfChapterIdx(0);
 
       // Immediately build the ready-to-open KPF package
@@ -1323,7 +1328,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
             <span>Select PDF / Excel / Word / eBook File</span>
             <input
               type="file"
-              accept={SUPPORTED_DOCUMENT_ACCEPT}
+              accept="*/*"
               className="hidden"
               onChange={async (e) => {
                 if (e.target.files && e.target.files.length > 0) {
@@ -3777,9 +3782,11 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         downloadBytesAsFile(pkgBytes, outFile, mime);
         setFeedback(
           `Conversion complete! Saved "${outFile}" (${kpfChapters.length} chapters, ${
-            kpfLayoutMode === 'reflowable'
-              ? 'Reflowable KDP Layout'
-              : 'Print Replica Fixed Layout'
+            kpfLayoutMode === 'hybrid'
+              ? 'Hybrid Fixed-Layout + Semantic'
+              : kpfLayoutMode === 'reflowable'
+                ? 'Semantic Reflowable KDP'
+                : 'Print Replica Fixed Layout'
           }, ${formatBytes(pkgBytes.byteLength)}). You can also click "Open Converted .KPF in Reader" below.`
         );
       } finally {
@@ -4125,16 +4132,19 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
               value={kpfLayoutMode}
               onChange={(e) =>
                 setKpfLayoutMode(
-                  e.target.value as 'reflowable' | 'print-replica'
+                  e.target.value as 'hybrid' | 'reflowable' | 'print-replica'
                 )
               }
               className="w-full px-3 py-2 text-xs font-bold rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]"
             >
-              <option value="reflowable">
-                Reflowable Kindle eBook (Text, Tables &amp; Equations)
+              <option value="hybrid">
+                Hybrid Fidelity (Exact Layout, Colors &amp; Selectable Text)
               </option>
               <option value="print-replica">
-                Print Replica Fixed-Layout (Exact Page + Searchable Text)
+                Print Replica Fixed-Layout (Pre-Paginated Facsimile)
+              </option>
+              <option value="reflowable">
+                Semantic Reflowable (Styled Paragraphs, Tables &amp; Diagrams)
               </option>
             </select>
           </div>
@@ -4304,7 +4314,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
             </div>
 
             <div
-              className={`rounded-xl p-4 h-[310px] overflow-y-auto shadow-inner transition-colors ${
+              className={`rounded-xl p-3 h-[340px] overflow-y-auto shadow-inner transition-colors ${
                 kpfReaderTheme === 'sepia'
                   ? 'bg-[#F6EFE2] text-[#2B2218]'
                   : kpfReaderTheme === 'night'
@@ -4313,62 +4323,149 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
               }`}
             >
               {activeChapter ? (
-                <div className="space-y-2.5 font-serif">
-                  <div className="text-[10px] uppercase tracking-widest opacity-60 text-center pb-1 border-b border-current/15">
-                    {kpfBookTitle}
-                  </div>
-                  <h4 className="text-sm font-bold leading-snug">
-                    {activeChapter.title}
-                  </h4>
-                  {activeChapter.imageDataUrl && (
-                    <img
-                      src={activeChapter.imageDataUrl}
-                      alt={activeChapter.title}
-                      className="w-full h-auto rounded border border-black/10 my-2"
-                    />
-                  )}
-                  {activeChapter.paragraphs.map((para, pIdx) => (
-                    <p
-                      key={pIdx}
+                kpfLayoutMode !== 'reflowable' && activeChapter.imageDataUrl ? (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[10px] opacity-70 pb-1 border-b border-current/15">
+                      <span className="truncate">{kpfBookTitle}</span>
+                      <span className="font-mono shrink-0">
+                        {Math.round(activeChapter.widthPt || 595)}×
+                        {Math.round(activeChapter.heightPt || 842)}pt ·{' '}
+                        {activeChapter.orientation}
+                      </span>
+                    </div>
+                    <div
+                      className="relative rounded border border-black/15 overflow-hidden shadow-xs"
                       style={{
-                        fontSize: `${Math.round(12 * (kpfFontScale / 100))}px`,
+                        backgroundColor:
+                          activeChapter.pageBackgroundColorHex || '#FFFFFF',
                       }}
-                      className="leading-relaxed text-justify"
                     >
-                      {para}
-                    </p>
-                  ))}
-                  {activeChapter.equations &&
-                    activeChapter.equations.map((eq, eqIdx) => (
-                      <div
-                        key={eqIdx}
-                        className="my-2 p-2 rounded bg-black/5 dark:bg-white/5 border-l-2 border-[#4A1D5E] font-mono text-[11px] text-center"
-                      >
-                        {eq}
-                      </div>
-                    ))}
-                  {activeChapter.tables &&
-                    activeChapter.tables.map((tbl, tIdx) => (
-                      <div key={tIdx} className="overflow-x-auto my-2">
-                        <table className="w-full border-collapse text-[10px]">
-                          <tbody>
-                            {tbl.map((row, rIdx) => (
-                              <tr key={rIdx}>
-                                {row.map((cell, cIdx) => (
-                                  <td
-                                    key={cIdx}
-                                    className="border border-current/25 px-1.5 py-1"
-                                  >
-                                    {cell}
-                                  </td>
-                                ))}
-                              </tr>
+                      <img
+                        src={activeChapter.imageDataUrl}
+                        alt={activeChapter.title}
+                        className="w-full h-auto block"
+                      />
+                    </div>
+                    {activeChapter.pageColorsHex &&
+                      activeChapter.pageColorsHex.length > 0 && (
+                        <div className="flex items-center gap-1 flex-wrap pt-1">
+                          <span className="text-[9px] opacity-65 mr-1">
+                            Colors:
+                          </span>
+                          {activeChapter.pageColorsHex
+                            .slice(0, 10)
+                            .map((hex) => (
+                              <span
+                                key={hex}
+                                title={hex}
+                                className="w-3 h-3 rounded-sm border border-black/20 inline-block"
+                                style={{ backgroundColor: hex }}
+                              />
                             ))}
-                          </tbody>
-                        </table>
-                      </div>
+                        </div>
+                      )}
+                  </div>
+                ) : (
+                  <div
+                    className="space-y-2.5 font-serif rounded p-2"
+                    style={
+                      activeChapter.pageBackgroundColorHex
+                        ? {
+                            backgroundColor:
+                              activeChapter.pageBackgroundColorHex,
+                          }
+                        : undefined
+                    }
+                  >
+                    <div className="text-[10px] uppercase tracking-widest opacity-60 text-center pb-1 border-b border-current/15">
+                      {kpfBookTitle}
+                    </div>
+                    <h4 className="text-sm font-bold leading-snug">
+                      {activeChapter.title}
+                    </h4>
+                    {activeChapter.imageDataUrl &&
+                      (activeChapter.isScannedPage ||
+                        (activeChapter.embeddedImageCount || 0) > 0 ||
+                        (activeChapter.vectorGraphicCount || 0) > 0) && (
+                        <img
+                          src={activeChapter.imageDataUrl}
+                          alt={activeChapter.title}
+                          className="w-full h-auto rounded border border-black/10 my-2"
+                        />
+                      )}
+                    {activeChapter.paragraphs.map((para, pIdx) => (
+                      <p
+                        key={pIdx}
+                        style={{
+                          fontSize: `${Math.round(12 * (kpfFontScale / 100))}px`,
+                        }}
+                        className="leading-relaxed text-justify"
+                      >
+                        {para}
+                      </p>
                     ))}
-                </div>
+                    {activeChapter.equations &&
+                      activeChapter.equations.map((eq, eqIdx) => (
+                        <div
+                          key={eqIdx}
+                          className="my-2 p-2 rounded bg-black/5 dark:bg-white/5 border-l-2 border-[#4A1D5E] font-mono text-[11px] text-center"
+                        >
+                          {eq}
+                        </div>
+                      ))}
+                    {activeChapter.richTables &&
+                    activeChapter.richTables.length > 0
+                      ? activeChapter.richTables.map((rt, tIdx) => (
+                          <div key={tIdx} className="overflow-x-auto my-2">
+                            <table className="w-full border-collapse text-[10px]">
+                              <tbody>
+                                {rt.rows.map((row, rIdx) => (
+                                  <tr key={rIdx}>
+                                    {row.map((cell, cIdx) => (
+                                      <td
+                                        key={cIdx}
+                                        style={{
+                                          textAlign: cell.align,
+                                          backgroundColor: cell.bgColorHex,
+                                          color: cell.colorHex,
+                                          fontWeight: cell.bold ? 700 : 400,
+                                          borderColor:
+                                            cell.borderColorHex || '#cbd5e1',
+                                        }}
+                                        className="border px-1.5 py-1"
+                                      >
+                                        {cell.text}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ))
+                      : activeChapter.tables &&
+                        activeChapter.tables.map((tbl, tIdx) => (
+                          <div key={tIdx} className="overflow-x-auto my-2">
+                            <table className="w-full border-collapse text-[10px]">
+                              <tbody>
+                                {tbl.map((row, rIdx) => (
+                                  <tr key={rIdx}>
+                                    {row.map((cell, cIdx) => (
+                                      <td
+                                        key={cIdx}
+                                        className="border border-current/25 px-1.5 py-1"
+                                      >
+                                        {cell}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ))}
+                  </div>
+                )
               ) : (
                 <p className="text-xs opacity-70">
                   Select a PDF file above to preview and convert into KPF...
@@ -4379,12 +4476,130 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
             <div className="flex items-center justify-between text-[10px] text-white/60 pt-2.5">
               <span>{kpfBookAuthor}</span>
               <span>
-                Location {activeKpfChapterIdx * 18 + 1} · Chapter{' '}
-                {activeKpfChapterIdx + 1} of {Math.max(1, kpfChapters.length)}
+                Page {activeChapter?.pageNumber || activeKpfChapterIdx + 1} ·{' '}
+                {kpfQualityReport
+                  ? `${kpfQualityReport.overallFidelityScore}% Fidelity`
+                  : `Chapter ${activeKpfChapterIdx + 1} of ${Math.max(
+                      1,
+                      kpfChapters.length
+                    )}`}
               </span>
             </div>
           </div>
         </div>
+
+        {/* Conversion Quality Report & Font Substitution Audit */}
+        {kpfQualityReport && kpfChapters.length > 0 && (
+          <div className="rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                  Conversion Quality Report (Page-by-Page Fidelity Verification)
+                </h3>
+                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5]">
+                  Verified page dimensions, preserved RGB/CMYK colors, font
+                  mappings, tables, equations, and visual replicas.
+                </p>
+              </div>
+              <span className="px-2.5 py-1 rounded-lg bg-[#16A34A]/15 text-[#15803D] dark:text-[#4ADE80] text-xs font-extrabold">
+                Overall Fidelity: {kpfQualityReport.overallFidelityScore}%
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-6 gap-2 text-center">
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Pages Matched</div>
+                <div className="text-xs font-extrabold text-[#14101B] dark:text-[#F4F1F8]">
+                  {kpfQualityReport.totalConvertedChapters}/
+                  {kpfQualityReport.totalSourcePages}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Words Indexed</div>
+                <div className="text-xs font-extrabold text-[#14101B] dark:text-[#F4F1F8]">
+                  {kpfQualityReport.totalWordsExtracted}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Colors Preserved</div>
+                <div className="text-xs font-extrabold text-[#E47911]">
+                  {kpfQualityReport.totalColorsPreserved}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Tables</div>
+                <div className="text-xs font-extrabold text-[#4A1D5E] dark:text-[#D5B3FF]">
+                  {kpfQualityReport.totalTablesPreserved}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Graphics / Img</div>
+                <div className="text-xs font-extrabold text-[#003FE8] dark:text-[#60A5FA]">
+                  {kpfQualityReport.totalImagesDetected +
+                    kpfQualityReport.totalVectorGraphicsDetected}
+                </div>
+              </div>
+              <div className="p-2 rounded-xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                <div className="text-[10px] text-[#6E667D]">Equations / Links</div>
+                <div className="text-xs font-extrabold text-[#0D9488]">
+                  {kpfQualityReport.totalEquationsDetected} /{' '}
+                  {kpfQualityReport.totalLinksPreserved}
+                </div>
+              </div>
+            </div>
+
+            {kpfQualityReport.fontSubstitutions.length > 0 && (
+              <div className="text-[11px] bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-xl p-2.5">
+                <div className="font-bold text-[#14101B] dark:text-[#F4F1F8] mb-1">
+                  Font Compatibility &amp; Substitutions (
+                  {kpfQualityReport.fontSubstitutions.length})
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {kpfQualityReport.fontSubstitutions.slice(0, 8).map((fs, i) => (
+                    <span
+                      key={i}
+                      className="px-2 py-0.5 rounded bg-[#F2EFF6] dark:bg-[#261F33] text-[10px] text-[#4A1D5E] dark:text-[#D5B3FF]"
+                    >
+                      {fs.pdfFontName} →{' '}
+                      {fs.substitutedFamily.split(',')[0].replace(/"/g, '')}{' '}
+                      {fs.bold ? 'Bold ' : ''}
+                      {fs.italic ? 'Italic ' : ''}(p.{fs.pageNumbers.join(',')})
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="max-h-40 overflow-y-auto space-y-1 text-[11px]">
+              {kpfQualityReport.pages.map((pm) => (
+                <div
+                  key={pm.pageNumber}
+                  onClick={() => setActiveKpfChapterIdx(pm.pageNumber - 1)}
+                  className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] cursor-pointer hover:border-[#E47911]"
+                >
+                  <span className="font-bold">
+                    Page {pm.pageNumber} ({Math.round(pm.widthPt)}×
+                    {Math.round(pm.heightPt)}pt {pm.orientation})
+                  </span>
+                  <span className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                    {pm.wordCount} words · {pm.colorCount} colors ·{' '}
+                    {pm.tableCount} tbl · {pm.imageCount} img ·{' '}
+                    {pm.vectorGraphicCount} vec
+                    {pm.multiColumnDetected ? ' · Multi-Col' : ''}
+                    {pm.isScannedPage
+                      ? pm.ocrApplied
+                        ? ' · OCR Applied'
+                        : ' · Scanned Replica'
+                      : ''}
+                  </span>
+                  <span className="font-bold text-[#15803D] dark:text-[#4ADE80]">
+                    {pm.fidelityScore}%
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -4452,26 +4667,26 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
                 {htmlReaderFormatBadge || 'HTML'} READER
               </span>
               <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                HTML, Webpage &amp; eBook Reader (.HTML, .EPUB, .KPF, .DOCX, .ODT)
+                HTML, Webpage &amp; eBook Reader (.HTML, .EPUB, .KPF, .KDF, .DOCX)
               </h2>
             </div>
             <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
               Open and read <code>.html</code>, <code>.htm</code>,{' '}
               <code>.xhtml</code>, <code>.epub</code>, <code>.kpf</code>,{' '}
-              <code>.mobi</code>, <code>.fb2</code>, <code>.docx</code>,{' '}
-              <code>.odt</code>, <code>.md</code>, or <code>.json</code> files
-              with customizable typography, chapters, Read Aloud TTS, and 1-click
-              PDF export.
+              <code>.kdf</code>, <code>.mobi</code>, <code>.fb2</code>,{' '}
+              <code>.docx</code>, <code>.odt</code>, <code>.md</code>, or{' '}
+              <code>.json</code> files with customizable typography, chapters,
+              Read Aloud TTS, and 1-click PDF export.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <label className="px-3.5 py-2 rounded-xl bg-[#0D9488] hover:bg-[#0F766E] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs">
               <Upload className="w-3.5 h-3.5" />
-              <span>Open .HTML / .EPUB / .KPF / File</span>
+              <span>Open .HTML / .EPUB / .KPF / .KDF / File</span>
               <input
                 type="file"
-                accept={SUPPORTED_DOCUMENT_ACCEPT}
+                accept="*/*"
                 className="hidden"
                 onChange={async (e) => {
                   const f = e.target.files?.[0];

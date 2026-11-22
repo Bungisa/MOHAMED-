@@ -26,6 +26,8 @@ import {
   requestPersistentStorage,
 } from '../services/storageService';
 import { PWAInstallButton } from './PWAInstallPrompt';
+import { downloadBytesAsFile } from '../services/pdfService';
+import { getRuntimePlatform, isNativeApp } from '../services/capacitorBridge';
 
 interface SettingsViewProps {
   preferences: AppPreferences;
@@ -174,28 +176,17 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  const capacitorBuildCmd =
+    'npm run cap:add:android && npm run cap:add:ios && npm run cap:sync';
+
   const downloadAssetLinks = () => {
-    const blob = new Blob([assetLinksJson], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'assetlinks.json';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const bytes = new TextEncoder().encode(assetLinksJson);
+    downloadBytesAsFile(bytes, 'assetlinks.json', 'application/json');
   };
 
   const downloadPrivacyPolicyHtml = () => {
-    const blob = new Blob([PRIVACY_POLICY_STATIC_HTML], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'privacy-policy.html';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    const bytes = new TextEncoder().encode(PRIVACY_POLICY_STATIC_HTML);
+    downloadBytesAsFile(bytes, 'privacy-policy.html', 'text/html');
   };
 
   const updatePref = <K extends keyof AppPreferences>(
@@ -315,6 +306,42 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               </p>
             </div>
           ))}
+        </div>
+
+        {/* Capacitor SDK Dual Runtime (Native Android/iOS App + Website) */}
+        <div className="p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Terminal className="w-4 h-4 text-[#003FE8] dark:text-[#60A5FA]" />
+              <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                Capacitor SDK — Native Android &amp; iOS App + Website Ready
+              </span>
+            </div>
+            <span className="px-2 py-0.5 rounded bg-[#003FE8]/10 text-[#003FE8] dark:text-[#60A5FA] text-[11px] font-mono font-semibold">
+              Runtime: {isNativeApp() ? `Capacitor (${getRuntimePlatform()})` : 'Web / PWA'}
+            </span>
+          </div>
+          <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] leading-relaxed">
+            Configured with <code className="font-mono">capacitor.config.ts</code> (App ID:{' '}
+            <code className="font-mono">app.elimikapdf.studio</code>), native Filesystem export, native OS Share Sheet,
+            native Camera capture, Status Bar theme sync, Splash Screen handoff, and Android hardware Back-button routing.
+          </p>
+          <div className="flex items-center justify-between gap-2 bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-lg px-3 py-2">
+            <code className="text-[11px] font-mono text-[#14101B] dark:text-[#F4F1F8] overflow-x-auto whitespace-nowrap">
+              {capacitorBuildCmd}
+            </code>
+            <button
+              onClick={() => copyText('capacitor', capacitorBuildCmd)}
+              className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#003FE8] dark:text-[#60A5FA] hover:underline cursor-pointer shrink-0"
+            >
+              {copiedField === 'capacitor' ? (
+                <Check className="w-3.5 h-3.5" />
+              ) : (
+                <Copy className="w-3.5 h-3.5" />
+              )}
+              <span>{copiedField === 'capacitor' ? 'Copied' : 'Copy'}</span>
+            </button>
+          </div>
         </div>
 
         {/* Android TWA Configuration & Digital Asset Links Generator */}

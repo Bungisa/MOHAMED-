@@ -5,25 +5,30 @@ import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
 
 export default defineConfig(() => {
+  const isCapacitorBuild = process.env.CAPACITOR_BUILD === 'true';
+
   return {
+    base: '/',
     plugins: [
       react(),
       tailwindcss(),
-      VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: [
-          'icon.svg',
-          'apple-touch-icon.png',
-          'pwa-192x192.png',
-          'pwa-512x512.png',
-          'pwa-maskable-512x512.png',
-          'elimikapdf-icon.png',
-          'privacy-policy.html',
-          'sw-share-handler.js',
-          'assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
-          'screenshot-mobile.png',
-          'screenshot-desktop.png',
-        ],
+      ...(!isCapacitorBuild
+        ? [
+            VitePWA({
+              registerType: 'autoUpdate',
+              includeAssets: [
+                'icon.svg',
+                'apple-touch-icon.png',
+                'pwa-192x192.png',
+                'pwa-512x512.png',
+                'pwa-maskable-512x512.png',
+                'elimikapdf-icon.png',
+                'privacy-policy.html',
+                'sw-share-handler.js',
+                'assets/aistudio/WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
+                'screenshot-mobile.png',
+                'screenshot-desktop.png',
+              ],
         manifest: {
           id: '/',
           name: 'ElimikaPDF — PDF, Word & Document Reader',
@@ -188,6 +193,8 @@ export default defineConfig(() => {
           enabled: false,
         },
       }),
+          ]
+        : []),
     ],
     resolve: {
       alias: {

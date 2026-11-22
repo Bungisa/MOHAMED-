@@ -11,6 +11,11 @@ import {
   PDFNumber,
 } from 'pdf-lib';
 import { AnnotationElement, NativeTextBlock } from '../types/document';
+import {
+  isNativeApp,
+  saveFileNativelyIfCapacitor,
+  shareFileNativelyIfCapacitor,
+} from './capacitorBridge';
 
 // Ensure Promise.try and Uint8Array.prototype.toHex are available for pdfjs-dist v5 across all browsers, WebViews, and Node.js
 if (typeof (Promise as unknown as { try?: unknown }).try !== 'function') {
@@ -1336,37 +1341,54 @@ export function downloadBytesAsFile(
   const cleanName = sanitizeDownloadFilename(filename, mimeType);
   const safeBytes = toCleanUint8Array(bytes);
 
-  try {
-    // For files up to 25 MB, use a synchronous inline base64 Data URI so the browser writes the exact bytes directly
-    if (safeBytes.byteLength <= 25 * 1024 * 1024) {
-      const dataUrl = bytesToDataUrl(safeBytes, mimeType);
-      const a = document.createElement('a');
-      a.href = dataUrl;
-      a.download = cleanName;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      return;
+  const triggerWebBrowserDownload = () => {
+    try {
+      // For files up to 25 MB, use a synchronous inline base64 Data URI so the browser writes the exact bytes directly
+      if (safeBytes.byteLength <= 25 * 1024 * 1024) {
+        const dataUrl = bytesToDataUrl(safeBytes, mimeType);
+        const a = document.createElement('a');
+        a.href = dataUrl;
+        a.download = cleanName;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        return;
+      }
+    } catch (err) {
+      console.warn('Data URL download fallback to Blob URL:', err);
     }
-  } catch (err) {
-    console.warn('Data URL download fallback to Blob URL:', err);
+
+    const blob = new Blob([safeBytes as BlobPart], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = cleanName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 600000);
+  };
+
+  if (isNativeApp()) {
+    saveFileNativelyIfCapacitor(safeBytes, cleanName)
+      .then((handled) => {
+        if (!handled) {
+          triggerWebBrowserDownload();
+        }
+      })
+      .catch(() => {
+        triggerWebBrowserDownload();
+      });
+    return;
   }
 
-  const blob = new Blob([safeBytes as BlobPart], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = cleanName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 600000);
+  triggerWebBrowserDownload();
 }
 
 /**
- * Opens the native mobile Share / Save sheet (Android / iOS) for a PDF or image file,
- * or falls back to `downloadBytesAsFile` if Web Share API for files is not supported.
+ * Opens the native mobile Share / Save sheet (Capacitor Native on Android/iOS, or Web Share API in browsers),
+ * falling back to `downloadBytesAsFile` if file sharing is not supported.
  */
 export async function shareOrDownloadBytesAsFile(
   bytes: Uint8Array,
@@ -1375,6 +1397,15 @@ export async function shareOrDownloadBytesAsFile(
 ): Promise<void> {
   const cleanName = sanitizeDownloadFilename(filename, mimeType);
   const safeBytes = toCleanUint8Array(bytes);
+
+  if (isNativeApp()) {
+    const sharedNatively = await shareFileNativelyIfCapacitor(
+      safeBytes,
+      cleanName
+    );
+    if (sharedNatively) return;
+  }
+
   try {
     const file = new File([safeBytes as BlobPart], cleanName, {
       type: mimeType,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { createWorker } from 'tesseract.js';
 import {
   Merge,
@@ -7,6 +7,10 @@ import {
   FileImage,
   Images,
   RotateCw,
+  AlertTriangle,
+  Eye,
+  Layers,
+  X,
   LayoutGrid,
   ScanText,
   Shield,
@@ -86,11 +90,15 @@ import {
   generatePdfFromWordBlocks,
   extractPdfPagesForWord,
   buildDocxFromPdfPages,
+  buildPdfToWordQualityReport,
+  buildWordPagePreviewHtml,
   DOCX_MIME_TYPE,
   WordContentBlock,
   PdfPageWordContent,
   PdfToWordMode,
+  WordConversionQualityReport,
   prepareBrowserFidelityHtml,
+  renderDocxWithDocxPreviewToHtml,
   wordBlocksToCleanHtml,
 } from '../services/wordConversionService';
 import { formatBytes } from '../services/storageService';
@@ -1948,6 +1956,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
           addPageNumbers: wordAddPageNumbers,
         }
       );
+      const rawWordBytes = new Uint8Array(await file.arrayBuffer());
       const outName = `${baseName || 'Converted_Word'}.pdf`;
       const newDoc: StoredDocument = {
         id: `doc-word2pdf-${Date.now()}`,
@@ -1960,6 +1969,7 @@ export const PdfToolsView: React.FC<PdfToolsViewProps> = ({
         updatedAt: new Date().toISOString(),
         lastOpenedAt: new Date().toISOString(),
         pdfData: pdfBytes,
+        originalFileBytes: rawWordBytes,
         ocrText: parsed.plainText,
         rawHtmlContent: parsed.htmlPreview,
         sourceFormat:
@@ -2089,7 +2099,7 @@ Status: Approved for Production Distribution`;
 
   // 10. PDF TO WORD (.PDF -> .DOCX) STATE & HANDLERS
   const [pdfToWordMode, setPdfToWordMode] =
-    useState<PdfToWordMode>('editable');
+    useState<PdfToWordMode>('hybrid');
   const [pdfToWordPages, setPdfToWordPages] = useState<PdfPageWordContent[]>(
     []
   );
@@ -2097,56 +2107,82 @@ Status: Approved for Production Distribution`;
     bytes: Uint8Array;
     name: string;
     pageCount: number;
+    renderedDocxHtml?: string | null;
   } | null>(null);
+  const [pdfToWordQualityReport, setPdfToWordQualityReport] =
+    useState<WordConversionQualityReport | null>(null);
   const [pdfToWordProgress, setPdfToWordProgress] = useState<string | null>(
     null
   );
+  const [pdfToWordProgressPct, setPdfToWordProgressPct] = useState<number>(0);
   const [autoOcrScannedPages, setAutoOcrScannedPages] = useState<boolean>(true);
+  const [pdfToWordComparePageIdx, setPdfToWordComparePageIdx] = useState<number>(0);
+  const pdfToWordCancelRef = useRef<boolean>(false);
 
   // Reset PDF to Word state when switching documents
   useEffect(() => {
     setPdfToWordPages([]);
     setPdfToWordDocxResult(null);
+    setPdfToWordQualityReport(null);
     setPdfToWordProgress(null);
+    setPdfToWordProgressPct(0);
+    setPdfToWordComparePageIdx(0);
+    pdfToWordCancelRef.current = false;
   }, [selectedDoc?.id]);
 
+  const handleCancelPdfToWord = () => {
+    pdfToWordCancelRef.current = true;
+    setPdfToWordProgress('Cancelling conversion...');
+  };
+
   const handleExtractAndConvertPdfToWord = async (
-    downloadImmediately = true
+    downloadImmediately = true,
+    overrideMode?: PdfToWordMode
   ) => {
     if (!selectedDoc) return;
+    const activeMode = overrideMode || pdfToWordMode;
+    pdfToWordCancelRef.current = false;
     setIsBusy(true);
     setFeedback(null);
-    setPdfToWordProgress('Extracting pages & text structure from PDF...');
+    setPdfToWordProgress('Validating PDF & extracting structure, tables, equations, and diagrams...');
+    setPdfToWordProgressPct(8);
     try {
       let extractedPages = pdfToWordPages;
       if (extractedPages.length === 0) {
         extractedPages = await extractPdfPagesForWord(
           selectedDoc.pdfData,
-          (curr, total) => {
-            setPdfToWordProgress(`Analyzing PDF page ${curr} of ${total}...`);
+          (curr, total, stage) => {
+            const pct = Math.min(68, Math.max(10, Math.round((curr / Math.max(1, total)) * 68)));
+            setPdfToWordProgressPct(pct);
+            setPdfToWordProgress(
+              stage || `Analyzing PDF page ${curr} of ${total}...`
+            );
+          },
+          {
+            shouldCancel: () => pdfToWordCancelRef.current,
+            captureSnapshots: true,
           }
         );
 
-        // If any page has almost no native text (scanned image PDF) and autoOcrScannedPages is enabled, run OCR on up to 5 scanned pages
         const scannedIndices = extractedPages
-          .map((p, i) =>
-            p.paragraphs.reduce((acc, pr) => acc + pr.text.length, 0) < 12 &&
-            p.imageDataUrl
-              ? i
-              : -1
-          )
+          .map((p, i) => (p.isScannedPage && p.imageDataUrl ? i : -1))
           .filter((i) => i !== -1);
 
-        if (autoOcrScannedPages && scannedIndices.length > 0) {
-          const pagesToOcr = scannedIndices.slice(0, 5);
+        if (autoOcrScannedPages && scannedIndices.length > 0 && !pdfToWordCancelRef.current) {
           const worker = await createWorker('eng');
           try {
-            for (let k = 0; k < pagesToOcr.length; k++) {
-              const pIdx = pagesToOcr[k];
+            for (let k = 0; k < scannedIndices.length; k++) {
+              if (pdfToWordCancelRef.current) {
+                throw new Error('PDF to Word conversion was cancelled.');
+              }
+              const pIdx = scannedIndices[k];
               const pg = extractedPages[pIdx];
               if (!pg.imageDataUrl) continue;
+              const ocrPct =
+                70 + Math.round(((k + 1) / scannedIndices.length) * 18);
+              setPdfToWordProgressPct(ocrPct);
               setPdfToWordProgress(
-                `Running OCR on scanned page ${pg.pageNumber} (${k + 1}/${pagesToOcr.length})...`
+                `Running OCR on scanned page ${pg.pageNumber} (${k + 1}/${scannedIndices.length})...`
               );
               const {
                 data: { text },
@@ -2165,7 +2201,9 @@ Status: Approved for Production Distribution`;
                     /[A-Z]/.test(line),
                   fontSize: 11.5,
                 }));
+                pg.ocrApplied = true;
               }
+              await new Promise((r) => setTimeout(r, 0));
             }
           } finally {
             await worker.terminate();
@@ -2175,32 +2213,87 @@ Status: Approved for Production Distribution`;
         setPdfToWordPages(extractedPages);
       }
 
-      setPdfToWordProgress('Building Microsoft Word (.DOCX) file...');
+      if (pdfToWordCancelRef.current) {
+        throw new Error('PDF to Word conversion was cancelled.');
+      }
+
+      setPdfToWordProgressPct(92);
+      setPdfToWordProgress('Assembling native Word (.DOCX) tables, OMML equations & sections...');
       const baseTitle = selectedDoc.name.replace(/\.pdf$/i, '');
       const docxBytes = await buildDocxFromPdfPages(
         extractedPages,
-        pdfToWordMode,
+        activeMode,
         baseTitle
       );
+      const report = buildPdfToWordQualityReport(extractedPages, activeMode);
       const docxFilename = `${baseTitle}.docx`;
+      const renderedDocxHtml = await renderDocxWithDocxPreviewToHtml(
+        docxBytes,
+        baseTitle
+      ).catch(() => null);
+      setPdfToWordQualityReport(report);
       setPdfToWordDocxResult({
         bytes: docxBytes,
         name: docxFilename,
         pageCount: extractedPages.length,
+        renderedDocxHtml,
       });
+      setPdfToWordProgressPct(100);
 
       if (downloadImmediately) {
         downloadBytesAsFile(docxBytes, docxFilename, DOCX_MIME_TYPE);
       }
 
       setFeedback(
-        `Converted "${selectedDoc.name}" into Microsoft Word "${docxFilename}" (${formatBytes(docxBytes.byteLength)}).`
+        `Converted "${selectedDoc.name}" into Microsoft Word "${docxFilename}" (${formatBytes(docxBytes.byteLength)} · ${report.totalTablesReconstructed} table(s), ${report.totalOmmlEquations} OMML equation(s), ${report.totalDiagramsPreserved} diagram(s)).`
       );
     } catch (err) {
-      console.error('Error converting PDF to Word:', err);
-      setFeedback('Failed to convert PDF to Word (.DOCX).');
+      const msg = err instanceof Error ? err.message : 'Failed to convert PDF to Word (.DOCX).';
+      if (msg.toLowerCase().includes('cancelled')) {
+        setFeedback('PDF to Word conversion cancelled.');
+      } else {
+        console.error('Error converting PDF to Word:', err);
+        setFeedback(msg);
+      }
     } finally {
       setPdfToWordProgress(null);
+      setIsBusy(false);
+    }
+  };
+
+  const handleOpenConvertedDocxInReader = async () => {
+    if (!pdfToWordDocxResult || !onOpenInEditor) return;
+    setIsBusy(true);
+    try {
+      const safeBytes = new Uint8Array(pdfToWordDocxResult.bytes.length);
+      safeBytes.set(pdfToWordDocxResult.bytes);
+      const file = new File([safeBytes], pdfToWordDocxResult.name, {
+        type: DOCX_MIME_TYPE,
+      });
+      const converted = await convertAnyUploadedFileToPdfAndHtml(file);
+      const nowIso = new Date().toISOString();
+      const newDoc: StoredDocument = {
+        id: `word-preview-${Date.now()}`,
+        name: pdfToWordDocxResult.name,
+        category: 'Other',
+        starred: false,
+        sizeBytes: converted.pdfBytes.byteLength,
+        pageCount: converted.pageCount,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        lastOpenedAt: nowIso,
+        pdfData: converted.pdfBytes,
+        originalFileBytes: safeBytes,
+        annotations: [],
+        sourceFormat: 'docx',
+        rawHtmlContent: pdfToWordDocxResult.renderedDocxHtml || converted.rawHtmlContent,
+      };
+      await onSaveNewDocument(newDoc);
+      onOpenInEditor(newDoc);
+    } catch (err) {
+      console.error('Could not preview generated DOCX in Reader:', err);
+      setFeedback('Generated .DOCX downloaded cleanly, but in-app reader preview encountered an error.');
+    } finally {
       setIsBusy(false);
     }
   };
@@ -2242,16 +2335,11 @@ Status: Approved for Production Distribution`;
       case 'img-to-pdf':
         return 'image/png,image/jpeg,image/webp,.jpg,.jpeg,.png,.webp';
       case 'word-to-pdf':
-        return '.docx,.doc,.odt,.epub,.kpf,.mobi,.fb2,.rtf,.txt,.md,.html,.htm,.xhtml,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/epub+zip,text/plain,text/html,application/rtf';
-      case 'ppt-to-pdf':
-        return '.pptx,.ppt,.odp,.pdf,.txt,.md,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/pdf,text/plain';
-      case 'excel-to-pdf':
-        return '.xlsx,.xls,.xlsm,.xlsb,.ods,.csv,.tsv,.txt,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,application/vnd.ms-excel.sheet.macroEnabled.12,application/vnd.ms-excel.sheet.binary.macroEnabled.12,application/vnd.oasis.opendocument.spreadsheet,text/csv,text/tab-separated-values,application/csv,application/excel,application/x-excel,application/x-msexcel,text/plain';
       case 'html-to-pdf':
       case 'html-reader':
-        return SUPPORTED_DOCUMENT_ACCEPT;
       default:
-        return SUPPORTED_DOCUMENT_ACCEPT;
+        // Use */* so Android Chrome & Samsung File Picker never hide custom extensions like .kdf or .kpf
+        return '*/*';
     }
   };
 
@@ -5090,95 +5178,146 @@ Status: Approved for Production Distribution`;
             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-[#E4DFEC] dark:border-[#261F33] pb-4">
               <div>
                 <h2 className="text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                  PDF to Word Converter (.PDF → Editable .DOCX)
+                  Professional PDF to Word Converter (.PDF → .DOCX)
                 </h2>
                 <p className="text-xs text-[#6E667D] dark:text-[#A39BB5]">
-                  Convert <strong>{selectedDoc.name}</strong> ({selectedDoc.pageCount}{' '}
-                  {selectedDoc.pageCount === 1 ? 'page' : 'pages'}) into a standard Microsoft Word <code>.docx</code> document that opens in Word, Google Docs, and WPS Office.
+                  Converting <strong>{selectedDoc.name}</strong> ({selectedDoc.pageCount}{' '}
+                  {selectedDoc.pageCount === 1 ? 'page' : 'pages'} · {formatBytes(selectedDoc.sizeBytes)}) with editable tables, native OMML equations, preserved diagrams, and exact page sections.
                 </p>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleExtractAndConvertPdfToWord(true)}
-                  disabled={isBusy}
-                  className="px-5 py-2.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
-                >
-                  <FileOutput className="w-4 h-4" />
-                  <span>
-                    {isBusy
-                      ? 'Converting to Word...'
-                      : 'Convert PDF to Word (.DOCX) & Download'}
-                  </span>
-                </button>
+                {onUploadNewPdf && (
+                  <label className="px-3.5 py-2.5 rounded-lg border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-semibold flex items-center gap-1.5 cursor-pointer">
+                    <Upload className="w-3.5 h-3.5 text-[#2563EB]" />
+                    <span>Select PDF</span>
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      className="hidden"
+                      onChange={async (e) => {
+                        const fl = e.target.files;
+                        if (fl && fl.length > 0) {
+                          await onUploadNewPdf(fl, false);
+                        }
+                        e.target.value = '';
+                      }}
+                    />
+                  </label>
+                )}
+
+                {isBusy && pdfToWordProgress ? (
+                  <button
+                    type="button"
+                    onClick={handleCancelPdfToWord}
+                    className="px-4 py-2.5 rounded-lg bg-[#DC2626] hover:bg-[#B91C1C] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Cancel</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleExtractAndConvertPdfToWord(true)}
+                    disabled={isBusy}
+                    className="px-5 py-2.5 rounded-lg bg-[#2563EB] hover:bg-[#1D4ED8] text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-xs disabled:opacity-50"
+                  >
+                    <FileOutput className="w-4 h-4" />
+                    <span>Convert to Word (.DOCX) & Download</span>
+                  </button>
+                )}
               </div>
             </div>
 
-            {/* 3 Conversion Mode Cards + Scanned PDF Auto-OCR Switch */}
+            {/* 3 Conversion Mode Cards — Balanced (Default), Editable Word, Original Layout */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               {(
                 [
                   {
-                    id: 'editable',
-                    title: '1. Editable Text & Headings (.DOCX)',
-                    desc: 'Extracts paragraphs, headings, and lists for easy text editing in Word. Includes page snapshots only if a page has no text.',
+                    id: 'hybrid' as const,
+                    badge: 'Default · Recommended',
+                    title: 'Balanced (Editable + Visual)',
+                    desc: 'Reconstructs real editable Word tables, native OMML math equations, colored headings & lists, while preserving cropped diagrams, figures & scanned pages.',
                   },
                   {
-                    id: 'hybrid',
-                    title: '2. Editable Text + Page Snapshots',
-                    desc: 'Includes both editable Word paragraphs AND the high-resolution page picture for each page (great for exams & tables).',
+                    id: 'editable' as const,
+                    badge: '100% Editable Objects',
+                    title: 'Editable Word',
+                    desc: 'Prioritizes fully editable Word paragraphs, tables, and OMML equations throughout (with cropped visual figures where drawings exist).',
                   },
                   {
-                    id: 'visual',
-                    title: '3. Exact Visual Layout (.DOCX)',
-                    desc: 'Embeds each full-page snapshot directly into Word so complex layouts, stamps, and handwriting look 100% identical.',
+                    id: 'visual' as const,
+                    badge: 'Pixel-Exact Layout',
+                    title: 'Original Layout',
+                    desc: 'Matches exact PDF page size & orientation per section using high-DPI full-page frames so complex forms or certificates never shift.',
                   },
-                ] as const
+                ]
               ).map((m) => (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => setPdfToWordMode(m.id)}
+                  onClick={() => {
+                    setPdfToWordMode(m.id);
+                    if (pdfToWordPages.length > 0) {
+                      handleExtractAndConvertPdfToWord(false, m.id);
+                    }
+                  }}
                   className={`p-3.5 rounded-xl border text-left transition-colors cursor-pointer ${
                     pdfToWordMode === m.id
-                      ? 'border-[#2563EB] bg-[#2563EB]/8 dark:bg-[#2563EB]/20'
+                      ? 'border-[#2563EB] bg-[#2563EB]/8 dark:bg-[#2563EB]/20 ring-1 ring-[#2563EB]/40'
                       : 'border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33]'
                   }`}
                 >
-                  <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    {m.title}
-                  </p>
-                  <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-1 leading-relaxed">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      {m.title}
+                    </p>
+                    <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-[#2563EB]/12 text-[#2563EB] dark:text-[#60A5FA]">
+                      {m.badge}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] mt-1.5 leading-relaxed">
                     {m.desc}
                   </p>
                 </button>
               ))}
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33]">
-              <label className="flex items-center gap-2.5 text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={autoOcrScannedPages}
-                  onChange={(e) => setAutoOcrScannedPages(e.target.checked)}
-                  className="rounded accent-[#2563EB] w-4 h-4"
-                />
-                <span>
-                  Auto-OCR Scanned Image Pages (recognizes text on scanned photos automatically)
-                </span>
-              </label>
+            {/* Auto-OCR Switch + Real-Time Progress Bar */}
+            <div className="p-3.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <label className="flex items-center gap-2.5 text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoOcrScannedPages}
+                    onChange={(e) => setAutoOcrScannedPages(e.target.checked)}
+                    className="rounded accent-[#2563EB] w-4 h-4"
+                  />
+                  <span>
+                    Auto-OCR Scanned Image Pages (recognizes text on scanned exam papers & photos)
+                  </span>
+                </label>
+
+                {pdfToWordProgress && (
+                  <span className="text-xs font-mono font-bold text-[#2563EB]">
+                    {pdfToWordProgressPct}% · {pdfToWordProgress}
+                  </span>
+                )}
+              </div>
 
               {pdfToWordProgress && (
-                <span className="text-xs font-mono font-bold text-[#2563EB] animate-pulse">
-                  {pdfToWordProgress}
-                </span>
+                <div className="w-full h-2 rounded-full bg-[#E4DFEC] dark:bg-[#261F33] overflow-hidden">
+                  <div
+                    className="h-full bg-[#2563EB] transition-all duration-200"
+                    style={{ width: `${Math.max(5, pdfToWordProgressPct)}%` }}
+                  />
+                </div>
               )}
             </div>
 
             {/* Ready-to-Download .DOCX Card */}
             {pdfToWordDocxResult && (
-              <div className="p-4 rounded-xl bg-[#15803D]/10 border-2 border-[#15803D]/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="p-4 rounded-xl bg-[#15803D]/10 border-2 border-[#15803D]/40 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div>
                   <p className="text-xs font-bold text-[#15803D] dark:text-[#4ADE80]">
                     ✓ Microsoft Word File Ready: {pdfToWordDocxResult.name}
@@ -5186,8 +5325,12 @@ Status: Approved for Production Distribution`;
                   <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] font-mono mt-0.5">
                     {pdfToWordDocxResult.pageCount}{' '}
                     {pdfToWordDocxResult.pageCount === 1 ? 'page' : 'pages'} ·{' '}
-                    {formatBytes(pdfToWordDocxResult.bytes.byteLength)} ·
-                    Standard OpenXML (.DOCX)
+                    {formatBytes(pdfToWordDocxResult.bytes.byteLength)} · Mode:{' '}
+                    {pdfToWordMode === 'hybrid'
+                      ? 'Balanced'
+                      : pdfToWordMode === 'editable'
+                        ? 'Editable Word'
+                        : 'Original Layout'}
                   </p>
                 </div>
 
@@ -5221,16 +5364,199 @@ Status: Approved for Production Distribution`;
                     <Share2 className="w-3.5 h-3.5 text-[#2563EB]" />
                     <span>Share .DOCX</span>
                   </button>
+
+                  {onOpenInEditor && (
+                    <button
+                      type="button"
+                      onClick={handleOpenConvertedDocxInReader}
+                      disabled={isBusy}
+                      className="px-3.5 py-2 rounded-lg bg-[#4A1D5E] hover:bg-[#3A144A] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      <BookOpen className="w-3.5 h-3.5" />
+                      <span>Open .DOCX in Reader</span>
+                    </button>
+                  )}
                 </div>
               </div>
             )}
 
-            {/* Editable Extracted Word Paragraphs per Page */}
+            {/* Conversion Quality Assurance Report */}
+            {pdfToWordQualityReport && (
+              <div className="p-4 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Layers className="w-4 h-4 text-[#2563EB]" />
+                    <h3 className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      Conversion Quality Report
+                    </h3>
+                  </div>
+                  <span className="text-xs font-bold px-2 py-0.5 rounded bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80]">
+                    Fidelity Score: {pdfToWordQualityReport.overallFidelityScore}%
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 text-center">
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      {pdfToWordQualityReport.totalSourcePages} / {pdfToWordQualityReport.totalWordSections}
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">Pages / Sections</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#2563EB]">
+                      {pdfToWordQualityReport.totalTablesReconstructed}
+                      {pdfToWordQualityReport.multiPageTablesMerged > 0
+                        ? ` (+${pdfToWordQualityReport.multiPageTablesMerged} merged)`
+                        : ''}
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">Editable Word Tables</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#7C3AED]">
+                      {pdfToWordQualityReport.totalOmmlEquations}
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">Native OMML Equations</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#059669]">
+                      {pdfToWordQualityReport.totalDiagramsPreserved}
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">Diagrams & Photos</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#D97706]">
+                      {pdfToWordQualityReport.totalColorsPreserved}
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">RGB Colors Kept</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33]">
+                    <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      {pdfToWordQualityReport.multiColumnPages} col / {pdfToWordQualityReport.ocrPagesProcessed} OCR
+                    </p>
+                    <p className="text-[10px] text-[#6E667D]">Multi-Col / OCR</p>
+                  </div>
+                </div>
+
+                {pdfToWordQualityReport.warnings.length > 0 && (
+                  <div className="space-y-1">
+                    {pdfToWordQualityReport.warnings.map((w, wIdx) => (
+                      <p
+                        key={wIdx}
+                        className="text-[11px] text-[#B45309] dark:text-[#FBBF24] flex items-center gap-1.5"
+                      >
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{w}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Side-by-Side Original PDF vs Converted Word Preview */}
             {pdfToWordPages.length > 0 && (
               <div className="space-y-4">
+                <div className="p-4 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] bg-white dark:bg-[#16111F] space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-[#2563EB]" />
+                      <h3 className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                        Visual Comparison Preview (Original PDF vs Converted Word)
+                      </h3>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPdfToWordComparePageIdx((p) => Math.max(0, p - 1))
+                        }
+                        disabled={pdfToWordComparePageIdx <= 0}
+                        className="px-2.5 py-1 rounded border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                      >
+                        Prev
+                      </button>
+                      <span className="text-xs font-mono text-[#6E667D]">
+                        Page {Math.min(pdfToWordComparePageIdx + 1, pdfToWordPages.length)} /{' '}
+                        {pdfToWordPages.length}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPdfToWordComparePageIdx((p) =>
+                            Math.min(pdfToWordPages.length - 1, p + 1)
+                          )
+                        }
+                        disabled={pdfToWordComparePageIdx >= pdfToWordPages.length - 1}
+                        className="px-2.5 py-1 rounded border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold disabled:opacity-40 cursor-pointer"
+                      >
+                        Next
+                      </button>
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const activePg =
+                      pdfToWordPages[
+                        Math.min(pdfToWordComparePageIdx, pdfToWordPages.length - 1)
+                      ];
+                    if (!activePg) return null;
+                    const previewHtml = buildWordPagePreviewHtml(
+                      activePg,
+                      pdfToWordMode
+                    );
+                    return (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="rounded-lg border border-[#E4DFEC] dark:border-[#261F33] p-2 bg-[#FAF9FB] dark:bg-[#0D0A12]">
+                          <p className="text-[11px] font-bold text-[#6E667D] mb-1.5">
+                            Original PDF — Page {activePg.pageNumber} (
+                            {Math.round(activePg.widthPt || 595)}×{Math.round(activePg.heightPt || 842)}pt{' '}
+                            {activePg.orientation || 'portrait'})
+                          </p>
+                          {activePg.imageDataUrl ? (
+                            <img
+                              src={activePg.imageDataUrl}
+                              alt={`Original PDF page ${activePg.pageNumber}`}
+                              className="w-full h-auto max-h-[380px] object-contain rounded border border-[#E4DFEC] dark:border-[#261F33] bg-white"
+                            />
+                          ) : (
+                            <div className="h-[240px] flex items-center justify-center text-xs text-[#6E667D]">
+                              Snapshot preview unavailable
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="rounded-lg border border-[#E4DFEC] dark:border-[#261F33] p-2 bg-[#FAF9FB] dark:bg-[#0D0A12]">
+                          <p className="text-[11px] font-bold text-[#2563EB] mb-1.5">
+                            Converted Word (.DOCX) Live Preview ({activePg.richTables?.length || 0} table(s),{' '}
+                            {activePg.equations?.length || 0} equation(s),{' '}
+                            {activePg.diagramRegions?.filter((d) => d.kind !== 'formula-fallback').length || 0} diagram(s))
+                          </p>
+                          {pdfToWordDocxResult?.renderedDocxHtml ? (
+                            <iframe
+                              title="Converted DOCX Live Preview"
+                              srcDoc={prepareBrowserFidelityHtml(
+                                pdfToWordDocxResult.renderedDocxHtml,
+                                pdfToWordDocxResult.name
+                              )}
+                              sandbox="allow-scripts allow-same-origin"
+                              className="w-full h-[380px] rounded border border-[#E4DFEC] dark:border-[#261F33] bg-white"
+                            />
+                          ) : (
+                            <div
+                              className="max-h-[380px] overflow-y-auto rounded border border-[#E4DFEC] dark:border-[#261F33] bg-white text-[#14101B]"
+                              dangerouslySetInnerHTML={{ __html: previewHtml }}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Extracted Word Text Preview (You can edit any text below before re-downloading .DOCX)
+                    Editable Text Override per Page (optional quick text edits before regenerating .DOCX)
                   </h3>
                   <button
                     type="button"
@@ -5238,11 +5564,11 @@ Status: Approved for Production Distribution`;
                     disabled={isBusy}
                     className="px-3.5 py-1.5 rounded-lg bg-[#2563EB] text-white text-xs font-bold cursor-pointer"
                   >
-                    Update & Download .DOCX
+                    Regenerate & Download .DOCX
                   </button>
                 </div>
 
-                <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                <div className="space-y-3 max-h-[360px] overflow-y-auto pr-1">
                   {pdfToWordPages.map((pg, pIdx) => {
                     const joinedText = pg.paragraphs
                       .map((p) => p.text)
@@ -5254,14 +5580,14 @@ Status: Approved for Production Distribution`;
                       >
                         <div className="flex items-center justify-between">
                           <span className="text-xs font-bold text-[#4A1D5E] dark:text-[#D5B3FF]">
-                            Page {pg.pageNumber}
+                            Page {pg.pageNumber} {pg.ocrApplied ? '· OCR Applied' : ''}
                           </span>
                           <span className="text-[11px] font-mono text-[#6E667D]">
-                            {pg.paragraphs.length} paragraph block(s)
+                            {pg.paragraphs.length} block(s) · {pg.richTables?.length || 0} table(s) · {pg.equations?.length || 0} eq(s)
                           </span>
                         </div>
                         <textarea
-                          rows={4}
+                          rows={3}
                           value={joinedText}
                           onChange={(e) => {
                             const nextVal = e.target.value;
@@ -5270,6 +5596,7 @@ Status: Approved for Production Distribution`;
                                 idx === pIdx
                                   ? {
                                       ...item,
+                                      styledBlocks: undefined,
                                       paragraphs: nextVal
                                         .split(/\n{2,}/)
                                         .map((t) => ({

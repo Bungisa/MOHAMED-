@@ -1,8 +1,9 @@
 import {createRoot} from 'react-dom/client';
 import App from './App.tsx';
 import './index.css';
+import {isNativeApp} from './services/capacitorBridge';
 
-if ('serviceWorker' in navigator) {
+if (!isNativeApp() && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker
       .getRegistrations()

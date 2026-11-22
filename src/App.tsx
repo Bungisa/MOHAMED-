@@ -22,6 +22,11 @@ import {
 } from './services/pdfService';
 import { formatBytes } from './services/storageService';
 import { convertAnyUploadedFileToPdfAndHtml } from './services/advancedPdfToolsService';
+import {
+  initCapacitorRuntime,
+  resolveApiUrl,
+  syncNativeStatusBarTheme,
+} from './services/capacitorBridge';
 import { Layout } from './components/Layout';
 import { DashboardView } from './components/DashboardView';
 import { ScannerView } from './components/ScannerView';
@@ -109,20 +114,20 @@ export default function App() {
     []
   );
 
-  // Apply Light / Dark / System Theme to <html>
+  // Apply Light / Dark / System Theme to <html> and native Capacitor StatusBar
   useEffect(() => {
     const root = document.documentElement;
     const applyTheme = (mode: ThemeMode) => {
+      let isDark = false;
       if (mode === 'dark') {
-        root.classList.add('dark');
+        isDark = true;
       } else if (mode === 'light') {
-        root.classList.remove('dark');
+        isDark = false;
       } else {
-        const prefersDark = window.matchMedia(
-          '(prefers-color-scheme: dark)'
-        ).matches;
-        root.classList.toggle('dark', prefersDark);
+        isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       }
+      root.classList.toggle('dark', isDark);
+      syncNativeStatusBarTheme(isDark);
     };
 
     applyTheme(preferences.theme);
@@ -258,6 +263,62 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPopState);
   }, [refreshVault]);
 
+  // Initialize Capacitor native runtime (SplashScreen handoff, Android hardware Back button, and Deep Links)
+  useEffect(() => {
+    return initCapacitorRuntime({
+      onBackButton: () => {
+        if (openWithPromptDoc) {
+          setOpenWithPromptDoc(null);
+          return true;
+        }
+        if (docPendingDelete) {
+          setDocPendingDelete(null);
+          return true;
+        }
+        if (docsPendingBatchDelete) {
+          setDocsPendingBatchDelete(null);
+          return true;
+        }
+        if (activeView !== 'dashboard') {
+          setActiveView('dashboard');
+          refreshVault();
+          return true;
+        }
+        return false;
+      },
+      onDeepLinkUrl: (rawUrl: string) => {
+        try {
+          const parsed = new URL(rawUrl);
+          const action = parsed.searchParams.get('action');
+          const view = parsed.searchParams.get('view');
+          if (view === 'privacy' || parsed.pathname.toLowerCase().includes('privacy')) {
+            navigateToView('privacy');
+          } else if (action === 'scan') {
+            navigateToView('scanner');
+          } else if (action === 'pdf-reader') {
+            setEditorReaderMode(true);
+            navigateToView('editor');
+          } else if (action === 'pdf-editor') {
+            setEditorReaderMode(false);
+            navigateToView('editor');
+          } else if (action === 'pdf-tools') {
+            setActiveTool('word-to-pdf');
+            navigateToView('tools');
+          }
+        } catch {
+          // Ignore malformed deep link URL
+        }
+      },
+    });
+  }, [
+    activeView,
+    docPendingDelete,
+    docsPendingBatchDelete,
+    navigateToView,
+    openWithPromptDoc,
+    refreshVault,
+  ]);
+
   const handleUpdatePreferences = (next: AppPreferences) => {
     setPreferences(next);
     savePreferences(next);
@@ -314,17 +375,22 @@ export default function App() {
         );
 
         const nowIso = new Date().toISOString();
+        const isNativeWord =
+          converted.sourceFormat === 'docx' || converted.sourceFormat === 'doc';
         const newDoc: StoredDocument = {
           id: duplicateDoc ? duplicateDoc.id : `doc-upload-${Date.now()}-${i}`,
           name: converted.outputPdfName,
           category: duplicateDoc ? duplicateDoc.category : category,
           starred: duplicateDoc ? duplicateDoc.starred : false,
-          sizeBytes: converted.pdfBytes.byteLength,
+          sizeBytes: isNativeWord && converted.originalFileBytes
+            ? converted.originalFileBytes.byteLength
+            : converted.pdfBytes.byteLength,
           pageCount: converted.pageCount,
           createdAt: duplicateDoc ? duplicateDoc.createdAt : nowIso,
           updatedAt: nowIso,
           lastOpenedAt: nowIso,
           pdfData: converted.pdfBytes,
+          originalFileBytes: converted.originalFileBytes,
           ocrText: converted.extractedText,
           rawHtmlContent: converted.rawHtmlContent,
           sourceFormat: converted.sourceFormat,
@@ -441,7 +507,7 @@ export default function App() {
         }
 
         const res = await fetch(
-          `/api/android-open-pdf/${encodeURIComponent(openId)}`
+          resolveApiUrl(`/api/android-open-pdf/${encodeURIComponent(openId)}`)
         );
         if (!res.ok) {
           let errMsg = `Failed to load "${fallbackName}" (status ${res.status}).`;
@@ -622,7 +688,7 @@ export default function App() {
       const serverId = params.get('shared_server_id')!;
       const rawName = params.get('filename') || 'Shared_Document.pdf';
       const mimeType = params.get('mime') || 'application/pdf';
-      fetch(`/api/downloads/${encodeURIComponent(serverId)}`)
+      fetch(resolveApiUrl(`/api/downloads/${encodeURIComponent(serverId)}`))
         .then(async (res) => {
           if (!res.ok) return;
           const blob = await res.blob();
@@ -671,6 +737,12 @@ export default function App() {
     doc: StoredDocument,
     readerMode = false
   ) => {
+    const docFmt = (
+      doc.sourceFormat ||
+      doc.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+      'pdf'
+    ).toLowerCase();
+    const isWordDoc = docFmt === 'docx' || docFmt === 'doc';
     const updated: StoredDocument = {
       ...doc,
       lastOpenedAt: new Date().toISOString(),
@@ -678,7 +750,7 @@ export default function App() {
     await storageService.saveDocument(updated);
     await refreshVault();
     setActiveDocument(updated);
-    setEditorReaderMode(readerMode);
+    setEditorReaderMode(isWordDoc ? true : readerMode);
     navigateToView('editor');
   };
 
@@ -899,16 +971,18 @@ export default function App() {
         // fall back to download
       }
     }
-    selectedDocs.forEach((doc) => downloadBytesAsFile(doc.pdfData, doc.name));
+    selectedDocs.forEach((doc) =>
+      downloadBytesAsFile(doc.originalFileBytes || doc.pdfData, doc.name)
+    );
   };
 
   const handleBatchDownloadDocuments = (selectedDocs: StoredDocument[]) => {
     selectedDocs.forEach((doc, idx) => {
       setTimeout(() => {
-        downloadBytesAsFile(doc.pdfData, doc.name);
+        downloadBytesAsFile(doc.originalFileBytes || doc.pdfData, doc.name);
       }, idx * 180);
     });
-    showToast(`Downloading ${selectedDocs.length} selected PDF(s)...`);
+    showToast(`Downloading ${selectedDocs.length} selected document(s)...`);
   };
 
   const totalStorageBytes = documents.reduce((acc, d) => acc + d.sizeBytes, 0);
@@ -1090,138 +1164,160 @@ export default function App() {
               </button>
             </div>
 
-            <div className="space-y-2 pt-1">
-              <button
-                onClick={() => {
-                  const doc = openWithPromptDoc;
-                  setOpenWithPromptDoc(null);
-                  handleOpenDocumentInEditor(doc, true);
-                }}
-                className="w-full p-3.5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white text-left flex items-center gap-3.5 transition-colors cursor-pointer shadow-xs"
-              >
-                <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
-                  <Eye className="w-5 h-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-sm font-bold">ElimikaPDF Reader</span>
-                    <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold">
-                      RECOMMENDED
-                    </span>
-                  </div>
-                  <p className="text-xs opacity-90 mt-0.5">
-                    Read in full-screen Reader Mode with continuous scroll, zoom & print
-                  </p>
-                </div>
-              </button>
+            {(() => {
+              const promptFmt = (
+                openWithPromptDoc.sourceFormat ||
+                openWithPromptDoc.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+                'pdf'
+              ).toLowerCase();
+              const isPromptWord = promptFmt === 'docx' || promptFmt === 'doc';
+              return (
+                <div className="space-y-2 pt-1">
+                  <button
+                    onClick={() => {
+                      const doc = openWithPromptDoc;
+                      setOpenWithPromptDoc(null);
+                      handleOpenDocumentInEditor(doc, true);
+                    }}
+                    className="w-full p-3.5 rounded-xl bg-[#003FE8] hover:bg-[#0033BA] text-white text-left flex items-center gap-3.5 transition-colors cursor-pointer shadow-xs"
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-white/15 flex items-center justify-center shrink-0">
+                      <Eye className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-sm font-bold">
+                          {isPromptWord
+                            ? `Open Word Document (.${promptFmt.toUpperCase()})`
+                            : 'ElimikaPDF Reader'}
+                        </span>
+                        <span className="px-2 py-0.5 rounded-full bg-white/20 text-[10px] font-bold">
+                          RECOMMENDED
+                        </span>
+                      </div>
+                      <p className="text-xs opacity-90 mt-0.5">
+                        {isPromptWord
+                          ? 'Open directly in native Word layout without converting to PDF'
+                          : 'Read in full-screen Reader Mode with continuous scroll, zoom & print'}
+                      </p>
+                    </div>
+                  </button>
 
-              <button
-                onClick={() => {
-                  const doc = openWithPromptDoc;
-                  setOpenWithPromptDoc(null);
-                  handleOpenDocumentInEditor(doc, false);
-                }}
-                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center justify-center shrink-0">
-                  <FileEdit className="w-5 h-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Edit & Annotate PDF
-                  </span>
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                    Edit text, add signatures, highlight, whiteout & remove watermarks
-                  </p>
-                </div>
-              </button>
+                  {!isPromptWord && (
+                    <button
+                      onClick={() => {
+                        const doc = openWithPromptDoc;
+                        setOpenWithPromptDoc(null);
+                        handleOpenDocumentInEditor(doc, false);
+                      }}
+                      className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-lg bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF] flex items-center justify-center shrink-0">
+                        <FileEdit className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                          Edit & Annotate PDF
+                        </span>
+                        <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                          Edit text, add signatures, highlight, whiteout & remove watermarks
+                        </p>
+                      </div>
+                    </button>
+                  )}
 
-              <button
-                onClick={() => {
-                  const doc = openWithPromptDoc;
-                  setOpenWithPromptDoc(null);
-                  handleOpenToolForDocument(doc, 'html-reader');
-                }}
-                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-lg bg-[#0891B2]/10 text-[#0891B2] flex items-center justify-center shrink-0">
-                  <BookOpen className="w-5 h-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    HTML &amp; eBook Reader (.HTML / .EPUB / .KPF)
-                  </span>
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                    Reflowable eBook &amp; web reader with Paper/Sepia/Night themes, TOC &amp; Read Aloud
-                  </p>
-                </div>
-              </button>
+                  <button
+                    onClick={() => {
+                      const doc = openWithPromptDoc;
+                      setOpenWithPromptDoc(null);
+                      handleOpenToolForDocument(doc, 'html-reader');
+                    }}
+                    className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+                  >
+                    <div className="w-10 h-10 rounded-lg bg-[#0891B2]/10 text-[#0891B2] flex items-center justify-center shrink-0">
+                      <BookOpen className="w-5 h-5" />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                        HTML &amp; eBook Reader (.HTML / .EPUB / .KPF)
+                      </span>
+                      <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                        Reflowable eBook &amp; web reader with Paper/Sepia/Night themes, TOC &amp; Read Aloud
+                      </p>
+                    </div>
+                  </button>
 
-              <button
-                onClick={() => {
-                  const doc = openWithPromptDoc;
-                  setOpenWithPromptDoc(null);
-                  handleOpenToolForDocument(doc, 'pdf-to-word');
-                }}
-                className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
-              >
-                <div className="w-10 h-10 rounded-lg bg-[#2563EB]/10 text-[#2563EB] flex items-center justify-center shrink-0">
-                  <FileOutput className="w-5 h-5" />
+                  {!isPromptWord && (
+                    <button
+                      onClick={() => {
+                        const doc = openWithPromptDoc;
+                        setOpenWithPromptDoc(null);
+                        handleOpenToolForDocument(doc, 'pdf-to-word');
+                      }}
+                      className="w-full p-3 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-3.5 transition-colors cursor-pointer"
+                    >
+                      <div className="w-10 h-10 rounded-lg bg-[#2563EB]/10 text-[#2563EB] flex items-center justify-center shrink-0">
+                        <FileOutput className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                          Convert PDF to Word (.DOCX)
+                        </span>
+                        <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
+                          Turn this PDF into an editable Microsoft Word document
+                        </p>
+                      </div>
+                    </button>
+                  )}
+
+                  {!isPromptWord && (
+                    <div className="grid grid-cols-3 gap-2 pt-1">
+                      <button
+                        onClick={() => {
+                          const doc = openWithPromptDoc;
+                          setOpenWithPromptDoc(null);
+                          handleOpenToolForDocument(doc, 'word-to-pdf');
+                        }}
+                        className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <FileText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                        <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                          Word Studio
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          const doc = openWithPromptDoc;
+                          setOpenWithPromptDoc(null);
+                          handleOpenToolForDocument(doc, 'ocr-pdf');
+                        }}
+                        className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <ScanText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                        <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                          OCR Text
+                        </span>
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          const doc = openWithPromptDoc;
+                          setOpenWithPromptDoc(null);
+                          handleOpenToolForDocument(doc, 'split-pdf');
+                        }}
+                        className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
+                      >
+                        <Scissors className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
+                        <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                          Split PDF
+                        </span>
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div className="min-w-0 flex-1">
-                  <span className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8]">
-                    Convert PDF to Word (.DOCX)
-                  </span>
-                  <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-0.5">
-                    Turn this PDF into an editable Microsoft Word document
-                  </p>
-                </div>
-              </button>
-
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <button
-                  onClick={() => {
-                    const doc = openWithPromptDoc;
-                    setOpenWithPromptDoc(null);
-                    handleOpenToolForDocument(doc, 'word-to-pdf');
-                  }}
-                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
-                >
-                  <FileText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
-                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
-                    Word Studio
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    const doc = openWithPromptDoc;
-                    setOpenWithPromptDoc(null);
-                    handleOpenToolForDocument(doc, 'ocr-pdf');
-                  }}
-                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
-                >
-                  <ScanText className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
-                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
-                    OCR Text
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    const doc = openWithPromptDoc;
-                    setOpenWithPromptDoc(null);
-                    handleOpenToolForDocument(doc, 'split-pdf');
-                  }}
-                  className="p-2.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] border border-[#E4DFEC] dark:border-[#261F33] text-left flex items-center gap-2 transition-colors cursor-pointer"
-                >
-                  <Scissors className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF] shrink-0" />
-                  <span className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
-                    Split PDF
-                  </span>
-                </button>
-              </div>
-            </div>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -1242,7 +1338,7 @@ export default function App() {
           }}
           onToggleStar={handleToggleStar}
           onDownloadDocument={(doc) =>
-            downloadBytesAsFile(doc.pdfData, doc.name)
+            downloadBytesAsFile(doc.originalFileBytes || doc.pdfData, doc.name)
           }
           onRequestDeleteDocument={(doc) => setDocPendingDelete(doc)}
           onRequestBatchDeleteDocuments={(docs) =>
@@ -1308,7 +1404,7 @@ export default function App() {
           onAssignFolder={handleAssignFolder}
           onChangeCategory={handleChangeCategory}
           onDownloadDocument={(doc) =>
-            downloadBytesAsFile(doc.pdfData, doc.name)
+            downloadBytesAsFile(doc.originalFileBytes || doc.pdfData, doc.name)
           }
           onRequestDeleteDocument={(doc) => setDocPendingDelete(doc)}
           onRequestBatchDeleteDocuments={(docs) =>

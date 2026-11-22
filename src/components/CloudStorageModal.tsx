@@ -15,6 +15,7 @@ import {
   CheckCircle2,
   FolderOpen,
 } from 'lucide-react';
+import { resolveApiUrl } from '../services/capacitorBridge';
 import {
   CloudFileEntry,
   GoogleAccountProfile,
@@ -200,7 +201,7 @@ export const CloudStorageModal: React.FC<CloudStorageModalProps> = ({
     try {
       const origin = window.location.origin;
       const res = await fetch(
-        `/api/dropbox/auth-url?origin=${encodeURIComponent(origin)}`
+        resolveApiUrl(`/api/dropbox/auth-url?origin=${encodeURIComponent(origin)}`)
       );
       const data = (await res.json()) as {
         configured?: boolean;

@@ -62,7 +62,7 @@ export const Layout: React.FC<LayoutProps> = ({
     <div className="min-h-screen flex flex-col bg-[#FAF9FB] dark:bg-[#0D0A12] text-[#14101B] dark:text-[#F4F1F8] transition-colors duration-150">
       {/* Single Sticky Top Navbar (hidden only when inside full-screen PDF Editor canvas) */}
       {activeView !== 'editor' && (
-        <header className="sticky top-0 z-50 w-full bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33]">
+        <header className="sticky top-0 z-50 w-full safe-area-top bg-white/95 dark:bg-[#16111F]/95 backdrop-blur-md border-b border-[#E4DFEC] dark:border-[#261F33]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
             {/* Left Side: ONE ElimikaPDF Logo & Brand Title (+ Back button when inside a sub-view) */}
             <div className="flex items-center gap-3 min-w-0">

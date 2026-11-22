@@ -39,6 +39,10 @@ import {
   createPdfFromImages,
   downloadBytesAsFile,
 } from '../services/pdfService';
+import {
+  capturePhotoWithNativeCamera,
+  isNativeApp,
+} from '../services/capacitorBridge';
 
 interface ScannerViewProps {
   initialImportedFiles?: FileList | File[] | null;
@@ -1050,6 +1054,22 @@ export const ScannerView: React.FC<ScannerViewProps> = ({
                   )}
 
                   <div className="flex flex-wrap items-center justify-center gap-3">
+                    {isNativeApp() && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const dataUrl = await capturePhotoWithNativeCamera('camera');
+                          if (dataUrl) {
+                            await ingestDataUrlAsPage(dataUrl);
+                          }
+                        }}
+                        className="px-5 py-3 rounded-lg bg-[#003FE8] hover:bg-[#0033BA] text-white font-semibold text-sm flex items-center gap-2 cursor-pointer"
+                      >
+                        <Camera className="w-4 h-4" />
+                        <span>Native Camera Scan</span>
+                      </button>
+                    )}
+
                     <button
                       onClick={() => startCamera()}
                       className="px-5 py-3 rounded-lg bg-[#4A1D5E] hover:bg-[#3B174B] dark:bg-[#9D5CE5] dark:hover:bg-[#8B47D6] text-white dark:text-[#0D0A12] font-semibold text-sm flex items-center gap-2 cursor-pointer"

@@ -132,6 +132,7 @@ export interface StoredDocument {
   ocrText?: string;
   sourceFormat?: string; // e.g., 'pdf' | 'html' | 'epub' | 'kpf' | 'docx' | 'xlsx' | 'pptx' | 'odt'
   rawHtmlContent?: string; // Rich HTML representation for HTML & eBook Reader mode
+  originalFileBytes?: Uint8Array; // Original uploaded binary bytes for native non-PDF formats (e.g. .docx, .doc)
   isProtected?: boolean;
   protectionHint?: string;
 }

@@ -310,7 +310,7 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
             <span>Open File</span>
             <input
               type="file"
-              accept={SUPPORTED_DOCUMENT_ACCEPT}
+              accept="*/*"
               multiple
               className="hidden"
               onChange={(e) => {
@@ -522,9 +522,19 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
           {filteredDocs.map((doc, idx) => {
             const isRenaming = renamingDocId === doc.id;
             const thumbSrc = doc.thumbnailDataUrl || thumbnailsMap[doc.id];
-            const displayTitle = doc.name.replace(/\.pdf$/i, '');
+            const docFmt = (
+              doc.sourceFormat ||
+              doc.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
+              'pdf'
+            ).toLowerCase();
+            const isWordDoc = docFmt === 'docx' || docFmt === 'doc';
+            const isPdfDoc = docFmt === 'pdf';
+            const displayTitle = isPdfDoc
+              ? doc.name.replace(/\.pdf$/i, '')
+              : doc.name.replace(/\.pdf$/i, `.${docFmt}`);
             const isMenuOpen = openMenuDocId === doc.id;
-            const showPdfBadge = doc.category !== 'Scans' && idx % 3 === 1;
+            const showPdfBadge =
+              isPdfDoc && doc.category !== 'Scans' && idx % 3 === 1;
             const isSelected = selectedDocIds.includes(doc.id);
             const selectionOrder = selectedDocIds.indexOf(doc.id) + 1;
 
@@ -647,16 +657,25 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                         <span className="inline-flex items-center justify-center min-w-[20px] h-5 px-1 rounded-[5px] border border-[#7B8394]/80 text-[11px] font-semibold text-[#5E6675] dark:text-[#A39BB5] tabular-nums">
                           {doc.pageCount}
                         </span>
-                        {showPdfBadge ? (
-                          <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#E53935] text-white text-[9px] font-extrabold tracking-tight">
-                            PDF
-                          </span>
+                        {isPdfDoc ? (
+                          showPdfBadge ? (
+                            <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#E53935] text-white text-[9px] font-extrabold tracking-tight">
+                              PDF
+                            </span>
+                          ) : (
+                            <>
+                              <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] border border-[#C62828]/80 text-[11px] font-bold text-[#B71C1C] dark:text-[#F87171]">
+                                N
+                              </span>
+                              <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
+                            </>
+                          )
                         ) : (
                           <>
-                            <span className="inline-flex items-center justify-center w-5 h-5 rounded-[5px] border border-[#C62828]/80 text-[11px] font-bold text-[#B71C1C] dark:text-[#F87171]">
-                              N
+                            <FileText className="w-4 h-4 text-[#2563EB] shrink-0" />
+                            <span className="inline-flex items-center justify-center px-1.5 h-5 rounded-[5px] bg-[#2563EB] text-white text-[9px] font-extrabold uppercase tracking-tight">
+                              {docFmt}
                             </span>
-                            <FileText className="w-4 h-4 text-[#0088FF] shrink-0" />
                           </>
                         )}
                         {doc.starred && (
@@ -710,28 +729,44 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                       <CheckSquare className="w-4 h-4" />
                       <span>Select / Multi-Select</span>
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenMenuDocId(null);
-                        onOpenInEditor(doc, false);
-                      }}
-                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
-                    >
-                      <FileEdit className="w-4 h-4 text-[#0088FF]" />
-                      <span>Open / Edit PDF</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setOpenMenuDocId(null);
-                        onOpenInEditor(doc, true);
-                      }}
-                      className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
-                    >
-                      <Eye className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
-                      <span>Read Mode</span>
-                    </button>
+                    {isWordDoc ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOpenMenuDocId(null);
+                          onOpenInEditor(doc, true);
+                        }}
+                        className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#2563EB] dark:text-[#60A5FA] cursor-pointer"
+                      >
+                        <FileText className="w-4 h-4 text-[#2563EB]" />
+                        <span>Open Word Document</span>
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpenMenuDocId(null);
+                            onOpenInEditor(doc, false);
+                          }}
+                          className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] font-semibold text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                        >
+                          <FileEdit className="w-4 h-4 text-[#0088FF]" />
+                          <span>Open / Edit PDF</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setOpenMenuDocId(null);
+                            onOpenInEditor(doc, true);
+                          }}
+                          className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
+                        >
+                          <Eye className="w-4 h-4 text-[#4A1D5E] dark:text-[#D5B3FF]" />
+                          <span>Read Mode</span>
+                        </button>
+                      </>
+                    )}
                     <button
                       type="button"
                       onClick={() => {
@@ -770,7 +805,7 @@ export const DocumentsLibraryView: React.FC<DocumentsLibraryViewProps> = ({
                       className="w-full px-3.5 py-2 text-left flex items-center gap-2.5 hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-[#14101B] dark:text-[#F4F1F8] cursor-pointer"
                     >
                       <Download className="w-4 h-4 text-[#15803D]" />
-                      <span>Download PDF</span>
+                      <span>{isWordDoc ? 'Download Word File' : 'Download PDF'}</span>
                     </button>
                     <div className="my-1 border-t border-[#E4DFEC] dark:border-[#342A45]" />
                     <button
