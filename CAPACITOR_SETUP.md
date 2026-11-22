@@ -62,18 +62,17 @@ npm run cap:open:ios
 
 ### Step D — Native Permissions Checklist
 
-#### Android (`android/app/src/main/AndroidManifest.xml`)
-Ensure these permissions are declared inside `<manifest>`:
+#### Android — Built-in "Open with ElimikaPDF" & "Share to ElimikaPDF"
+Running `npm run cap:add:android` or `npm run cap:sync` automatically executes `scripts/setup-android-open-with.mjs`, which configures:
 
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
-<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
-```
-
-You can also merge the `<intent-filter>` blocks from `android-twa-integration/AndroidManifest.xml` into `MainActivity` to appear in Android's **"Open with ElimikaPDF"** menu for `.pdf`, `.docx`, `.doc`, `.epub`, `.kpf`, and `.html` files.
+1. **`android/app/src/main/AndroidManifest.xml`**:
+   - Sets `MainActivity` to `android:launchMode="singleTask"` so opening a new file while ElimikaPDF is already running loads directly without spawning duplicate windows.
+   - Registers **`ACTION_VIEW` ("Open with ElimikaPDF")** for `content://` and `file://` URIs across **PDF (`.pdf`), Word (`.docx`, `.doc`), ODT/RTF, eBooks (`.epub`, `.kpf`, `.mobi`, `.azw3`, `.fb2`), HTML, Text/Markdown, and Images (`.jpg`, `.png`, `.webp`)** — including a file-extension fallback for Android file managers that emit `application/octet-stream` or `*/*`.
+   - Registers **`ACTION_SEND` ("Share to ElimikaPDF")** so files can be sent directly from WhatsApp, Gmail, Google Drive, Telegram, Chrome Downloads, and Gallery.
+   - Declares `CAMERA`, `READ_MEDIA_IMAGES`, and legacy storage permissions.
+2. **`android/app/src/main/java/app/elimikapdf/studio/MainActivity.java`**:
+   - Reads incoming `content://` and `file://` URIs **100% offline** via Android's `ContentResolver` on a background thread.
+   - Passes the bytes, original filename (`OpenableColumns.DISPLAY_NAME`), and MIME type directly to the web app via `window.ElimikaAndroidBridge`, opening the file immediately in Reading Mode on both cold-start and warm-start.
 
 #### iOS (`ios/App/App/Info.plist`)
 Add the standard Apple privacy usage descriptions:

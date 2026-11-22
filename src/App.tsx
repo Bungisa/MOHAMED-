@@ -23,6 +23,7 @@ import {
 import { formatBytes } from './services/storageService';
 import { convertAnyUploadedFileToPdfAndHtml } from './services/advancedPdfToolsService';
 import {
+  consumeNativeAndroidOpenWithFile,
   initCapacitorRuntime,
   resolveApiUrl,
   syncNativeStatusBarTheme,
@@ -286,7 +287,15 @@ export default function App() {
         }
         return false;
       },
+      onAppResume: () => {
+        window.dispatchEvent(new CustomEvent('elimikapdf:android-open-pdf'));
+      },
       onDeepLinkUrl: (rawUrl: string) => {
+        if (rawUrl.startsWith('content://') || rawUrl.startsWith('file://')) {
+          // Handled natively by MainActivity's ElimikaAndroidBridge ContentResolver
+          window.dispatchEvent(new CustomEvent('elimikapdf:android-open-pdf'));
+          return;
+        }
         try {
           const parsed = new URL(rawUrl);
           const action = parsed.searchParams.get('action');
@@ -451,12 +460,70 @@ export default function App() {
       }
     };
 
+    const inferExtFromMime = (mime?: string): string => {
+      const m = (mime || '').toLowerCase().split(';')[0].trim();
+      const map: Record<string, string> = {
+        'application/pdf': '.pdf',
+        'application/x-pdf': '.pdf',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx',
+        'application/msword': '.doc',
+        'application/vnd.oasis.opendocument.text': '.odt',
+        'application/rtf': '.rtf',
+        'text/rtf': '.rtf',
+        'application/epub+zip': '.epub',
+        'application/x-mobipocket-ebook': '.mobi',
+        'application/x-fictionbook+xml': '.fb2',
+        'text/html': '.html',
+        'application/xhtml+xml': '.xhtml',
+        'text/plain': '.txt',
+        'text/markdown': '.md',
+        'image/jpeg': '.jpg',
+        'image/png': '.png',
+        'image/webp': '.webp',
+      };
+      return map[m] || '.pdf';
+    };
+
+    const inferMimeFromFilename = (name: string, fallbackMime?: string): string => {
+      if (fallbackMime && fallbackMime !== 'application/octet-stream' && fallbackMime !== '*/*') {
+        return fallbackMime;
+      }
+      const ext = name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] || '';
+      const map: Record<string, string> = {
+        pdf: 'application/pdf',
+        docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        doc: 'application/msword',
+        odt: 'application/vnd.oasis.opendocument.text',
+        rtf: 'application/rtf',
+        epub: 'application/epub+zip',
+        kpf: 'application/octet-stream',
+        mobi: 'application/x-mobipocket-ebook',
+        azw3: 'application/octet-stream',
+        fb2: 'application/x-fictionbook+xml',
+        html: 'text/html',
+        htm: 'text/html',
+        xhtml: 'application/xhtml+xml',
+        txt: 'text/plain',
+        md: 'text/markdown',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        png: 'image/png',
+        webp: 'image/webp',
+      };
+      return map[ext] || fallbackMime || 'application/octet-stream';
+    };
+
     const decodeBase64PdfAndOpen = async (
       base64Data: string,
-      filename = 'Android_Document.pdf'
+      filename = 'Android_Document.pdf',
+      mimeType?: string
     ) => {
       if (!base64Data) return;
-      setExternalPdfLoadingLabel(`Opening "${filename}" in ElimikaPDF Reader...`);
+      const safeName = filename.includes('.')
+        ? filename
+        : `${filename}${inferExtFromMime(mimeType)}`;
+      const resolvedMime = inferMimeFromFilename(safeName, mimeType);
+      setExternalPdfLoadingLabel(`Opening "${safeName}" in ElimikaPDF Reader...`);
       try {
         const cleanBase64 = base64Data.includes(',')
           ? base64Data.split(',')[1]
@@ -466,16 +533,14 @@ export default function App() {
         for (let i = 0; i < binaryStr.length; i++) {
           bytes[i] = binaryStr.charCodeAt(i);
         }
-        // Preserve original extension (.epub, .kpf, .html, .docx, .pdf, etc.)
-        const safeName = filename.includes('.') ? filename : `${filename}.pdf`;
         const file = new File([bytes], safeName, {
-          type: 'application/octet-stream',
+          type: resolvedMime,
         });
         await openExternalPdfDirectlyInReader([file], 'Android Open With');
       } catch {
         setExternalPdfLoadingLabel(null);
         showToast(
-          `Could not read "${filename}" from Android URI. The file may be corrupted or unreadable.`,
+          `Could not read "${safeName}" from Android URI. The file may be corrupted or unreadable.`,
           'error'
         );
       }
@@ -547,8 +612,14 @@ export default function App() {
         hasPendingPdf?: () => boolean;
         consumePendingPdfBase64?: () => string;
         getPendingPdfFilename?: () => string;
+        getPendingPdfMimeType?: () => string;
+        consumePendingError?: () => string;
       };
-      receiveAndroidPdfBase64?: (base64: string, filename?: string) => void;
+      receiveAndroidPdfBase64?: (
+        base64: string,
+        filename?: string,
+        mimeType?: string
+      ) => void;
       launchQueue?: {
         setConsumer: (
           consumer: (launchParams: {
@@ -559,14 +630,39 @@ export default function App() {
     };
 
     // Expose global callback for Android WebView.evaluateJavascript("window.receiveAndroidPdfBase64(...)")
-    win.receiveAndroidPdfBase64 = (base64: string, filename?: string) => {
-      decodeBase64PdfAndOpen(base64, filename || 'Android_Document.pdf');
+    win.receiveAndroidPdfBase64 = (
+      base64: string,
+      filename?: string,
+      mimeType?: string
+    ) => {
+      decodeBase64PdfAndOpen(base64, filename || 'Android_Document.pdf', mimeType);
     };
 
-    const checkNativeAndroidBridge = () => {
+    const checkNativeAndroidBridge = async () => {
       try {
+        // 1a. Native Capacitor Android plugin (ElimikaOpenWithPlugin in MainActivity.java)
+        const nativeRes = await consumeNativeAndroidOpenWithFile();
+        if (nativeRes?.error) {
+          showToast(nativeRes.error, 'error');
+        }
+        if (nativeRes?.hasFile && nativeRes.base64) {
+          await decodeBase64PdfAndOpen(
+            nativeRes.base64,
+            nativeRes.filename || 'Android_Document.pdf',
+            nativeRes.mimeType
+          );
+          return;
+        }
+
+        // 1b. Legacy WebView JavascriptInterface fallback (TWA / custom Android WebView)
+        if (!win.ElimikaAndroidBridge) return;
+        if (typeof win.ElimikaAndroidBridge.consumePendingError === 'function') {
+          const errText = win.ElimikaAndroidBridge.consumePendingError();
+          if (errText) {
+            showToast(errText, 'error');
+          }
+        }
         if (
-          win.ElimikaAndroidBridge &&
           typeof win.ElimikaAndroidBridge.hasPendingPdf === 'function' &&
           win.ElimikaAndroidBridge.hasPendingPdf()
         ) {
@@ -574,13 +670,17 @@ export default function App() {
             typeof win.ElimikaAndroidBridge.getPendingPdfFilename === 'function'
               ? win.ElimikaAndroidBridge.getPendingPdfFilename()
               : 'Android_Document.pdf';
+          const mimeType =
+            typeof win.ElimikaAndroidBridge.getPendingPdfMimeType === 'function'
+              ? win.ElimikaAndroidBridge.getPendingPdfMimeType()
+              : undefined;
           const b64 =
             typeof win.ElimikaAndroidBridge.consumePendingPdfBase64 ===
             'function'
               ? win.ElimikaAndroidBridge.consumePendingPdfBase64()
               : '';
           if (b64) {
-            decodeBase64PdfAndOpen(b64, filename);
+            await decodeBase64PdfAndOpen(b64, filename, mimeType);
           }
         }
       } catch {
@@ -588,20 +688,23 @@ export default function App() {
       }
     };
 
-    // Check immediately on cold start
+    // Check immediately on cold start (and retry briefly in case background ContentResolver read finishes right after WebView mount)
     checkNativeAndroidBridge();
+    const coldStartRetryTimer = window.setTimeout(checkNativeAndroidBridge, 450);
 
     // Listen for warm-start custom event dispatched by Android Activity.onNewIntent
     const onAndroidIntentEvent = (e: Event) => {
       const customEvt = e as CustomEvent<{
         base64?: string;
         filename?: string;
+        mimeType?: string;
         openId?: string;
       }>;
       if (customEvt.detail?.base64) {
         decodeBase64PdfAndOpen(
           customEvt.detail.base64,
-          customEvt.detail.filename || 'Android_Document.pdf'
+          customEvt.detail.filename || 'Android_Document.pdf',
+          customEvt.detail.mimeType
         );
       } else if (customEvt.detail?.openId) {
         fetchAndroidOpenIdAndOpen(
@@ -701,6 +804,7 @@ export default function App() {
     }
 
     return () => {
+      window.clearTimeout(coldStartRetryTimer);
       window.removeEventListener(
         'elimikapdf:android-open-pdf',
         onAndroidIntentEvent

@@ -1,4 +1,4 @@
-import { Capacitor } from '@capacitor/core';
+import { Capacitor, registerPlugin } from '@capacitor/core';
 import { App as CapacitorApp } from '@capacitor/app';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { Directory, Filesystem } from '@capacitor/filesystem';
@@ -8,6 +8,34 @@ import { SplashScreen } from '@capacitor/splash-screen';
 import { StatusBar, Style } from '@capacitor/status-bar';
 
 export type RuntimePlatform = 'android' | 'ios' | 'web';
+
+export interface NativeOpenWithResult {
+  hasFile: boolean;
+  base64?: string;
+  filename?: string;
+  mimeType?: string;
+  error?: string;
+}
+
+interface ElimikaOpenWithPluginInterface {
+  consumePendingFile(): Promise<NativeOpenWithResult>;
+}
+
+const ElimikaOpenWith =
+  registerPlugin<ElimikaOpenWithPluginInterface>('ElimikaOpenWith');
+
+/**
+ * Checks the native Android Capacitor plugin (`ElimikaOpenWith`) for a pending file
+ * launched via Android's "Open with ElimikaPDF" (ACTION_VIEW) or "Share to ElimikaPDF" (ACTION_SEND).
+ */
+export async function consumeNativeAndroidOpenWithFile(): Promise<NativeOpenWithResult | null> {
+  if (!isNativeApp() || getRuntimePlatform() !== 'android') return null;
+  try {
+    return await ElimikaOpenWith.consumePendingFile();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Returns true when ElimikaPDF is running inside a native Capacitor Android or iOS shell.
@@ -111,11 +139,12 @@ export async function syncNativeStatusBarTheme(isDark: boolean): Promise<void> {
 export interface CapacitorInitCallbacks {
   onBackButton?: () => boolean; // Return true if handled in-app, false to minimize/exit
   onDeepLinkUrl?: (url: string) => void;
+  onAppResume?: () => void;
 }
 
 /**
  * Bootstraps native Capacitor runtime hooks (platform CSS classes, SplashScreen handoff,
- * hardware Back button, and deep links). Safe no-op when running on Web.
+ * hardware Back button, app resume, and deep links). Safe no-op when running on Web.
  */
 export function initCapacitorRuntime(
   callbacks: CapacitorInitCallbacks = {}
@@ -151,6 +180,21 @@ export function initCapacitorRuntime(
       }
     );
     removers.push(backListener);
+  }
+
+  if (callbacks.onAppResume) {
+    const stateListener = CapacitorApp.addListener(
+      'appStateChange',
+      ({ isActive }) => {
+        if (isActive) {
+          callbacks.onAppResume?.();
+        }
+      }
+    );
+    const resumeListener = CapacitorApp.addListener('resume', () => {
+      callbacks.onAppResume?.();
+    });
+    removers.push(stateListener, resumeListener);
   }
 
   if (callbacks.onDeepLinkUrl) {
