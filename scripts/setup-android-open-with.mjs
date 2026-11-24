@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 /**
- * Configures the Capacitor Android project (`android/`) so ElimikaPDF appears in
- * Android's system "Open with" chooser (ACTION_VIEW) and "Share to" sheet (ACTION_SEND)
- * for PDF, Word (.docx/.doc), eBooks (.epub/.kpf/.mobi/.fb2), HTML, Text, and Images.
+ * Configures the Capacitor Android project (`android/`) for clean production release builds:
+ * 1. Android's system "Open with" chooser (ACTION_VIEW), "Share to" sheet (ACTION_SEND),
+ *    and Multi-file Share (ACTION_SEND_MULTIPLE) for PDF, Word (.docx/.doc), eBooks
+ *    (.epub/.kpf/.mobi/.fb2), HTML, Text, and Images — using separate valid `<intent-filter>`
+ *    blocks (without `CATEGORY_BROWSABLE` on file/content schemes and with `pathSuffix` +
+ *    `pathPattern` for Android 10–16 file managers).
+ * 2. Offline native ContentResolver plugin (`ElimikaOpenWithPlugin.java` + `MainActivity.java`)
+ *    plus dual `@JavascriptInterface` (`window.ElimikaAndroidBridge`) so cold-start and warm-start
+ *    file launches always open immediately in Reader Mode.
+ * 3. Synchronizes package namespace & Java directory (`com.elimikapdf.www.twa`), release signing
+ *    support, R8 shrinking, and ProGuard keep rules.
  *
- * Safe & idempotent: can be re-run on every `npm run cap:sync`.
+ * Safe & idempotent: runs automatically on `npm run cap:add:android`, `npm run cap:sync`, and `npm run android:init`.
  */
 
 import fs from 'node:fs';
@@ -19,18 +27,34 @@ const MANIFEST_PATH = path.join(
   'main',
   'AndroidManifest.xml'
 );
-const JAVA_PACKAGE_DIR = path.join(
+const BUILD_GRADLE_PATH = path.join(ANDROID_DIR, 'app', 'build.gradle');
+const STRINGS_XML_PATH = path.join(
   ANDROID_DIR,
   'app',
   'src',
   'main',
-  'java',
-  'app',
-  'elimikapdf',
-  'studio'
+  'res',
+  'values',
+  'strings.xml'
 );
+const PROGUARD_PATH = path.join(ANDROID_DIR, 'app', 'proguard-rules.pro');
+
+const TARGET_PACKAGE = 'com.elimikapdf.www.twa';
+const JAVA_MAIN_ROOT = path.join(ANDROID_DIR, 'app', 'src', 'main', 'java');
+const JAVA_PACKAGE_DIR = path.join(
+  JAVA_MAIN_ROOT,
+  'com',
+  'elimikapdf',
+  'www',
+  'twa'
+);
+const LEGACY_JAVA_APP_DIR = path.join(JAVA_MAIN_ROOT, 'app');
+
 const MAIN_ACTIVITY_PATH = path.join(JAVA_PACKAGE_DIR, 'MainActivity.java');
-const PLUGIN_PATH = path.join(JAVA_PACKAGE_DIR, 'ElimikaOpenWithPlugin.java');
+const OPEN_WITH_PLUGIN_PATH = path.join(
+  JAVA_PACKAGE_DIR,
+  'ElimikaOpenWithPlugin.java'
+);
 
 if (!fs.existsSync(ANDROID_DIR) || !fs.existsSync(MANIFEST_PATH)) {
   console.log(
@@ -47,11 +71,11 @@ const PERMISSIONS_BLOCK = `    <!-- ELIMIKAPDF_PERMISSIONS_START -->
     <!-- ELIMIKAPDF_PERMISSIONS_END -->`;
 
 const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
-            <!-- 1. Open With ElimikaPDF (ACTION_VIEW by MIME type for PDF, Word, eBooks, HTML, Text & Images) -->
-            <intent-filter android:label="Open with ElimikaPDF">
+            <!-- 1. Open With ElimikaPDF — Primary PDF Filter (content:// & file:// without BROWSABLE so Android always shows ElimikaPDF in Open With) -->
+            <intent-filter android:label="ElimikaPDF" android:priority="999">
                 <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
                 <data android:mimeType="application/pdf" />
@@ -59,11 +83,30 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:mimeType="application/acrobat" />
                 <data android:mimeType="application/vnd.pdf" />
                 <data android:mimeType="text/pdf" />
+                <data android:mimeType="text/x-pdf" />
+            </intent-filter>
+
+            <!-- 2. Open With ElimikaPDF — Microsoft Word (.docx / .doc), ODT, RTF -->
+            <intent-filter android:label="ElimikaPDF">
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="android.intent.action.EDIT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:mimeType="application/msword" />
+                <data android:mimeType="application/vnd.ms-word" />
                 <data android:mimeType="application/vnd.oasis.opendocument.text" />
                 <data android:mimeType="application/rtf" />
                 <data android:mimeType="text/rtf" />
+            </intent-filter>
+
+            <!-- 3. Open With ElimikaPDF — eBooks (.epub / .kpf / .mobi / .fb2), HTML, Text & Images -->
+            <intent-filter android:label="ElimikaPDF">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
                 <data android:mimeType="application/epub+zip" />
                 <data android:mimeType="application/x-mobipocket-ebook" />
                 <data android:mimeType="application/vnd.amazon.ebook" />
@@ -77,15 +120,43 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:mimeType="image/webp" />
             </intent-filter>
 
-            <!-- 2. Open With ElimikaPDF fallback by file extension (handles file managers sending application/octet-stream or */*) -->
-            <intent-filter android:label="Open with ElimikaPDF">
+            <!-- 4. Open With ElimikaPDF — Generic application/octet-stream (WhatsApp, Telegram, Downloads & third-party File Managers) -->
+            <intent-filter android:label="ElimikaPDF">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="application/octet-stream" />
+            </intent-filter>
+
+            <!-- 5. Open With ElimikaPDF — Wildcard MIME + File Extension matching (pathSuffix + pathPattern for file:// and content://) -->
+            <intent-filter android:label="ElimikaPDF">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
                 <data android:host="*" />
                 <data android:mimeType="*/*" />
+                <data android:pathSuffix=".pdf" />
+                <data android:pathSuffix=".PDF" />
+                <data android:pathSuffix=".docx" />
+                <data android:pathSuffix=".DOCX" />
+                <data android:pathSuffix=".doc" />
+                <data android:pathSuffix=".DOC" />
+                <data android:pathSuffix=".odt" />
+                <data android:pathSuffix=".rtf" />
+                <data android:pathSuffix=".epub" />
+                <data android:pathSuffix=".EPUB" />
+                <data android:pathSuffix=".kpf" />
+                <data android:pathSuffix=".KPF" />
+                <data android:pathSuffix=".mobi" />
+                <data android:pathSuffix=".azw3" />
+                <data android:pathSuffix=".fb2" />
+                <data android:pathSuffix=".html" />
+                <data android:pathSuffix=".htm" />
+                <data android:pathSuffix=".xhtml" />
+                <data android:pathSuffix=".txt" />
+                <data android:pathSuffix=".md" />
                 <data android:pathPattern=".*\\.pdf" />
                 <data android:pathPattern=".*\\..*\\.pdf" />
                 <data android:pathPattern=".*\\..*\\..*\\.pdf" />
@@ -96,27 +167,42 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:pathPattern=".*\\.DOCX" />
                 <data android:pathPattern=".*\\.doc" />
                 <data android:pathPattern=".*\\.DOC" />
-                <data android:pathPattern=".*\\.odt" />
-                <data android:pathPattern=".*\\.rtf" />
                 <data android:pathPattern=".*\\.epub" />
-                <data android:pathPattern=".*\\.EPUB" />
                 <data android:pathPattern=".*\\.kpf" />
-                <data android:pathPattern=".*\\.KPF" />
-                <data android:pathPattern=".*\\.mobi" />
-                <data android:pathPattern=".*\\.azw3" />
-                <data android:pathPattern=".*\\.fb2" />
                 <data android:pathPattern=".*\\.html" />
-                <data android:pathPattern=".*\\.htm" />
-                <data android:pathPattern=".*\\.xhtml" />
                 <data android:pathPattern=".*\\.txt" />
-                <data android:pathPattern=".*\\.md" />
             </intent-filter>
 
-            <!-- 3. Share to ElimikaPDF (ACTION_SEND from WhatsApp, Gmail, Drive, Downloads, Gallery) -->
-            <intent-filter android:label="Open in ElimikaPDF">
+            <!-- 6. Open With ElimikaPDF — Direct file:// path matching without MIME type (legacy Android file managers) -->
+            <intent-filter android:label="ElimikaPDF">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="file" />
+                <data android:host="*" />
+                <data android:pathSuffix=".pdf" />
+                <data android:pathSuffix=".PDF" />
+                <data android:pathSuffix=".docx" />
+                <data android:pathSuffix=".DOCX" />
+                <data android:pathSuffix=".doc" />
+                <data android:pathSuffix=".DOC" />
+                <data android:pathSuffix=".epub" />
+                <data android:pathSuffix=".kpf" />
+                <data android:pathPattern=".*\\.pdf" />
+                <data android:pathPattern=".*\\.PDF" />
+                <data android:pathPattern=".*\\.docx" />
+                <data android:pathPattern=".*\\.DOCX" />
+                <data android:pathPattern=".*\\.doc" />
+                <data android:pathPattern=".*\\.epub" />
+                <data android:pathPattern=".*\\.kpf" />
+            </intent-filter>
+
+            <!-- 7. Share to ElimikaPDF (ACTION_SEND & ACTION_SEND_MULTIPLE from WhatsApp, Gmail, Drive, Files, Gallery) -->
+            <intent-filter android:label="ElimikaPDF">
                 <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/pdf" />
+                <data android:mimeType="application/x-pdf" />
                 <data android:mimeType="application/vnd.openxmlformats-officedocument.wordprocessingml.document" />
                 <data android:mimeType="application/msword" />
                 <data android:mimeType="application/vnd.oasis.opendocument.text" />
@@ -124,9 +210,7 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:mimeType="application/epub+zip" />
                 <data android:mimeType="text/html" />
                 <data android:mimeType="text/plain" />
-                <data android:mimeType="image/jpeg" />
-                <data android:mimeType="image/png" />
-                <data android:mimeType="image/webp" />
+                <data android:mimeType="image/*" />
                 <data android:mimeType="application/octet-stream" />
             </intent-filter>
             <!-- ELIMIKAPDF_OPEN_WITH_END -->`;
@@ -137,7 +221,7 @@ function patchAndroidManifest() {
   // 1. Ensure MainActivity uses singleTask launchMode so warm-start "Open with" invokes onNewIntent()
   if (!/android:launchMode=/.test(xml)) {
     xml = xml.replace(
-      /(<activity[\s\S]*?android:name="\.MainActivity")/,
+      /(<activity[\s\S]*?android:name="[^"]*MainActivity")/,
       '$1\n            android:launchMode="singleTask"'
     );
   } else {
@@ -146,6 +230,12 @@ function patchAndroidManifest() {
       'android:launchMode="singleTask"'
     );
   }
+
+  // Ensure android:name=".MainActivity"
+  xml = xml.replace(
+    /android:name="[^"]*MainActivity"/,
+    'android:name=".MainActivity"'
+  );
 
   // 2. Inject or update ElimikaPDF Open With intent filters inside MainActivity
   const intentMarkerRegex =
@@ -167,7 +257,13 @@ function patchAndroidManifest() {
       xml.slice(mainActivityCloseIdx);
   }
 
-  // 3. Inject or update permissions before </manifest>
+  // 3. Remove any previous AdMob meta-data block so release has no ad declarations
+  xml = xml.replace(
+    /\n?[ \t]*<!-- ELIMIKAPDF_ADMOB_META_START -->[\s\S]*?<!-- ELIMIKAPDF_ADMOB_META_END -->\n?/g,
+    '\n'
+  );
+
+  // 4. Inject or update permissions before </manifest>
   const permMarkerRegex =
     /[ \t]*<!-- ELIMIKAPDF_PERMISSIONS_START -->[\s\S]*?<!-- ELIMIKAPDF_PERMISSIONS_END -->/;
   if (permMarkerRegex.test(xml)) {
@@ -186,10 +282,128 @@ function patchAndroidManifest() {
   }
 
   fs.writeFileSync(MANIFEST_PATH, xml, 'utf8');
-  console.log('[ElimikaPDF Android] Patched AndroidManifest.xml with Open With & Share intent filters.');
+  console.log(
+    '[ElimikaPDF Android] Patched AndroidManifest.xml with 7 Open With & Share intent filters.'
+  );
 }
 
-const PLUGIN_JAVA = `package app.elimikapdf.studio;
+function patchBuildGradle() {
+  if (!fs.existsSync(BUILD_GRADLE_PATH)) return;
+  let gradle = fs.readFileSync(BUILD_GRADLE_PATH, 'utf8');
+
+  // Unify both namespace and applicationId to com.elimikapdf.www.twa and versionCode >= 3
+  gradle = gradle.replace(
+    /namespace\s*=\s*"[^"]+"/,
+    `namespace = "${TARGET_PACKAGE}"`
+  );
+  gradle = gradle.replace(
+    /applicationId\s+"[^"]+"/,
+    `applicationId "${TARGET_PACKAGE}"`
+  );
+  gradle = gradle.replace(/versionCode\s+[12]\b/, 'versionCode 3');
+  gradle = gradle.replace(/versionName\s+"1\.0(\.1)?"/, 'versionName "1.0.2"');
+
+  // Remove any previous AdMob dependency
+  gradle = gradle.replace(
+    /\n?[ \t]*\/\/ ELIMIKAPDF_ADMOB_DEPENDENCY[\s\S]*?play-services-ads:[^"']*["']\n?/g,
+    '\n'
+  );
+
+  // Add optional keystore.properties release signing config
+  const signingBlock = `    // ELIMIKAPDF_RELEASE_SIGNING_START
+    def keystorePropertiesFile = rootProject.file("keystore.properties")
+    def keystoreProperties = new Properties()
+    if (keystorePropertiesFile.exists()) {
+        keystoreProperties.load(new FileInputStream(keystorePropertiesFile))
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                storeFile rootProject.file(keystoreProperties['storeFile'])
+                storePassword keystoreProperties['storePassword']
+                keyAlias keystoreProperties['keyAlias']
+                keyPassword keystoreProperties['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (keystorePropertiesFile.exists()) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+    // ELIMIKAPDF_RELEASE_SIGNING_END`;
+
+  const markerRegex =
+    /[ \t]*\/\/ ELIMIKAPDF_RELEASE_SIGNING_START[\s\S]*?\/\/ ELIMIKAPDF_RELEASE_SIGNING_END/;
+  if (markerRegex.test(gradle)) {
+    gradle = gradle.replace(markerRegex, signingBlock);
+  } else {
+    gradle = gradle.replace(
+      /[ \t]*buildTypes\s*\{[\s\S]*?proguard-rules\.pro'[\s\S]*?\}\s*\}/,
+      signingBlock
+    );
+  }
+
+  fs.writeFileSync(BUILD_GRADLE_PATH, gradle, 'utf8');
+  console.log(
+    `[ElimikaPDF Android] Synced namespace & applicationId to ${TARGET_PACKAGE} (versionCode 3) in android/app/build.gradle.`
+  );
+}
+
+function patchStringsXml() {
+  if (!fs.existsSync(STRINGS_XML_PATH)) return;
+  let stringsXml = fs.readFileSync(STRINGS_XML_PATH, 'utf8');
+
+  // Remove any previous AdMob string entries
+  stringsXml = stringsXml.replace(
+    /\n?[ \t]*<!-- ELIMIKAPDF_ADMOB_STRINGS_START -->[\s\S]*?<!-- ELIMIKAPDF_ADMOB_STRINGS_END -->\n?/g,
+    '\n'
+  );
+
+  // Ensure package_name and custom_url_scheme match TARGET_PACKAGE
+  stringsXml = stringsXml.replace(
+    /<string name="package_name">[^<]*<\/string>/,
+    `<string name="package_name">${TARGET_PACKAGE}</string>`
+  );
+  stringsXml = stringsXml.replace(
+    /<string name="custom_url_scheme">[^<]*<\/string>/,
+    `<string name="custom_url_scheme">${TARGET_PACKAGE}</string>`
+  );
+
+  fs.writeFileSync(STRINGS_XML_PATH, stringsXml, 'utf8');
+}
+
+function patchProguardRules() {
+  if (!fs.existsSync(PROGUARD_PATH)) return;
+  let rules = fs.readFileSync(PROGUARD_PATH, 'utf8');
+
+  const keepBlock = `# ELIMIKAPDF_PROGUARD_START
+-keep class com.elimikapdf.www.twa.** { *; }
+-keep class app.elimikapdf.studio.** { *; }
+-keepclassmembers class * {
+    @com.getcapacitor.PluginMethod <methods>;
+    @android.webkit.JavascriptInterface <methods>;
+}
+# ELIMIKAPDF_PROGUARD_END`;
+
+  const markerRegex =
+    /# ELIMIKAPDF_PROGUARD_START[\s\S]*?# ELIMIKAPDF_PROGUARD_END/;
+  if (markerRegex.test(rules)) {
+    rules = rules.replace(markerRegex, keepBlock);
+  } else {
+    rules = `${rules.trimEnd()}\n\n${keepBlock}\n`;
+  }
+
+  fs.writeFileSync(PROGUARD_PATH, rules, 'utf8');
+}
+
+const OPEN_WITH_PLUGIN_JAVA = `package ${TARGET_PACKAGE};
 
 import com.getcapacitor.JSObject;
 import com.getcapacitor.Plugin;
@@ -230,7 +444,7 @@ public class ElimikaOpenWithPlugin extends Plugin {
 }
 `;
 
-const MAIN_ACTIVITY_JAVA = `package app.elimikapdf.studio;
+const MAIN_ACTIVITY_JAVA = `package ${TARGET_PACKAGE};
 
 import android.content.ClipData;
 import android.content.Intent;
@@ -240,6 +454,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.util.Base64;
+import android.webkit.JavascriptInterface;
 import android.webkit.MimeTypeMap;
 import android.webkit.WebView;
 
@@ -247,16 +462,17 @@ import com.getcapacitor.BridgeActivity;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.util.ArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * ElimikaPDF Capacitor MainActivity with native offline Android "Open with" (ACTION_VIEW)
- * and "Share to" (ACTION_SEND) support.
+ * ElimikaPDF Capacitor MainActivity with native offline Android "Open with" (ACTION_VIEW),
+ * "Edit" (ACTION_EDIT), and "Share to" (ACTION_SEND / ACTION_SEND_MULTIPLE) support.
  *
- * Reads content:// and file:// URIs directly through Android's ContentResolver off the main
- * thread and exposes them via the native Capacitor plugin "ElimikaOpenWith" (registered before
- * WebView boot so both cold-start and warm-start intents work with zero race conditions).
+ * Exposes incoming files through BOTH:
+ *   1. Official Capacitor Plugin "ElimikaOpenWith"
+ *   2. Direct WebView @JavascriptInterface "window.ElimikaAndroidBridge"
  */
 public class MainActivity extends BridgeActivity {
 
@@ -286,10 +502,18 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        // Register our native Capacitor plugin BEFORE super.onCreate() so it is bound prior to WebView load
+        // 1. Register our native Capacitor plugin BEFORE super.onCreate() so it is bound prior to WebView load
         registerPlugin(ElimikaOpenWithPlugin.class);
-        // BridgeActivity.onCreate() calls load() which automatically invokes onNewIntent(getIntent())
+        // 2. BridgeActivity.onCreate() calls load() which automatically invokes onNewIntent(getIntent())
         super.onCreate(savedInstanceState);
+
+        // 3. Also attach direct WebView @JavascriptInterface fallback ("window.ElimikaAndroidBridge")
+        if (this.bridge != null && this.bridge.getWebView() != null) {
+            this.bridge.getWebView().addJavascriptInterface(
+                new ElimikaAndroidBridge(),
+                "ElimikaAndroidBridge"
+            );
+        }
     }
 
     @Override
@@ -330,7 +554,7 @@ public class MainActivity extends BridgeActivity {
         if (action == null) return;
 
         Uri fileUri = null;
-        if (Intent.ACTION_VIEW.equals(action)) {
+        if (Intent.ACTION_VIEW.equals(action) || Intent.ACTION_EDIT.equals(action)) {
             fileUri = intent.getData();
         } else if (Intent.ACTION_SEND.equals(action)) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -339,6 +563,18 @@ public class MainActivity extends BridgeActivity {
                 @SuppressWarnings("deprecation")
                 Uri legacyUri = intent.getParcelableExtra(Intent.EXTRA_STREAM);
                 fileUri = legacyUri;
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            ArrayList<Uri> uris;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                uris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri.class);
+            } else {
+                @SuppressWarnings("deprecation")
+                ArrayList<Uri> legacyUris = intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM);
+                uris = legacyUris;
+            }
+            if (uris != null && !uris.isEmpty()) {
+                fileUri = uris.get(0);
             }
         }
 
@@ -493,17 +729,104 @@ public class MainActivity extends BridgeActivity {
 
         return name;
     }
+
+    private final class ElimikaAndroidBridge {
+        @JavascriptInterface
+        public boolean hasPendingPdf() {
+            synchronized (pendingLock) {
+                return pendingBase64 != null && !pendingBase64.isEmpty();
+            }
+        }
+
+        @JavascriptInterface
+        public String getPendingPdfFilename() {
+            synchronized (pendingLock) {
+                return pendingFilename != null ? pendingFilename : "Android_Document.pdf";
+            }
+        }
+
+        @JavascriptInterface
+        public String getPendingPdfMimeType() {
+            synchronized (pendingLock) {
+                return pendingMimeType != null ? pendingMimeType : "application/octet-stream";
+            }
+        }
+
+        @JavascriptInterface
+        public String consumePendingPdfBase64() {
+            synchronized (pendingLock) {
+                String data = pendingBase64;
+                pendingBase64 = null;
+                return data != null ? data : "";
+            }
+        }
+
+        @JavascriptInterface
+        public String consumePendingError() {
+            synchronized (pendingLock) {
+                String err = pendingError;
+                pendingError = null;
+                return err != null ? err : "";
+            }
+        }
+    }
 }
 `;
 
 function writeNativeJavaClasses() {
+  // Remove old app/elimikapdf/studio package directory if present so there are no duplicate MainActivity classes
+  if (fs.existsSync(LEGACY_JAVA_APP_DIR)) {
+    fs.rmSync(LEGACY_JAVA_APP_DIR, { recursive: true, force: true });
+  }
   fs.mkdirSync(JAVA_PACKAGE_DIR, { recursive: true });
-  fs.writeFileSync(PLUGIN_PATH, PLUGIN_JAVA, 'utf8');
+  fs.writeFileSync(OPEN_WITH_PLUGIN_PATH, OPEN_WITH_PLUGIN_JAVA, 'utf8');
   fs.writeFileSync(MAIN_ACTIVITY_PATH, MAIN_ACTIVITY_JAVA, 'utf8');
   console.log(
-    '[ElimikaPDF Android] Wrote ElimikaOpenWithPlugin.java & MainActivity.java (offline ContentResolver bridge).'
+    `[ElimikaPDF Android] Wrote ElimikaOpenWithPlugin.java & MainActivity.java in package ${TARGET_PACKAGE}.`
   );
 }
 
+function pruneAndroidChatAssets() {
+  const keep = new Set([
+    'WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
+  ]);
+  const dirs = [
+    path.join(ROOT, 'dist', 'assets', 'aistudio'),
+    path.join(
+      ANDROID_DIR,
+      'app',
+      'src',
+      'main',
+      'assets',
+      'public',
+      'assets',
+      'aistudio'
+    ),
+  ];
+  let removedCount = 0;
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (!keep.has(file)) {
+        try {
+          fs.rmSync(path.join(dir, file), { force: true, recursive: true });
+          removedCount++;
+        } catch {
+          // Ignore removal errors
+        }
+      }
+    }
+  }
+  if (removedCount > 0) {
+    console.log(
+      `[ElimikaPDF Android] Stripped ${removedCount} unused chat screenshot files.`
+    );
+  }
+}
+
 patchAndroidManifest();
+patchBuildGradle();
+patchStringsXml();
+patchProguardRules();
 writeNativeJavaClasses();
+pruneAndroidChatAssets();

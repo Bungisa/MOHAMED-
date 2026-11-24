@@ -1,8 +1,32 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import fs from 'node:fs';
 import path from 'path';
 import {defineConfig} from 'vite';
 import {VitePWA} from 'vite-plugin-pwa';
+
+const KEEP_AISTUDIO_ASSETS = new Set([
+  'WhatsApp_Image_2026-11-10_at_9.40.07_AM_beb423ac.jpeg',
+]);
+
+function stripUnusedChatAttachmentsPlugin() {
+  return {
+    name: 'strip-unused-chat-attachments',
+    closeBundle() {
+      const dir = path.resolve(import.meta.dirname, 'dist', 'assets', 'aistudio');
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir)) {
+        if (!KEEP_AISTUDIO_ASSETS.has(entry)) {
+          try {
+            fs.rmSync(path.join(dir, entry), {force: true, recursive: true});
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
+      }
+    },
+  };
+}
 
 export default defineConfig(() => {
   const isCapacitorBuild = process.env.CAPACITOR_BUILD === 'true';
@@ -12,6 +36,7 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
+      stripUnusedChatAttachmentsPlugin(),
       ...(!isCapacitorBuild
         ? [
             VitePWA({

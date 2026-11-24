@@ -26,7 +26,7 @@ When running in a browser:
 
 ### App Identifiers (`capacitor.config.ts`)
 - **App Name:** `ElimikaPDF`
-- **App ID (Bundle ID / Package Name):** `app.elimikapdf.studio`
+- **App ID (Bundle ID / Package Name):** `com.elimikapdf.www.twa`
 - **Web Assets Directory:** `dist`
 
 ### Step A — Optional Backend API URL for Cloud/Server Routes
@@ -103,3 +103,40 @@ Add the standard Apple privacy usage descriptions:
 | `@capacitor/splash-screen` | Smooth handoff from native launch screen once React mounts | Instant web render |
 | `@capacitor/app` | Android hardware Back button navigates to Home before minimizing; handles deep links (`appUrlOpen`) | Browser `history.popstate` & URL query params |
 | `@capacitor/haptics` | Tactile feedback on capture and file exports | Silent no-op |
+| `ElimikaOpenWith` (Custom Native) | Reads Android "Open with" & "Share" `content://` / `file://` URIs 100% offline | OS `window.launchQueue` / Web Share Target |
+
+---
+
+## 4. Building an Android Release (`.aab` / `.apk`) in Android Studio
+
+ElimikaPDF's Android project is pre-configured for Google Play releases:
+- **Package Name (`applicationId`):** `com.elimikapdf.www.twa`
+- **Min SDK:** API 24 (Android 7.0+)
+- **Compile & Target SDK:** API 36 (Android 16)
+- **Clean ad-free permissions** (no AdMob SDK or Advertising ID declarations)
+
+### Step 1 — Build & Sync the Latest Production Web Bundle
+```bash
+npm run cap:sync
+npm run cap:open:android
+```
+*(Or in Android Studio: **File → Open** → select the **`android/`** folder.)*
+
+### Step 2 — Wait for Gradle Sync & Verify Version Number
+1. Let Android Studio finish **Gradle Sync** at the bottom status bar.
+2. Open **`android/app/build.gradle`** and verify `versionCode` (increment by 1 for every Google Play upload) and `versionName` (e.g., `"1.0.0"`).
+
+### Step 3 — Generate Signed Release App Bundle (`.aab`) or APK (`.apk`)
+1. In Android Studio's top menu, click **Build → Generate Signed App Bundle / APK...**
+2. Choose:
+   - **Android App Bundle (`.aab`)** — required for uploading to **Google Play Console**.
+   - **APK (`.apk`)** — for direct sideloading/testing on Android phones.
+3. Click **Create new...** under Key store path (if you don't already have one):
+   - Save the `.jks` file in a safe backup location outside the repo (never lose this file!).
+   - Enter a Key store password, Key alias (e.g. `elimikapdf`), Key password, and your name/organization.
+4. Click **Next**, select the **`release`** build variant, and click **Create**.
+5. When finished, click **locate** in the notification toast:
+   - Signed Play Store Bundle: `android/app/release/app-release.aab`
+   - Signed Direct-Install APK: `android/app/release/app-release.apk`
+
+

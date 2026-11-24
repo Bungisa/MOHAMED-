@@ -6,7 +6,7 @@ const liveServerUrl =
     : '';
 
 const config: CapacitorConfig = {
-  appId: 'app.elimikapdf.studio',
+  appId: 'com.elimikapdf.www.twa',
   appName: 'ElimikaPDF',
   webDir: 'dist',
   backgroundColor: '#FAF9FB',

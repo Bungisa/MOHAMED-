@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ElimikaPDF</string>
+    <string name="title_activity_main">ElimikaPDF</string>
+    <string name="package_name">com.elimikapdf.www.twa</string>
+    <string name="custom_url_scheme">com.elimikapdf.www.twa</string>
+</resources>

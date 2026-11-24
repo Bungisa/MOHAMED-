@@ -6,11 +6,15 @@ coverage/
 *.log
 .env*
 !.env.example
-# Capacitor native build artifacts
+# Capacitor native build artifacts & release signing secrets
 android/.gradle/
 android/app/build/
 android/build/
 android/capacitor-cordova-android-plugins/
+android/keystore.properties
+android/local.properties
+*.jks
+*.keystore
 ios/App/Pods/
 ios/App/build/
 ios/DerivedData/
