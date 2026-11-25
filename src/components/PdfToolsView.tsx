@@ -454,6 +454,16 @@ export const PDF_TOOLS_CATALOG: PdfCatalogToolItem[] = [
     isNew: true,
   },
   {
+    id: 'qr-reader',
+    label: 'QR Code Reader',
+    description:
+      'Scan and read QR codes live with your camera, from any image/screenshot, or directly inside your PDF documents.',
+    categories: ['PDF Intelligence', 'Organize PDF'],
+    icon: QrCode,
+    badgeColor: 'bg-[#E6FAF7] text-[#0D9488] dark:bg-[#0D9488]/20 dark:text-[#5EEAD4]',
+    isNew: true,
+  },
+  {
     id: 'workflow-pdf',
     label: 'Create a workflow',
     description:
@@ -2302,14 +2312,17 @@ Status: Approved for Production Distribution`;
     useState<File | null>(null);
 
   const filteredCatalogTools = PDF_TOOLS_CATALOG.filter((tool) => {
+    const q = toolSearchQuery.trim().toLowerCase();
     const matchesCategory =
-      selectedCategory === 'All' || tool.categories.includes(selectedCategory);
+      q.length > 0 ||
+      selectedCategory === 'All' ||
+      tool.categories.includes(selectedCategory);
     if (!matchesCategory) return false;
-    if (!toolSearchQuery.trim()) return true;
-    const q = toolSearchQuery.toLowerCase();
+    if (!q) return true;
     return (
       tool.label.toLowerCase().includes(q) ||
       tool.description.toLowerCase().includes(q) ||
+      tool.id.toLowerCase().includes(q) ||
       tool.categories.some((c) => c.toLowerCase().includes(q))
     );
   });
@@ -2364,6 +2377,12 @@ Status: Approved for Production Distribution`;
     }
   };
 
+  const [toolUploadProgress, setToolUploadProgress] = useState<{
+    percent: number;
+    fileName: string;
+    stage: string;
+  } | null>(null);
+
   const handleUniversalToolFileUpload = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -2389,11 +2408,24 @@ Status: Approved for Production Distribution`;
       activeTool === 'html-to-pdf' ||
       activeTool === 'html-reader'
     ) {
+      setToolUploadProgress({
+        percent: 25,
+        fileName: first.name,
+        stage: 'Reading uploaded file...',
+      });
+      await new Promise((r) => setTimeout(r, 15));
       const clonedFile = new File(
         [await first.arrayBuffer()],
         first.name,
         { type: first.type, lastModified: Date.now() }
       );
+      setToolUploadProgress({
+        percent: 100,
+        fileName: first.name,
+        stage: 'Upload complete (100%)',
+      });
+      await new Promise((r) => setTimeout(r, 60));
+      setToolUploadProgress(null);
       setExternalUploadedFile(clonedFile);
       return;
     }
@@ -2402,9 +2434,30 @@ Status: Approved for Production Distribution`;
     try {
       setIsBusy(true);
       let latestDoc: StoredDocument | null = null;
+      const totalFiles = files.length;
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
-        const converted = await convertAnyUploadedFileToPdfAndHtml(f);
+        const basePct = Math.round((i / totalFiles) * 100);
+        const weight = 100 / totalFiles;
+        setToolUploadProgress({
+          percent: Math.max(5, basePct + 5),
+          fileName: f.name,
+          stage: 'Uploading file...',
+        });
+        await new Promise((r) => setTimeout(r, 15));
+        const converted = await convertAnyUploadedFileToPdfAndHtml(
+          f,
+          (pct, stageLabel) => {
+            setToolUploadProgress({
+              percent: Math.min(
+                98,
+                Math.max(8, Math.round(basePct + (pct / 100) * weight * 0.9))
+              ),
+              fileName: f.name,
+              stage: stageLabel,
+            });
+          }
+        );
         const newDoc: StoredDocument = {
           id: `doc-tool-up-${Date.now()}-${i}`,
           name: converted.outputPdfName,
@@ -2424,6 +2477,12 @@ Status: Approved for Production Distribution`;
         latestDoc = newDoc;
       }
       if (latestDoc) {
+        setToolUploadProgress({
+          percent: 100,
+          fileName: latestDoc.name,
+          stage: 'Upload complete (100%)',
+        });
+        await new Promise((r) => setTimeout(r, 80));
         setSelectedDocId(latestDoc.id);
         if (activeTool === 'edit-pdf' && onOpenInEditor) {
           onOpenInEditor(latestDoc);
@@ -2438,12 +2497,51 @@ Status: Approved for Production Distribution`;
         await onUploadNewPdf(files, false);
       }
     } finally {
+      setToolUploadProgress(null);
       setIsBusy(false);
     }
   };
 
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      {/* Live File Upload Spinner Icon & Percentage Overlay inside PDF Tools */}
+      {toolUploadProgress && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-4">
+              <div className="relative w-14 h-14 flex items-center justify-center shrink-0">
+                <div className="absolute inset-0 rounded-full border-4 border-[#E4DFEC] dark:border-[#261F33]" />
+                <div className="absolute inset-0 rounded-full border-4 border-[#003FE8] dark:border-[#60A5FA] border-t-transparent animate-spin" />
+                <span className="text-xs font-mono font-extrabold tabular-nums text-[#003FE8] dark:text-[#60A5FA]">
+                  {toolUploadProgress.percent}%
+                </span>
+              </div>
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                    Uploading File...
+                  </p>
+                  <span className="px-2 py-0.5 rounded-full bg-[#003FE8]/10 dark:bg-[#60A5FA]/20 text-[#003FE8] dark:text-[#60A5FA] text-xs font-mono font-extrabold tabular-nums shrink-0">
+                    {toolUploadProgress.percent}%
+                  </span>
+                </div>
+                <p className="text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                  {toolUploadProgress.fileName}
+                </p>
+                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] truncate">
+                  {toolUploadProgress.stage}
+                </p>
+              </div>
+            </div>
+            <div className="w-full h-2.5 rounded-full bg-[#F2EFF6] dark:bg-[#261F33] overflow-hidden">
+              <div
+                style={{ width: `${toolUploadProgress.percent}%` }}
+                className="h-full rounded-full bg-gradient-to-r from-[#4A1D5E] to-[#003FE8] transition-all duration-150"
+              />
+            </div>
+          </div>
+        </div>
+      )}
       {/* Comprehensive PDF Tools Directory & Category Filter Bar */}
       <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl p-4 sm:p-6 space-y-4 shadow-2xs">
         <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
@@ -2461,33 +2559,48 @@ Status: Approved for Production Distribution`;
             </p>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            {/* Search Tools */}
-            <div className="relative flex-1 sm:flex-initial sm:w-52">
+          <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto">
+            {/* Instant Search Bar across all 35+ PDF Tools */}
+            <div className="relative flex-1 sm:w-72">
               <Search className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={toolSearchQuery}
-                onChange={(e) => setToolSearchQuery(e.target.value)}
-                placeholder="Search 30+ PDF tools..."
-                className="w-full pl-8 pr-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] focus:outline-none focus:border-[#4A1D5E]"
+                onChange={(e) => {
+                  setToolSearchQuery(e.target.value);
+                  if (e.target.value.trim() && !showFullCatalog) {
+                    setShowFullCatalog(true);
+                  }
+                }}
+                placeholder={`Search ${PDF_TOOLS_CATALOG.length} tools (Merge, Compress, Word, OCR...)`}
+                className="w-full pl-8 pr-7 py-2 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] focus:outline-none focus:border-[#4A1D5E]"
               />
+              {toolSearchQuery && (
+                <button
+                  type="button"
+                  onClick={() => setToolSearchQuery('')}
+                  title="Clear search"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#6E667D] hover:text-[#14101B] dark:hover:text-white cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
             </div>
 
             <button
               type="button"
               onClick={() => setShowFullCatalog((prev) => !prev)}
-              className="px-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-1.5 cursor-pointer"
+              className="px-3 py-2 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] flex items-center gap-1.5 cursor-pointer shrink-0"
             >
               {showFullCatalog ? (
                 <>
                   <ChevronUp className="w-3.5 h-3.5" />
-                  <span>Compact View</span>
+                  <span>Compact Bar</span>
                 </>
               ) : (
                 <>
                   <ChevronDown className="w-3.5 h-3.5" />
-                  <span>Expand All Tools ({PDF_TOOLS_CATALOG.length})</span>
+                  <span>All Tools ({PDF_TOOLS_CATALOG.length})</span>
                 </>
               )}
             </button>
@@ -2506,7 +2619,7 @@ Status: Approved for Production Distribution`;
                   setSelectedCategory(cat);
                   if (!showFullCatalog) setShowFullCatalog(true);
                 }}
-                className={`px-4 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
                   isActive
                     ? 'bg-[#1D1D24] text-white dark:bg-[#F4F1F8] dark:text-[#0D0A12] shadow-xs'
                     : 'bg-white dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#2C2836] dark:text-[#C5BED4] hover:border-[#4A1D5E] dark:hover:border-[#9D5CE5]'
@@ -2518,101 +2631,89 @@ Status: Approved for Production Distribution`;
           })}
         </div>
 
-        {/* Visual Tool Cards Grid (4 columns on desktop, matching reference screenshot) */}
-        {showFullCatalog ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5 pt-1">
-            {filteredCatalogTools.map((tool) => {
-              const isSelected = activeTool === tool.id;
-              if (tool.id === 'workflow-pdf') {
+        {/* Compact Responsive Visual Tool Cards Grid (2 columns on mobile, 4 on desktop so no endless scrolling) */}
+        {showFullCatalog || Boolean(toolSearchQuery.trim()) ? (
+          filteredCatalogTools.length === 0 ? (
+            <div className="p-6 text-center rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+              <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                No PDF tools matched &ldquo;{toolSearchQuery}&rdquo;
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  setToolSearchQuery('');
+                  setSelectedCategory('All');
+                }}
+                className="text-xs font-semibold text-[#003FE8] dark:text-[#60A5FA] underline cursor-pointer"
+              >
+                Reset tool search
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3.5 pt-1">
+              {filteredCatalogTools.map((tool) => {
+                const isSelected = activeTool === tool.id;
+                if (tool.id === 'workflow-pdf') {
+                  return (
+                    <button
+                      key={tool.id}
+                      type="button"
+                      onClick={() => handleSelectCatalogTool(tool.id)}
+                      className={`group relative overflow-hidden text-left p-3.5 sm:p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-2 bg-gradient-to-br from-[#FDE7E2] via-[#FCE1DA] to-[#FAD6CE] dark:from-[#341D22] dark:to-[#28151A] ${
+                        isSelected
+                          ? 'border-[#E53935] ring-2 ring-[#E53935]/30 shadow-sm'
+                          : 'border-[#F8C9BE] dark:border-[#4D2830] hover:shadow-md'
+                      }`}
+                    >
+                      <div className="space-y-1 relative z-10">
+                        <h3 className="text-xs sm:text-sm font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                          Create a workflow
+                        </h3>
+                        <p className="text-[11px] leading-snug text-[#5C4744] dark:text-[#D9B8B2] line-clamp-2">
+                          {tool.description}
+                        </p>
+                      </div>
+                      <div className="relative z-10 inline-flex items-center gap-1 text-[11px] font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
+                        <span>Create workflow</span>
+                        <span>↗</span>
+                      </div>
+                    </button>
+                  );
+                }
+
                 return (
                   <button
                     key={tool.id}
                     type="button"
                     onClick={() => handleSelectCatalogTool(tool.id)}
-                    className={`group relative overflow-hidden text-left p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-4 bg-gradient-to-br from-[#FDE7E2] via-[#FCE1DA] to-[#FAD6CE] dark:from-[#341D22] dark:to-[#28151A] ${
+                    className={`group relative text-left p-3 sm:p-4 rounded-2xl border transition-all cursor-pointer flex items-start gap-2.5 sm:gap-3 ${
                       isSelected
-                        ? 'border-[#E53935] ring-2 ring-[#E53935]/30 shadow-sm'
-                        : 'border-[#F8C9BE] dark:border-[#4D2830] hover:shadow-md'
+                        ? 'bg-[#FAF6FF] dark:bg-[#231934] border-[#4A1D5E] dark:border-[#9D5CE5] ring-2 ring-[#4A1D5E]/20 dark:ring-[#9D5CE5]/25 shadow-sm'
+                        : 'bg-white dark:bg-[#0D0A12]/80 border-[#ECE9F2] dark:border-[#261F33] hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 hover:shadow-md'
                     }`}
                   >
-                    <svg
-                      viewBox="0 0 180 120"
-                      fill="none"
-                      className="absolute right-0 bottom-0 w-36 h-24 pointer-events-none opacity-45"
-                    >
-                      <path
-                        d="M10 95C55 95 60 25 115 25C150 25 155 75 175 75"
-                        stroke="#E07A68"
-                        strokeWidth="2"
-                        strokeDasharray="4 4"
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 transition-transform group-hover:scale-105">
+                      <PdfToolCustomIcon
+                        toolId={tool.id}
+                        className="w-9 h-9 sm:w-10 sm:h-10"
                       />
-                      <rect
-                        x="95"
-                        y="12"
-                        width="24"
-                        height="24"
-                        rx="6"
-                        stroke="#E07A68"
-                        strokeWidth="1.8"
-                        strokeDasharray="3 3"
-                      />
-                    </svg>
-                    <div className="space-y-1.5 relative z-10">
-                      <h3 className="text-base font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
-                        Create a workflow
+                    </div>
+                    <div className="min-w-0 flex-1 space-y-0.5">
+                      <h3 className="text-xs sm:text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1 truncate">
+                        <span className="truncate">{tool.label}</span>
+                        {isSelected && (
+                          <span className="w-2 h-2 rounded-full bg-[#4A1D5E] dark:bg-[#9D5CE5] inline-block shrink-0" />
+                        )}
                       </h3>
-                      <p className="text-xs leading-relaxed text-[#5C4744] dark:text-[#D9B8B2]">
+                      <p className="text-[11px] leading-snug text-[#6E667D] dark:text-[#A39BB5] line-clamp-2">
                         {tool.description}
                       </p>
-                    </div>
-                    <div className="relative z-10 inline-flex items-center gap-1 text-xs font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
-                      <span>Create workflow</span>
-                      <span>↗</span>
                     </div>
                   </button>
                 );
-              }
-
-              return (
-                <button
-                  key={tool.id}
-                  type="button"
-                  onClick={() => handleSelectCatalogTool(tool.id)}
-                  className={`group relative text-left p-5 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between gap-3 ${
-                    isSelected
-                      ? 'bg-[#FAF6FF] dark:bg-[#231934] border-[#4A1D5E] dark:border-[#9D5CE5] ring-2 ring-[#4A1D5E]/20 dark:ring-[#9D5CE5]/25 shadow-sm'
-                      : 'bg-white dark:bg-[#0D0A12]/80 border-[#ECE9F2] dark:border-[#261F33] hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 hover:shadow-md'
-                  }`}
-                >
-                  {tool.isNew && (
-                    <span className="absolute top-4 right-4 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E8F1FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/25 dark:text-[#93C5FD]">
-                      New!
-                    </span>
-                  )}
-
-                  <div className="space-y-3">
-                    <div className="w-11 h-11 shrink-0 transition-transform group-hover:scale-105">
-                      <PdfToolCustomIcon
-                        toolId={tool.id}
-                        className="w-11 h-11"
-                      />
-                    </div>
-                    <div className="space-y-1.5">
-                      <h3 className="text-[15px] font-bold text-[#14101B] dark:text-[#F4F1F8] flex items-center gap-1.5">
-                        <span>{tool.label}</span>
-                        {isSelected && (
-                          <span className="w-2 h-2 rounded-full bg-[#4A1D5E] dark:bg-[#9D5CE5] inline-block" />
-                        )}
-                      </h3>
-                      <p className="text-xs leading-relaxed text-[#6E667D] dark:text-[#A39BB5] line-clamp-3">
-                        {tool.description}
-                      </p>
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+              })}
+            </div>
+          )
         ) : (
           /* Compact Horizontal Pill Switcher */
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1">

@@ -1,24 +1,17 @@
 [
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "com.elimikapdf.www.twa",
       "sha256_cert_fingerprints": [
         "96:17:08:76:99:76:3A:CF:57:2D:84:4B:F9:38:69:39:A7:22:8A:1D:AC:BC:46:66:40:44:E9:7C:DB:42:2F:6A",
-        "6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF",
-        "74:0B:A7:BC:CF:F2:64:91:75:8C:D6:A2:67:5B:F5:C7:A4:3D:82:FD:77:A0:00:85:98:11:37:38:69:38:E4:1B",
-        "6C:83:5F:15:58:23:DE:4A:3F:99:E5:E7:E7:0C:4E:F6:3F:EE:DA:45:37:7A:B2:7D:27:E7:08:F1:9E:B8:E5:53",
-        "95:02:3E:5C:AE:5C:27:47:88:27:CD:87:98:B0:34:24:25:25:0E:8B:84:A0:04:B4:48:66:73:5D:7D:AD:EB:9B"
+        "6A:03:83:9F:47:2B:08:CA:D2:11:60:29:25:E8:5E:0F:9A:BA:60:3D:2E:18:3C:9D:79:6B:F4:CB:E1:8D:91:DF"
       ]
     }
   },
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "com.elimikapdf.twa",
@@ -29,9 +22,7 @@
     }
   },
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "app.elimikapdf.studio",
@@ -42,9 +33,7 @@
     }
   },
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "com.elimikapdf.app",
@@ -55,9 +44,7 @@
     }
   },
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "app.run.europe_west2.ais_pre_xx6h7d5nqmuz77cm5nypac_142058246407.twa",
@@ -68,9 +55,7 @@
     }
   },
   {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
+    "relation": ["delegate_permission/common.handle_all_urls"],
     "target": {
       "namespace": "android_app",
       "package_name": "app.run.europe_west2.ais_dev_xx6h7d5nqmuz77cm5nypac_142058246407.twa",

@@ -23,6 +23,8 @@
 # ELIMIKAPDF_PROGUARD_START
 -keep class com.elimikapdf.www.twa.** { *; }
 -keep class app.elimikapdf.studio.** { *; }
+-keep class com.getcapacitor.** { *; }
+-keep class com.capacitorjs.** { *; }
 -keepclassmembers class * {
     @com.getcapacitor.PluginMethod <methods>;
     @android.webkit.JavascriptInterface <methods>;

@@ -73,6 +73,7 @@ import {
 } from '../types/document';
 import {
   renderAllPdfPages,
+  renderPdfPagesSubset,
   RenderedPageInfo,
   bakeAnnotationsIntoPdf,
   organizePdfPages,
@@ -215,6 +216,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           'ods',
           'csv',
           'tsv',
+          'pptx',
+          'ppt',
+          'odp',
           'epub',
           'kpf',
           'kdf',
@@ -264,8 +268,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'ods',
         'csv',
         'tsv',
+        'pptx',
+        'ppt',
+        'odp',
       ].includes(fmt) ||
-      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet/i.test(
+      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet|pptx-slide/i.test(
         activeDocument?.rawHtmlContent || ''
       )
     ) {
@@ -299,6 +306,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     height: 620,
   });
   const [isLoadingPages, setIsLoadingPages] = useState(false);
+  const [loadingPagesPercent, setLoadingPagesPercent] = useState<number>(0);
+  const [isDraggingSideScroll, setIsDraggingSideScroll] =
+    useState<boolean>(false);
+  const sideScrollTrackRef = useRef<HTMLDivElement | null>(null);
+  const htmlIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const [htmlIframePageCount, setHtmlIframePageCount] = useState<number>(1);
   const [workingPdfBytes, setWorkingPdfBytes] = useState<Uint8Array | null>(
     null
   );
@@ -589,16 +602,19 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         pageBrightness === 0 &&
         pageContrast === 0)
     ) {
-      setFilteredPageUrls({});
+      setFilteredPageUrls((prev) =>
+        Object.keys(prev).length === 0 ? prev : {}
+      );
       setIsApplyingFilter(false);
       return;
     }
 
     setIsApplyingFilter(true);
     (async () => {
+      const renderedOnly = pages.filter((p) => p.isRendered !== false);
       const orderedPages = [
-        ...pages.filter((p) => p.pageNumber === currentPage),
-        ...pages.filter((p) => p.pageNumber !== currentPage),
+        ...renderedOnly.filter((p) => p.pageNumber === currentPage),
+        ...renderedOnly.filter((p) => p.pageNumber !== currentPage),
       ];
       const nextMap: Record<number, string> = {};
       for (const p of orderedPages) {
@@ -627,10 +643,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     };
   }, [pages, pageColorFilter, pageBrightness, pageContrast, currentPage]);
 
-  // Lazily inspect embedded PDF pictures/boxes on the active page so opening multi-page PDFs is lightweight and fast
+  // Lazily inspect embedded PDF pictures/boxes on the active page ONLY in Edit mode so Reader Mode stays instant
   useEffect(() => {
     let cancelled = false;
-    if (!workingPdfBytes || pages.length === 0) return;
+    if (isReaderMode || !workingPdfBytes || pages.length === 0) return;
     if (embeddedImagesByPage[currentPage] !== undefined) return;
 
     (async () => {
@@ -649,38 +665,122 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [workingPdfBytes, currentPage, pages.length, embeddedImagesByPage]);
+  }, [isReaderMode, workingPdfBytes, currentPage, pages.length, embeddedImagesByPage]);
+
+  // On-demand page renderer for large books (>24 pages): whenever the user slides the Page Slider
+  // or navigates to a page that hasn't been rasterized yet, render [currentPage, currentPage + 1, currentPage - 1] immediately
+  const onDemandRenderingRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    if (!workingPdfBytes || pages.length === 0) return;
+    const candidates = [
+      currentPage,
+      currentPage + 1,
+      currentPage - 1,
+      currentPage + 2,
+    ].filter(
+      (pNum) =>
+        pNum >= 1 &&
+        pNum <= pages.length &&
+        pages[pNum - 1] &&
+        pages[pNum - 1].isRendered === false &&
+        !onDemandRenderingRef.current.has(pNum)
+    );
+    if (candidates.length === 0) return;
+
+    candidates.forEach((pNum) => onDemandRenderingRef.current.add(pNum));
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const newlyRendered = await renderPdfPagesSubset(
+          workingPdfBytes,
+          candidates,
+          1.35
+        );
+        if (cancelled || newlyRendered.length === 0) return;
+        setPages((prev) => {
+          const next = [...prev];
+          for (const item of newlyRendered) {
+            if (next[item.pageNumber - 1]) {
+              next[item.pageNumber - 1] = item;
+            }
+          }
+          return next;
+        });
+        setOriginalPageUrls((prev) => {
+          const next = { ...prev };
+          for (const item of newlyRendered) {
+            next[item.pageNumber - 1 + 1] = item.dataUrl;
+          }
+          return next;
+        });
+      } finally {
+        candidates.forEach((pNum) => onDemandRenderingRef.current.delete(pNum));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [workingPdfBytes, currentPage, pages]);
 
   const renderAllPages = useCallback(
-    async (pdfBytes: Uint8Array, captureAsOriginal = false) => {
+    async (
+      pdfBytes: Uint8Array,
+      captureAsOriginal = false,
+      initialPage = 1
+    ) => {
       setIsLoadingPages(true);
+      setLoadingPagesPercent(8);
       setEmbeddedImagesByPage({});
       try {
         const allRendered = await renderAllPdfPages(
           pdfBytes,
-          1.65,
+          1.35,
           (renderedSoFar, total) => {
             setTotalExpectedPages(total);
             setPages(renderedSoFar);
+            const renderedCount = renderedSoFar.filter(
+              (p) => p.isRendered !== false
+            ).length;
+            const eagerTarget = Math.min(Math.max(1, total), 24);
+            const pct = Math.min(
+              99,
+              Math.max(12, Math.round((renderedCount / eagerTarget) * 100))
+            );
+            setLoadingPagesPercent(pct);
             if (captureAsOriginal) {
-              const origMap: Record<number, string> = {};
-              renderedSoFar.forEach((p) => {
-                origMap[p.pageNumber] = p.dataUrl;
+              setOriginalPageUrls((prev) => {
+                const next = { ...prev };
+                for (const p of renderedSoFar) {
+                  if (p.isRendered) {
+                    next[p.pageNumber] = p.dataUrl;
+                  }
+                }
+                return next;
               });
-              setOriginalPageUrls(origMap);
             }
-            if (renderedSoFar.length >= 1) {
+            if (renderedCount >= 1) {
               setIsLoadingPages(false);
             }
+          },
+          {
+            initialPage,
+            maxEagerPages: 24,
           }
         );
         setPages(allRendered);
+        setLoadingPagesPercent(100);
         if (captureAsOriginal) {
-          const origMap: Record<number, string> = {};
-          allRendered.forEach((p) => {
-            origMap[p.pageNumber] = p.dataUrl;
+          setOriginalPageUrls((prev) => {
+            const next = { ...prev };
+            for (const p of allRendered) {
+              if (p.isRendered) {
+                next[p.pageNumber] = p.dataUrl;
+              }
+            }
+            return next;
           });
-          setOriginalPageUrls(origMap);
         }
         setTotalExpectedPages(allRendered.length);
         setCurrentPage((prev) =>
@@ -819,6 +919,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       'ods',
       'csv',
       'tsv',
+      'pptx',
+      'ppt',
+      'odp',
       'md',
       'txt',
       'rtf',
@@ -844,8 +947,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         'ods',
         'csv',
         'tsv',
+        'pptx',
+        'ppt',
+        'odp',
       ].includes(detectedFmt) ||
-      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet/i.test(
+      /<(?:style|script|svg|canvas|img)\b|@keyframes|kpf-page-sheet|pptx-slide/i.test(
         activeDocument.rawHtmlContent || ''
       );
 
@@ -900,7 +1006,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       setBottomPanelTab('none');
     }
 
-    renderAllPages(cloned, true).then(() => {
+    // For books with more than 12 pages, default to lightweight Single-Page Book view so the DOM stays ultra-fast and Page Slider scrubbing is instant
+    if ((activeDocument.pageCount || 1) > 12) {
+      setViewAllPagesVertically(false);
+    }
+
+    renderAllPages(cloned, true, restoredPage).then(() => {
       hasInitializedDocRef.current = true;
     });
   }, [activeDocument, renderAllPages, initialReaderMode]);
@@ -941,14 +1052,173 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     });
   };
 
+  const getEffectiveTotalPages = () => {
+    if (isReaderMode && isHtmlReflowMode && htmlReflowSubMode === 'webpage') {
+      return Math.max(
+        1,
+        htmlIframePageCount,
+        pages.length || totalExpectedPages || activeDocument?.pageCount || 1
+      );
+    }
+    return Math.max(
+      1,
+      pages.length || totalExpectedPages || activeDocument?.pageCount || 1
+    );
+  };
+
+  const scrollHtmlIframeToPage = (
+    pageNum: number,
+    totalCount: number,
+    smooth: boolean
+  ) => {
+    const iframe = htmlIframeRef.current;
+    if (!iframe) return false;
+    try {
+      const doc = iframe.contentDocument;
+      const win = iframe.contentWindow;
+      if (!doc || !win) return false;
+
+      // If this is a PowerPoint slide deck, jump directly to the exact .pptx-slide card
+      const slideEls = doc.querySelectorAll('.pptx-slide');
+      if (slideEls.length > 0) {
+        const targetSlide = slideEls[Math.min(slideEls.length - 1, Math.max(0, pageNum - 1))];
+        if (targetSlide) {
+          targetSlide.scrollIntoView({
+            behavior: smooth ? 'smooth' : 'auto',
+            block: 'start',
+          });
+          return true;
+        }
+      }
+
+      const scrollEl = doc.scrollingElement || doc.documentElement || doc.body;
+      const maxScroll = Math.max(0, scrollEl.scrollHeight - win.innerHeight);
+      const ratio = totalCount > 1 ? (pageNum - 1) / (totalCount - 1) : 0;
+      win.scrollTo({
+        top: Math.round(maxScroll * ratio),
+        behavior: smooth ? 'smooth' : 'auto',
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const jumpToPage = (pageNum: number) => {
-    const clamped = Math.max(1, Math.min(pages.length || 1, pageNum));
+    const totalCount = getEffectiveTotalPages();
+    const clamped = Math.max(1, Math.min(totalCount, pageNum));
     setCurrentPage(clamped);
+
+    // Stay inside styled HTML/Webpage/PPTX/eBook view when navigating pages so CSS, colors, and layouts are never lost!
+    if (isReaderMode && isHtmlReflowMode) {
+      if (htmlReflowSubMode === 'webpage') {
+        const didScrollIframe = scrollHtmlIframeToPage(
+          clamped,
+          totalCount,
+          !isDraggingSideScroll
+        );
+        if (didScrollIframe) return;
+      }
+      if (stageContainerRef.current) {
+        const el = stageContainerRef.current;
+        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+        const ratio =
+          totalCount > 1 ? (clamped - 1) / (totalCount - 1) : 0;
+        el.scrollTo({
+          top: Math.round(maxScroll * ratio),
+          behavior: isDraggingSideScroll ? 'auto' : 'smooth',
+        });
+      }
+      return;
+    }
+
     if (viewAllPagesVertically) {
       const el = pageWrapperRefs.current[clamped];
       if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        el.scrollIntoView({ behavior: isDraggingSideScroll ? 'auto' : 'smooth', block: 'start' });
       }
+    } else if (stageContainerRef.current) {
+      stageContainerRef.current.scrollTop = 0;
+    }
+  };
+
+  // Scrub page position from a clientY coordinate along the right-side vertical page scroll track
+  const scrubSideScrollToClientY = (clientY: number) => {
+    const trackEl = sideScrollTrackRef.current;
+    if (!trackEl) return;
+    const rect = trackEl.getBoundingClientRect();
+    if (rect.height <= 0) return;
+    const ratio = Math.max(0, Math.min(1, (clientY - rect.top) / rect.height));
+    const totalCount = getEffectiveTotalPages();
+    if (totalCount <= 1) {
+      if (isReaderMode && isHtmlReflowMode && htmlReflowSubMode === 'webpage') {
+        try {
+          const iframe = htmlIframeRef.current;
+          const doc = iframe?.contentDocument;
+          const win = iframe?.contentWindow;
+          if (doc && win) {
+            const scrollEl = doc.scrollingElement || doc.documentElement || doc.body;
+            const maxScroll = Math.max(0, scrollEl.scrollHeight - win.innerHeight);
+            win.scrollTo({ top: Math.round(maxScroll * ratio), behavior: 'auto' });
+            return;
+          }
+        } catch {
+          // Ignore
+        }
+      }
+      if (stageContainerRef.current) {
+        const el = stageContainerRef.current;
+        const maxScroll = Math.max(0, el.scrollHeight - el.clientHeight);
+        el.scrollTop = Math.round(maxScroll * ratio);
+      }
+      return;
+    }
+    const targetPage = Math.max(
+      1,
+      Math.min(totalCount, Math.round(1 + ratio * (totalCount - 1)))
+    );
+    if (targetPage !== currentPage) {
+      jumpToPage(targetPage);
+    }
+  };
+
+  // Sync currentPage when the user scrolls the document stage vertically
+  const handleStageScroll = () => {
+    if (isDraggingSideScroll) return;
+    const container = stageContainerRef.current;
+    if (!container) return;
+    const totalCount = getEffectiveTotalPages();
+    if (isReaderMode && isHtmlReflowMode) {
+      const maxScroll = Math.max(1, container.scrollHeight - container.clientHeight);
+      if (maxScroll > 20 && totalCount > 1) {
+        const ratio = Math.max(0, Math.min(1, container.scrollTop / maxScroll));
+        const nextP = Math.max(
+          1,
+          Math.min(totalCount, Math.round(1 + ratio * (totalCount - 1)))
+        );
+        if (nextP !== currentPage) {
+          setCurrentPage(nextP);
+        }
+      }
+      return;
+    }
+    if (!viewAllPagesVertically || pages.length <= 1) return;
+    const containerRect = container.getBoundingClientRect();
+    const midY = containerRect.top + containerRect.height * 0.38;
+    let closestPage = currentPage;
+    let bestDist = Infinity;
+    for (const p of pagesToDisplay) {
+      const el = pageWrapperRefs.current[p.pageNumber];
+      if (!el) continue;
+      const r = el.getBoundingClientRect();
+      const dist = Math.abs(r.top + r.height / 2 - midY);
+      if (dist < bestDist) {
+        bestDist = dist;
+        closestPage = p.pageNumber;
+      }
+    }
+    if (closestPage !== currentPage) {
+      setCurrentPage(closestPage);
     }
   };
 
@@ -2828,8 +3098,11 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         .map((p) => p.pageNumber)
     : [];
 
+  // Virtualize continuous scroll on large books (>15 pages) so at most 7 pages around currentPage are mounted in the DOM at once
   const pagesToDisplay = viewAllPagesVertically
-    ? pages
+    ? pages.length > 15
+      ? pages.filter((p) => Math.abs(p.pageNumber - currentPage) <= 3)
+      : pages
     : activePageInfo
       ? [activePageInfo]
       : [];
@@ -3135,6 +3408,16 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               <span>Word Doc</span>
             </span>
           )}
+
+          <button
+            type="button"
+            onClick={() => pdfUploadInputRef.current?.click()}
+            title="Import / Open another PDF, eBook (.EPUB, .KPF), Word, or Office document"
+            className="h-8 px-2 sm:px-2.5 rounded-lg bg-[#F2EFF6] hover:bg-[#E4DFEC] dark:bg-[#261F33] dark:hover:bg-[#342B47] text-[#4A1D5E] dark:text-[#D5B3FF] text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer shrink-0"
+          >
+            <FileUp className="w-3.5 h-3.5" />
+            <span className="hidden xs:inline">Import</span>
+          </button>
 
           {isReaderMode && (
             <>
@@ -3474,27 +3757,100 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         {/* Center Almost-Full-Screen PDF Canvas Stage (Zooms ONLY PDF contents inside this container) */}
         <div
           ref={stageContainerRef}
+          onScroll={handleStageScroll}
           data-pdf-zoom-stage="true"
           className="flex-1 min-w-0 min-h-0 w-full h-full overflow-auto bg-[#D8D8DC] dark:bg-[#09070D] touch-pan-x touch-pan-y"
         >
           {isReaderMode && isHtmlReflowMode ? (
             <div className="w-full h-full select-text">
               {htmlReflowSubMode === 'webpage' ? (
-                <div className="w-full h-full bg-white overflow-hidden">
-                  <iframe
-                    title="Full Screen Document Reader"
-                    sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-                    srcDoc={prepareBrowserFidelityHtml(
-                      resolvedReaderHtml,
-                      docBaseTitle
-                    )}
-                    className="w-full h-full border-0 bg-white block"
-                  />
+                <div className="w-full h-full bg-white overflow-auto">
+                  <div
+                    style={{
+                      transform: zoom !== 1 ? `scale(${zoom})` : undefined,
+                      transformOrigin: 'top left',
+                      width: zoom !== 1 ? `${100 / zoom}%` : '100%',
+                      height: zoom !== 1 ? `${100 / zoom}%` : '100%',
+                    }}
+                    className="w-full h-full"
+                  >
+                    <iframe
+                      ref={htmlIframeRef}
+                      title="Full Screen Document Reader"
+                      sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
+                      srcDoc={prepareBrowserFidelityHtml(
+                        resolvedReaderHtml,
+                        docBaseTitle
+                      )}
+                      onLoad={() => {
+                        const iframe = htmlIframeRef.current;
+                        if (!iframe) return;
+                        try {
+                          const doc = iframe.contentDocument;
+                          const win = iframe.contentWindow;
+                          if (!doc || !win) return;
+
+                          const computeVirtualCount = () => {
+                            const slideEls = doc.querySelectorAll('.pptx-slide');
+                            if (slideEls.length > 0) return slideEls.length;
+                            const scrollEl =
+                              doc.scrollingElement || doc.documentElement || doc.body;
+                            const viewH = Math.max(320, win.innerHeight || 600);
+                            return Math.max(1, Math.ceil(scrollEl.scrollHeight / viewH));
+                          };
+
+                          const initialCount = computeVirtualCount();
+                          setHtmlIframePageCount(initialCount);
+
+                          const onIframeScroll = () => {
+                            const slideEls = doc.querySelectorAll('.pptx-slide');
+                            if (slideEls.length > 0) {
+                              const midY = (win.innerHeight || 600) * 0.35;
+                              let bestIdx = 0;
+                              let bestDist = Infinity;
+                              slideEls.forEach((el, idx) => {
+                                const r = el.getBoundingClientRect();
+                                const d = Math.abs(r.top + r.height * 0.35 - midY);
+                                if (d < bestDist) {
+                                  bestDist = d;
+                                  bestIdx = idx;
+                                }
+                              });
+                              setCurrentPage(bestIdx + 1);
+                              return;
+                            }
+                            const scrollEl =
+                              doc.scrollingElement || doc.documentElement || doc.body;
+                            const count = computeVirtualCount();
+                            setHtmlIframePageCount(count);
+                            const maxScroll = Math.max(
+                              1,
+                              scrollEl.scrollHeight - (win.innerHeight || 600)
+                            );
+                            const ratio = Math.max(
+                              0,
+                              Math.min(1, (win.scrollY || scrollEl.scrollTop) / maxScroll)
+                            );
+                            const nextP = Math.max(
+                              1,
+                              Math.min(count, Math.round(1 + ratio * (count - 1)))
+                            );
+                            setCurrentPage(nextP);
+                          };
+
+                          win.addEventListener('scroll', onIframeScroll, { passive: true });
+                        } catch {
+                          // Ignore cross-origin edge cases
+                        }
+                      }}
+                      className="w-full h-full border-0 bg-white block"
+                    />
+                  </div>
                 </div>
               ) : (
                 <div
                   style={{
-                    fontSize: `${htmlReflowFontSize}px`,
+                    fontSize: `${Math.round(htmlReflowFontSize * zoom)}px`,
                     lineHeight: 1.75,
                   }}
                   className={`min-h-full max-w-4xl mx-auto p-6 sm:p-10 space-y-4 transition-colors ${
@@ -3636,11 +3992,25 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           ) : (
           <div className="min-w-full min-h-full w-max flex flex-col items-center justify-center px-1.5 py-2 sm:px-4 sm:py-3 gap-3 mx-auto">
             {isLoadingPages && pages.length === 0 ? (
-              <div className="my-auto text-center space-y-2">
-                <div className="w-8 h-8 border-2 border-[#4A1D5E] dark:border-[#9D5CE5] border-t-transparent rounded-full animate-spin mx-auto" />
-                <p className="text-xs font-medium text-[#14101B] dark:text-[#A39BB5]">
-                  Rendering PDF pages...
-                </p>
+              <div className="my-auto text-center space-y-3 bg-white/90 dark:bg-[#16111F]/90 border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl px-6 py-5 shadow-lg">
+                <div className="relative w-14 h-14 mx-auto flex items-center justify-center">
+                  <div className="absolute inset-0 rounded-full border-4 border-[#E4DFEC] dark:border-[#261F33]" />
+                  <div className="absolute inset-0 rounded-full border-4 border-[#003FE8] dark:border-[#9D5CE5] border-t-transparent animate-spin" />
+                  <span className="text-xs font-mono font-extrabold tabular-nums text-[#003FE8] dark:text-[#D5B3FF]">
+                    {loadingPagesPercent}%
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                    Loading Document Pages ({loadingPagesPercent}%)
+                  </p>
+                  <div className="w-44 h-1.5 rounded-full bg-[#F2EFF6] dark:bg-[#261F33] overflow-hidden mx-auto">
+                    <div
+                      style={{ width: `${loadingPagesPercent}%` }}
+                      className="h-full rounded-full bg-[#003FE8] dark:bg-[#9D5CE5] transition-all duration-150"
+                    />
+                  </div>
+                </div>
               </div>
             ) : (
               pagesToDisplay.map((pageInfo) => {
@@ -3717,8 +4087,18 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       className="w-full h-full block pointer-events-none"
                     />
 
-                    {/* iLovePDF Content Edit Mode: Clickable Existing Native PDF Text & Footer Blocks */}
+                    {pageInfo.isRendered === false && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 gap-2 pointer-events-none">
+                        <div className="w-6 h-6 border-2 border-[#4A1D5E] border-t-transparent rounded-full animate-spin" />
+                        <span className="text-xs font-mono font-semibold text-[#5A5565]">
+                          Loading Page {pageNum}...
+                        </span>
+                      </div>
+                    )}
+
+                    {/* iLovePDF Content Edit Mode: Clickable Existing Native PDF Text & Footer Blocks (only on active page for fast DOM performance) */}
                     {!isReaderMode &&
+                      isCurrentPage &&
                       activeTool === 'select' &&
                       pageInfo.nativeTextBlocks.map((block) => {
                         const alreadyEdited = annotations.some(
@@ -4790,10 +5170,125 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           )}
         </div>
 
-        {/* Stable Floating PDF-Only Controls (Hidden in Full-Screen Reader Mode) */}
+        {/* =====================================================================
+            RIGHT-SIDE VERTICAL PAGE SCROLL BUTTON / FAST-SCROLL HANDLE
+            Allows dragging up/down along the right side of the page or tapping
+            Up/Down arrows to scroll quickly through pages in Reader & Edit Mode
+           ===================================================================== */}
+        {(() => {
+          const totalPageCount = getEffectiveTotalPages();
+          if (totalPageCount <= 1 && !isReaderMode) return null;
+          const clampedCurrent = Math.max(1, Math.min(totalPageCount, currentPage));
+          const scrollPct =
+            totalPageCount > 1
+              ? ((clampedCurrent - 1) / (totalPageCount - 1)) * 100
+              : 0;
+          return (
+            <div className="absolute right-1.5 sm:right-2.5 top-14 bottom-16 z-30 flex flex-col items-center select-none pointer-events-auto w-11">
+              {/* Top Step Up Button */}
+              <button
+                type="button"
+                onClick={() => jumpToPage(clampedCurrent - 1)}
+                disabled={clampedCurrent <= 1}
+                title="Scroll Up 1 Page"
+                className="w-8 h-7 rounded-t-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/90 dark:border-[#342B47] flex items-center justify-center shadow-sm hover:bg-[#003FE8] hover:text-white disabled:opacity-35 cursor-pointer shrink-0 transition-colors"
+              >
+                <ChevronUp className="w-4 h-4" />
+              </button>
+
+              {/* Vertical Draggable Side Scroll Rail */}
+              <div
+                ref={sideScrollTrackRef}
+                onPointerDown={(e) => {
+                  e.stopPropagation();
+                  e.currentTarget.setPointerCapture(e.pointerId);
+                  setIsDraggingSideScroll(true);
+                  scrubSideScrollToClientY(e.clientY);
+                }}
+                onPointerMove={(e) => {
+                  if (!isDraggingSideScroll) return;
+                  e.stopPropagation();
+                  scrubSideScrollToClientY(e.clientY);
+                }}
+                onPointerUp={(e) => {
+                  if (!isDraggingSideScroll) return;
+                  e.stopPropagation();
+                  try {
+                    e.currentTarget.releasePointerCapture(e.pointerId);
+                  } catch {
+                    // Ignore
+                  }
+                  setIsDraggingSideScroll(false);
+                }}
+                onPointerCancel={() => setIsDraggingSideScroll(false)}
+                style={{ touchAction: 'none' }}
+                title={`Drag side scroll button to jump to any page (Page ${clampedCurrent} of ${totalPageCount})`}
+                className="relative flex-1 w-11 flex justify-center py-6 cursor-ns-resize touch-none"
+              >
+                {/* Thin Vertical Track Line */}
+                <div className="w-1.5 h-full rounded-full bg-black/15 dark:bg-white/15 backdrop-blur-2xs overflow-hidden relative">
+                  <div
+                    style={{ height: `${scrollPct}%` }}
+                    className="w-full bg-[#003FE8] dark:bg-[#60A5FA] rounded-full transition-all duration-75"
+                  />
+                </div>
+
+                {/* Fixed-Size Draggable Side Scroll Thumb Button (constant width & height regardless of digit count) */}
+                <div
+                  style={{
+                    top: `calc(24px + (100% - 48px) * ${(scrollPct / 100).toFixed(4)})`,
+                  }}
+                  className="absolute right-0 -translate-y-1/2 flex items-center gap-1.5"
+                >
+                  {/* Floating Page Preview Bubble shown when dragging */}
+                  {isDraggingSideScroll && (
+                    <div className="mr-1.5 px-3 py-1.5 rounded-xl bg-[#14101B]/95 dark:bg-[#003FE8] text-white text-xs font-mono font-extrabold shadow-xl whitespace-nowrap flex items-center gap-1.5 pointer-events-none">
+                      <span>
+                        Page {clampedCurrent} of {totalPageCount}
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-white/20 text-[10px]">
+                        {Math.round(scrollPct)}%
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Constant-Size Side Page Indicator Handle */}
+                  <div
+                    className={`w-11 h-12 rounded-2xl shadow-lg border flex flex-col items-center justify-center shrink-0 overflow-hidden transition-colors ${
+                      isDraggingSideScroll
+                        ? 'bg-[#003FE8] text-white border-white ring-2 ring-[#003FE8]/40'
+                        : 'bg-[#003FE8]/95 hover:bg-[#0035C4] text-white border-white/80 dark:border-[#60A5FA]/50'
+                    }`}
+                  >
+                    <span className="text-[11px] font-mono font-extrabold tabular-nums leading-none">
+                      {clampedCurrent}
+                    </span>
+                    <span className="w-5 h-px bg-white/45 my-1 shrink-0" />
+                    <span className="text-[9px] font-mono font-bold tabular-nums leading-none opacity-85">
+                      {totalPageCount}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Bottom Step Down Button */}
+              <button
+                type="button"
+                onClick={() => jumpToPage(clampedCurrent + 1)}
+                disabled={clampedCurrent >= totalPageCount}
+                title="Scroll Down 1 Page"
+                className="w-8 h-7 rounded-b-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/90 dark:border-[#342B47] flex items-center justify-center shadow-sm hover:bg-[#003FE8] hover:text-white disabled:opacity-35 cursor-pointer shrink-0 transition-colors"
+              >
+                <ChevronDown className="w-4 h-4" />
+              </button>
+            </div>
+          );
+        })()}
+
+        {/* Stable Floating PDF-Only Controls (Edit Mode Zoom Only — Side Scroll Handles Pages) */}
         {!isReaderMode && (
           <>
-            <div className="absolute bottom-3 left-3 z-30 h-9 flex items-center gap-0.5 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-1.5 shadow-md backdrop-blur-xs select-none">
+            <div className="absolute bottom-3 left-3 z-30 h-9 flex items-center gap-1 rounded-full bg-white/92 dark:bg-[#16111F]/92 border border-neutral-300/80 dark:border-[#261F33] px-2 shadow-md backdrop-blur-xs select-none">
               <button
                 type="button"
                 onClick={() => applyPdfZoom(zoom - 0.2)}
@@ -4807,7 +5302,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                 type="button"
                 onClick={() => applyPdfZoom(1.0)}
                 title="Reset PDF zoom to 100%"
-                className="w-12 py-0.5 text-[11px] font-mono font-bold tabular-nums text-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer shrink-0"
+                className="w-11 py-0.5 text-[11px] font-mono font-bold tabular-nums text-center text-[#14101B] dark:text-[#F4F1F8] hover:bg-neutral-200/70 dark:hover:bg-[#261F33] rounded-full cursor-pointer shrink-0"
               >
                 {Math.round(zoom * 100)}%
               </button>
@@ -6378,8 +6873,93 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           </div>
         )}
 
-        {/* Bottom Bar: Hidden in Full-Screen Reader Mode, 6-Button Tool Grid in Edit Mode */}
-        {!isReaderMode && (
+        {/* Bottom Bar: Interactive Zoom + Page Slider + Import Dock in Reader Mode, 6-Button Tool Grid in Edit Mode */}
+        {isReaderMode ? (
+          <div className="h-13 px-2.5 sm:px-4 bg-white/95 dark:bg-[#16111F]/95 border-t border-[#E4DFEC] dark:border-[#261F33] flex items-center justify-between gap-2 sm:gap-4 shrink-0 select-none z-30">
+            {/* Left: Reader Zoom Controls (- / 100% / + & Fit Width toggle) */}
+            <div className="flex items-center gap-1 shrink-0">
+              <div className="flex items-center gap-0.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] p-0.5">
+                <button
+                  type="button"
+                  onClick={() => applyPdfZoom(zoom - 0.2)}
+                  disabled={zoom <= 0.5}
+                  title="Zoom Out"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+                >
+                  <ZoomOut className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPdfZoom(1.0)}
+                  title="Reset Zoom to 100%"
+                  className="px-1.5 py-0.5 text-[11px] font-mono font-bold tabular-nums text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33] rounded-lg cursor-pointer"
+                >
+                  {Math.round(zoom * 100)}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => applyPdfZoom(zoom + 0.2)}
+                  disabled={zoom >= 4.0}
+                  title="Zoom In"
+                  className="w-7 h-7 rounded-lg flex items-center justify-center hover:bg-[#E4DFEC]/60 dark:hover:bg-[#261F33] disabled:opacity-35 cursor-pointer"
+                >
+                  <ZoomIn className="w-3.5 h-3.5 text-[#14101B] dark:text-[#F4F1F8]" />
+                </button>
+              </div>
+
+              {!isHtmlReflowMode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFitMode((prev) =>
+                      prev === 'fit-page' ? 'fit-width' : 'fit-page'
+                    );
+                    applyPdfZoom(1.0);
+                  }}
+                  title="Toggle Fit Width / Fit Page"
+                  className="hidden md:inline-flex px-2 py-1 rounded-lg bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer whitespace-nowrap"
+                >
+                  {fitMode === 'fit-page' ? 'Fit Width' : 'Fit Page'}
+                </button>
+              )}
+            </div>
+
+            {/* Right: Scroll vs Page View Toggle & Direct Import Document Button */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {!isNativeWordDoc && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (isHtmlReflowMode) {
+                      setIsHtmlReflowMode(false);
+                      setViewAllPagesVertically(false);
+                    } else {
+                      setViewAllPagesVertically((prev) => !prev);
+                    }
+                  }}
+                  title="Toggle Single Page Slider view vs Continuous Scroll view"
+                  className="hidden sm:inline-flex px-2.5 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-semibold text-[#14101B] dark:text-[#F4F1F8] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer whitespace-nowrap"
+                >
+                  {isHtmlReflowMode
+                    ? 'PDF Pages'
+                    : viewAllPagesVertically
+                      ? 'Single Page'
+                      : 'Scroll View'}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => pdfUploadInputRef.current?.click()}
+                title="Import / Open Book or PDF into Document Reader"
+                className="px-2.5 py-1.5 rounded-xl bg-[#003FE8] hover:bg-[#0035C4] text-white text-[11px] font-bold flex items-center gap-1 cursor-pointer whitespace-nowrap shadow-2xs"
+              >
+                <FileUp className="w-3.5 h-3.5" />
+                <span>Import</span>
+              </button>
+            </div>
+          </div>
+        ) : (
           /* Edit Mode: Static 6-Button Grid locked at 60px height with zero layout/font shifts */
           <div className="h-[60px] px-1.5 grid grid-cols-6 items-center gap-1 bg-white dark:bg-[#16111F] shrink-0 select-none">
             {(

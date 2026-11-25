@@ -65,7 +65,6 @@ if (!fs.existsSync(ANDROID_DIR) || !fs.existsSync(MANIFEST_PATH)) {
 
 const PERMISSIONS_BLOCK = `    <!-- ELIMIKAPDF_PERMISSIONS_START -->
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <!-- ELIMIKAPDF_PERMISSIONS_END -->`;
@@ -99,6 +98,9 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:mimeType="application/vnd.oasis.opendocument.text" />
                 <data android:mimeType="application/rtf" />
                 <data android:mimeType="text/rtf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
             </intent-filter>
 
             <!-- 3. Open With ElimikaPDF — eBooks (.epub / .kpf / .mobi / .fb2), HTML, Text & Images -->
@@ -145,6 +147,11 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:pathSuffix=".DOC" />
                 <data android:pathSuffix=".odt" />
                 <data android:pathSuffix=".rtf" />
+                <data android:pathSuffix=".pptx" />
+                <data android:pathSuffix=".PPTX" />
+                <data android:pathSuffix=".ppt" />
+                <data android:pathSuffix=".PPT" />
+                <data android:pathSuffix=".odp" />
                 <data android:pathSuffix=".epub" />
                 <data android:pathSuffix=".EPUB" />
                 <data android:pathSuffix=".kpf" />
@@ -167,6 +174,10 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:pathPattern=".*\\.DOCX" />
                 <data android:pathPattern=".*\\.doc" />
                 <data android:pathPattern=".*\\.DOC" />
+                <data android:pathPattern=".*\\.pptx" />
+                <data android:pathPattern=".*\\.PPTX" />
+                <data android:pathPattern=".*\\.ppt" />
+                <data android:pathPattern=".*\\.odp" />
                 <data android:pathPattern=".*\\.epub" />
                 <data android:pathPattern=".*\\.kpf" />
                 <data android:pathPattern=".*\\.html" />
@@ -207,6 +218,9 @@ const INTENT_FILTERS_BLOCK = `            <!-- ELIMIKAPDF_OPEN_WITH_START -->
                 <data android:mimeType="application/msword" />
                 <data android:mimeType="application/vnd.oasis.opendocument.text" />
                 <data android:mimeType="application/rtf" />
+                <data android:mimeType="application/vnd.openxmlformats-officedocument.presentationml.presentation" />
+                <data android:mimeType="application/vnd.ms-powerpoint" />
+                <data android:mimeType="application/vnd.oasis.opendocument.presentation" />
                 <data android:mimeType="application/epub+zip" />
                 <data android:mimeType="text/html" />
                 <data android:mimeType="text/plain" />
@@ -291,7 +305,7 @@ function patchBuildGradle() {
   if (!fs.existsSync(BUILD_GRADLE_PATH)) return;
   let gradle = fs.readFileSync(BUILD_GRADLE_PATH, 'utf8');
 
-  // Unify both namespace and applicationId to com.elimikapdf.www.twa and versionCode >= 3
+  // Unify both namespace and applicationId to com.elimikapdf.www.twa and versionCode >= 4
   gradle = gradle.replace(
     /namespace\s*=\s*"[^"]+"/,
     `namespace = "${TARGET_PACKAGE}"`
@@ -300,8 +314,8 @@ function patchBuildGradle() {
     /applicationId\s+"[^"]+"/,
     `applicationId "${TARGET_PACKAGE}"`
   );
-  gradle = gradle.replace(/versionCode\s+[12]\b/, 'versionCode 3');
-  gradle = gradle.replace(/versionName\s+"1\.0(\.1)?"/, 'versionName "1.0.2"');
+  gradle = gradle.replace(/versionCode\s+[1234]\b/, 'versionCode 5');
+  gradle = gradle.replace(/versionName\s+"1\.0(\.[123])?"/, 'versionName "1.0.4"');
 
   // Remove any previous AdMob dependency
   gradle = gradle.replace(
@@ -352,7 +366,7 @@ function patchBuildGradle() {
 
   fs.writeFileSync(BUILD_GRADLE_PATH, gradle, 'utf8');
   console.log(
-    `[ElimikaPDF Android] Synced namespace & applicationId to ${TARGET_PACKAGE} (versionCode 3) in android/app/build.gradle.`
+    `[ElimikaPDF Android] Synced namespace & applicationId to ${TARGET_PACKAGE} (versionCode 4) in android/app/build.gradle.`
   );
 }
 
@@ -386,6 +400,8 @@ function patchProguardRules() {
   const keepBlock = `# ELIMIKAPDF_PROGUARD_START
 -keep class com.elimikapdf.www.twa.** { *; }
 -keep class app.elimikapdf.studio.** { *; }
+-keep class com.getcapacitor.** { *; }
+-keep class com.capacitorjs.** { *; }
 -keepclassmembers class * {
     @com.getcapacitor.PluginMethod <methods>;
     @android.webkit.JavascriptInterface <methods>;
@@ -824,7 +840,30 @@ function pruneAndroidChatAssets() {
   }
 }
 
+function patchRootBuildGradle() {
+  const rootBuildGradlePath = path.join(ANDROID_DIR, 'build.gradle');
+  if (!fs.existsSync(rootBuildGradlePath)) return;
+  let content = fs.readFileSync(rootBuildGradlePath, 'utf8');
+  if (content.includes('ELIMIKAPDF_ONEDRIVE_BUILD_DIR_START')) return;
+  const block = `    // ELIMIKAPDF_ONEDRIVE_BUILD_DIR_START
+    // Prevents Windows OneDrive from locking android/app/build/intermediates/assets/release/mergeReleaseAssets
+    def localAppData = System.getenv('LOCALAPPDATA')
+    if (localAppData != null && rootDir.absolutePath.toLowerCase().contains('onedrive')) {
+        buildDir = new File(localAppData, 'ElimikaPDF-GradleBuild/' + project.name)
+    }
+    // ELIMIKAPDF_ONEDRIVE_BUILD_DIR_END`;
+  content = content.replace(
+    /allprojects\s*\{\s*repositories\s*\{[\s\S]*?\}\s*\}/,
+    (match) => match.replace(/\}\s*$/, `\n${block}\n}`)
+  );
+  fs.writeFileSync(rootBuildGradlePath, content, 'utf8');
+  console.log(
+    '[ElimikaPDF Android] Configured OneDrive-safe Gradle buildDir in android/build.gradle.'
+  );
+}
+
 patchAndroidManifest();
+patchRootBuildGradle();
 patchBuildGradle();
 patchStringsXml();
 patchProguardRules();

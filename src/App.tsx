@@ -94,10 +94,17 @@ export default function App() {
   const [openWithPromptDoc, setOpenWithPromptDoc] =
     useState<StoredDocument | null>(null);
 
-  // Loading state when opening an incoming PDF from Android "Open with" menu
+  // Loading state when opening an incoming PDF from Android "Open with" menu or uploading files
   const [externalPdfLoadingLabel, setExternalPdfLoadingLabel] = useState<
     string | null
   >(null);
+  const [uploadProgress, setUploadProgress] = useState<{
+    percent: number;
+    fileName: string;
+    stage: string;
+    currentFileIndex: number;
+    totalFiles: number;
+  } | null>(null);
 
   // Global toast / error notification
   const [toast, setToast] = useState<{
@@ -339,104 +346,161 @@ export default function App() {
     openInReaderMode = true
   ) => {
     const fileArray = Array.from(files);
+    if (fileArray.length === 0) return;
     let lastAdded: StoredDocument | null = null;
+    const totalFiles = fileArray.length;
 
-    for (let i = 0; i < fileArray.length; i++) {
-      const file = fileArray[i];
-      if (file.size === 0) {
-        showToast(
-          `Cannot open "${file.name}": The selected file is empty (0 bytes).`,
-          'error'
-        );
-        continue;
-      }
-      if (file.size > 500 * 1024 * 1024) {
-        showToast(
-          `Skipped "${file.name}": File exceeds 500 MB local storage limit.`,
-          'error'
-        );
-        continue;
-      }
+    try {
+      for (let i = 0; i < fileArray.length; i++) {
+        const file = fileArray[i];
+        const baseStartPct = Math.round((i / totalFiles) * 100);
+        const fileWeight = 100 / totalFiles;
 
-      try {
-        const converted = await convertAnyUploadedFileToPdfAndHtml(file);
-        if (!converted.pageCount || converted.pageCount < 1) {
+        setUploadProgress({
+          percent: Math.max(4, baseStartPct + 4),
+          fileName: file.name,
+          stage: 'Starting file upload...',
+          currentFileIndex: i + 1,
+          totalFiles,
+        });
+        await new Promise((r) => setTimeout(r, 15));
+
+        if (file.size === 0) {
           showToast(
-            `Cannot open "${file.name}": File contains 0 readable pages or is corrupted.`,
+            `Cannot open "${file.name}": The selected file is empty (0 bytes).`,
             'error'
           );
           continue;
         }
-        const category =
-          converted.sourceFormat === 'image'
-            ? 'Scans'
-            : converted.sourceFormat === 'pdf'
-              ? 'Other'
-              : 'Reports';
+        if (file.size > 500 * 1024 * 1024) {
+          showToast(
+            `Skipped "${file.name}": File exceeds 500 MB local storage limit.`,
+            'error'
+          );
+          continue;
+        }
 
-        // Prevent duplicate file imports: if an identical document name & format already exists in the vault, reuse its ID and refresh its timestamp
-        const existingDocs = await storageService.getAllDocuments();
-        const duplicateDoc = existingDocs.find(
-          (d) =>
-            d.name.toLowerCase() === converted.outputPdfName.toLowerCase() &&
-            (d.sourceFormat || 'pdf').toLowerCase() ===
-              converted.sourceFormat.toLowerCase()
-        );
+        try {
+          const converted = await convertAnyUploadedFileToPdfAndHtml(
+            file,
+            (filePct, stageLabel) => {
+              const overallPct = Math.min(
+                98,
+                Math.max(
+                  5,
+                  Math.round(baseStartPct + (filePct / 100) * fileWeight * 0.9)
+                )
+              );
+              setUploadProgress({
+                percent: overallPct,
+                fileName: file.name,
+                stage: stageLabel,
+                currentFileIndex: i + 1,
+                totalFiles,
+              });
+            }
+          );
+          if (!converted.pageCount || converted.pageCount < 1) {
+            showToast(
+              `Cannot open "${file.name}": File contains 0 readable pages or is corrupted.`,
+              'error'
+            );
+            continue;
+          }
+          const category =
+            converted.sourceFormat === 'image'
+              ? 'Scans'
+              : converted.sourceFormat === 'pdf'
+                ? 'Other'
+                : 'Reports';
 
-        const nowIso = new Date().toISOString();
-        const isNativeWord =
-          converted.sourceFormat === 'docx' || converted.sourceFormat === 'doc';
-        const newDoc: StoredDocument = {
-          id: duplicateDoc ? duplicateDoc.id : `doc-upload-${Date.now()}-${i}`,
-          name: converted.outputPdfName,
-          category: duplicateDoc ? duplicateDoc.category : category,
-          starred: duplicateDoc ? duplicateDoc.starred : false,
-          sizeBytes: isNativeWord && converted.originalFileBytes
-            ? converted.originalFileBytes.byteLength
-            : converted.pdfBytes.byteLength,
-          pageCount: converted.pageCount,
-          createdAt: duplicateDoc ? duplicateDoc.createdAt : nowIso,
-          updatedAt: nowIso,
-          lastOpenedAt: nowIso,
-          pdfData: converted.pdfBytes,
-          originalFileBytes: converted.originalFileBytes,
-          ocrText: converted.extractedText,
-          rawHtmlContent: converted.rawHtmlContent,
-          sourceFormat: converted.sourceFormat,
-        };
-        await storageService.saveDocument(newDoc);
-        lastAdded = newDoc;
-      } catch (err) {
-        const errDetail =
-          err instanceof Error && err.message ? ` (${err.message})` : '';
-        showToast(
-          `Failed to open "${file.name}"${errDetail}. The file appears corrupted, password-locked, or in an unsupported format.`,
-          'error'
-        );
+          setUploadProgress({
+            percent: Math.min(
+              99,
+              Math.round(baseStartPct + fileWeight * 0.94)
+            ),
+            fileName: file.name,
+            stage: 'Saving document to local vault...',
+            currentFileIndex: i + 1,
+            totalFiles,
+          });
+          await new Promise((r) => setTimeout(r, 0));
+
+          // Prevent duplicate file imports: if an identical document name & format already exists in the vault, reuse its ID and refresh its timestamp
+          const existingDocs = await storageService.getAllDocuments();
+          const duplicateDoc = existingDocs.find(
+            (d) =>
+              d.name.toLowerCase() === converted.outputPdfName.toLowerCase() &&
+              (d.sourceFormat || 'pdf').toLowerCase() ===
+                converted.sourceFormat.toLowerCase()
+          );
+
+          const nowIso = new Date().toISOString();
+          const isNativeWord =
+            converted.sourceFormat === 'docx' || converted.sourceFormat === 'doc';
+          const newDoc: StoredDocument = {
+            id: duplicateDoc ? duplicateDoc.id : `doc-upload-${Date.now()}-${i}`,
+            name: converted.outputPdfName,
+            category: duplicateDoc ? duplicateDoc.category : category,
+            starred: duplicateDoc ? duplicateDoc.starred : false,
+            sizeBytes:
+              isNativeWord && converted.originalFileBytes
+                ? converted.originalFileBytes.byteLength
+                : converted.pdfBytes.byteLength,
+            pageCount: converted.pageCount,
+            createdAt: duplicateDoc ? duplicateDoc.createdAt : nowIso,
+            updatedAt: nowIso,
+            lastOpenedAt: nowIso,
+            pdfData: converted.pdfBytes,
+            originalFileBytes: converted.originalFileBytes,
+            ocrText: converted.extractedText,
+            rawHtmlContent: converted.rawHtmlContent,
+            sourceFormat: converted.sourceFormat,
+          };
+          await storageService.saveDocument(newDoc);
+          lastAdded = newDoc;
+        } catch (err) {
+          const errDetail =
+            err instanceof Error && err.message ? ` (${err.message})` : '';
+          showToast(
+            `Failed to open "${file.name}"${errDetail}. The file appears corrupted, password-locked, or in an unsupported format.`,
+            'error'
+          );
+        }
       }
-    }
 
-    if (lastAdded) {
-      await refreshVault();
-      setActiveDocument(lastAdded);
-      const fmtUpper = (lastAdded.sourceFormat || 'pdf').toUpperCase();
-      if (openInEditorAfter && openInReaderMode !== false) {
-        setEditorReaderMode(true);
-        navigateToView('editor');
-        showToast(
-          `Detected ${fmtUpper} document — Opened "${lastAdded.name}" in Reading Mode (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
-        );
-      } else if (openInEditorAfter) {
-        setEditorReaderMode(false);
-        navigateToView('editor');
-        showToast(
-          `Opened "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
-        );
-      } else {
-        showToast(
-          `Added "${lastAdded.name}" (${fmtUpper}, ${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
-        );
+      if (lastAdded) {
+        setUploadProgress({
+          percent: 100,
+          fileName: lastAdded.name,
+          stage: 'Upload complete (100%) — Opening document...',
+          currentFileIndex: totalFiles,
+          totalFiles,
+        });
+        await new Promise((r) => setTimeout(r, 90));
+        await refreshVault();
+        setActiveDocument(lastAdded);
+        const fmtUpper = (lastAdded.sourceFormat || 'pdf').toUpperCase();
+        if (openInEditorAfter && openInReaderMode !== false) {
+          setEditorReaderMode(true);
+          navigateToView('editor');
+          showToast(
+            `Detected ${fmtUpper} document — Opened "${lastAdded.name}" in Reading Mode (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+          );
+        } else if (openInEditorAfter) {
+          setEditorReaderMode(false);
+          navigateToView('editor');
+          showToast(
+            `Opened "${lastAdded.name}" (${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+          );
+        } else {
+          showToast(
+            `Added "${lastAdded.name}" (${fmtUpper}, ${lastAdded.pageCount} ${lastAdded.pageCount === 1 ? 'page' : 'pages'}).`
+          );
+        }
       }
+    } finally {
+      setUploadProgress(null);
     }
   };
 
@@ -1110,18 +1174,56 @@ export default function App() {
         navigateToView('editor');
       }}
     >
-      {/* Loading Overlay for Incoming Android "Open With" PDF URIs */}
-      {externalPdfLoadingLabel && (
-        <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl max-w-sm w-full p-6 flex items-center gap-4 shadow-2xl">
-            <div className="w-9 h-9 rounded-full border-3 border-[#003FE8] border-t-transparent animate-spin shrink-0" />
-            <div className="min-w-0">
-              <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
-                ElimikaPDF Reader
-              </p>
-              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] truncate">
-                {externalPdfLoadingLabel}
-              </p>
+      {/* File Upload & Incoming Android "Open With" Loading Icon + Live Percentage Modal */}
+      {(uploadProgress || externalPdfLoadingLabel) && (
+        <div className="fixed inset-0 z-50 bg-black/55 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] rounded-2xl max-w-sm w-full p-6 space-y-4 shadow-2xl">
+            <div className="flex items-center gap-4">
+              {/* Circular Animated Loading Spinner Icon with Live Percentage */}
+              <div className="relative w-14 h-14 flex items-center justify-center shrink-0">
+                <div className="absolute inset-0 rounded-full border-4 border-[#E4DFEC] dark:border-[#261F33]" />
+                <div className="absolute inset-0 rounded-full border-4 border-[#003FE8] dark:border-[#60A5FA] border-t-transparent animate-spin" />
+                <span className="text-xs font-mono font-extrabold tabular-nums text-[#003FE8] dark:text-[#60A5FA]">
+                  {uploadProgress ? `${uploadProgress.percent}%` : '...'}
+                </span>
+              </div>
+
+              <div className="min-w-0 flex-1 space-y-1">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                    {uploadProgress
+                      ? uploadProgress.totalFiles > 1
+                        ? `Uploading File ${uploadProgress.currentFileIndex} of ${uploadProgress.totalFiles}`
+                        : 'Uploading Document...'
+                      : 'Opening Document...'}
+                  </p>
+                  {uploadProgress && (
+                    <span className="px-2 py-0.5 rounded-full bg-[#003FE8]/10 dark:bg-[#60A5FA]/20 text-[#003FE8] dark:text-[#60A5FA] text-xs font-mono font-extrabold tabular-nums shrink-0">
+                      {uploadProgress.percent}%
+                    </span>
+                  )}
+                </div>
+                <p className="text-xs font-semibold text-[#14101B] dark:text-[#F4F1F8] truncate">
+                  {uploadProgress
+                    ? uploadProgress.fileName
+                    : externalPdfLoadingLabel}
+                </p>
+                <p className="text-[11px] text-[#6E667D] dark:text-[#A39BB5] truncate">
+                  {uploadProgress
+                    ? uploadProgress.stage
+                    : 'Preparing document for Reading Mode...'}
+                </p>
+              </div>
+            </div>
+
+            {/* Live Percentage Progress Bar */}
+            <div className="w-full h-2.5 rounded-full bg-[#F2EFF6] dark:bg-[#261F33] overflow-hidden">
+              <div
+                style={{
+                  width: `${uploadProgress ? uploadProgress.percent : 65}%`,
+                }}
+                className="h-full rounded-full bg-gradient-to-r from-[#4A1D5E] to-[#003FE8] transition-all duration-150"
+              />
             </div>
           </div>
         </div>

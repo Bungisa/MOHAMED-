@@ -1,5 +1,6 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import * as XLSX from 'xlsx';
+import JSZip from 'jszip';
 import {
   PDFDocument,
   StandardFonts,
@@ -5044,6 +5045,614 @@ export function buildInteractiveExcelHtml(
 </html>`;
 }
 
+export interface RichPptxParagraph {
+  text: string;
+  level: number;
+  isBold: boolean;
+  colorHex?: string;
+}
+
+export interface RichPptxSlide {
+  slideNumber: number;
+  title: string;
+  paragraphs: RichPptxParagraph[];
+  images: string[];
+  tables: string[][][];
+  bgColor?: string;
+  notes?: string;
+}
+
+function decodeXmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => {
+      const code = parseInt(hex, 16);
+      return Number.isNaN(code) ? '' : String.fromCodePoint(code);
+    })
+    .replace(/&#(\d+);/g, (_, dec) => {
+      const code = parseInt(dec, 10);
+      return Number.isNaN(code) ? '' : String.fromCodePoint(code);
+    });
+}
+
+function isDarkHexColor(hex?: string): boolean {
+  if (!hex) return false;
+  const clean = hex.replace('#', '').trim();
+  if (clean.length !== 6) return false;
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  if ([r, g, b].some(Number.isNaN)) return false;
+  const lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return lum < 0.45;
+}
+
+function inferImageMimeFromPath(path: string): string | null {
+  const lower = path.toLowerCase();
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.gif')) return 'image/gif';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.bmp')) return 'image/bmp';
+  return null;
+}
+
+function resolvePptxRelPath(baseDir: string, target: string): string {
+  const cleanTarget = target.replace(/\\/g, '/').replace(/^\/+/, '');
+  const parts = `${baseDir}/${cleanTarget}`.split('/');
+  const resolved: string[] = [];
+  for (const seg of parts) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') {
+      resolved.pop();
+    } else {
+      resolved.push(seg);
+    }
+  }
+  return resolved.join('/');
+}
+
+/**
+ * Rich OOXML PowerPoint (.pptx) & OpenDocument Presentation (.odp) parser using JSZip.
+ * Extracts ordered slides, titles, bullet paragraphs, embedded slide images (base64 data URLs),
+ * tables, slide background colors, and speaker notes.
+ */
+export async function parseRichPptxSlides(
+  bytes: Uint8Array,
+  baseTitle: string
+): Promise<RichPptxSlide[] | null> {
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    return null;
+  }
+
+  try {
+    const zip = await JSZip.loadAsync(bytes);
+    const fileKeys = Object.keys(zip.files);
+
+    // A. OpenDocument Presentation (.odp) via content.xml
+    if (zip.files['content.xml'] && !fileKeys.some((k) => /^ppt\/slides\/slide\d+\.xml$/i.test(k))) {
+      const contentXml = await zip.files['content.xml'].async('string');
+      const pageMatches = contentXml.match(/<draw:page\b[^>]*>[\s\S]*?<\/draw:page>/gi) || [];
+      if (pageMatches.length > 0) {
+        const slides: RichPptxSlide[] = [];
+        for (let idx = 0; idx < pageMatches.length; idx++) {
+          const pageXml = pageMatches[idx];
+          const pMatches = pageXml.match(/<text:p\b[^>]*>[\s\S]*?<\/text:p>/gi) || [];
+          const lines = pMatches
+            .map((p) =>
+              decodeXmlEntities(p.replace(/<[^>]+>/g, ''))
+                .replace(/\s+/g, ' ')
+                .trim()
+            )
+            .filter(Boolean);
+
+          const images: string[] = [];
+          const imgMatches = pageXml.match(/xlink:href=["']([^"']+)["']/gi) || [];
+          for (const attr of imgMatches) {
+            const href = attr.match(/["']([^"']+)["']/)?.[1];
+            if (!href) continue;
+            const imgEntry = zip.files[href] || zip.files[href.replace(/^\.\//, '')];
+            const imgMime = inferImageMimeFromPath(href);
+            if (imgEntry && imgMime) {
+              const b64 = await imgEntry.async('base64');
+              images.push(`data:${imgMime};base64,${b64}`);
+            }
+          }
+
+          slides.push({
+            slideNumber: idx + 1,
+            title: lines[0] || `${baseTitle} — Slide ${idx + 1}`,
+            paragraphs: lines.slice(1).map((t) => ({ text: t, level: 0, isBold: false })),
+            images,
+            tables: [],
+          });
+        }
+        return slides;
+      }
+    }
+
+    // B. OOXML PowerPoint (.pptx)
+    let orderedSlidePaths: string[] = [];
+
+    // Try reading exact slide order from ppt/presentation.xml + ppt/_rels/presentation.xml.rels
+    try {
+      const presXmlFile = zip.files['ppt/presentation.xml'];
+      const presRelsFile = zip.files['ppt/_rels/presentation.xml.rels'];
+      if (presXmlFile && presRelsFile) {
+        const presXml = await presXmlFile.async('string');
+        const presRelsXml = await presRelsFile.async('string');
+        const relMap = new Map<string, string>();
+        const relRegex = /<Relationship\b[^>]*Id=["']([^"']+)["'][^>]*Target=["']([^"']+)["'][^>]*>/gi;
+        let rm: RegExpExecArray | null;
+        while ((rm = relRegex.exec(presRelsXml)) !== null) {
+          relMap.set(rm[1], resolvePptxRelPath('ppt', rm[2]));
+        }
+        const sldIdRegex = /<p:sldId\b[^>]*r:id=["']([^"']+)["'][^>]*>/gi;
+        let sm: RegExpExecArray | null;
+        while ((sm = sldIdRegex.exec(presXml)) !== null) {
+          const target = relMap.get(sm[1]);
+          if (target && zip.files[target]) {
+            orderedSlidePaths.push(target);
+          }
+        }
+      }
+    } catch {
+      orderedSlidePaths = [];
+    }
+
+    // Fallback to numeric slide sorting if presentation.xml order wasn't found
+    if (orderedSlidePaths.length === 0) {
+      orderedSlidePaths = fileKeys
+        .filter((k) => /^ppt\/slides\/slide\d+\.xml$/i.test(k))
+        .sort((a, b) => {
+          const numA = parseInt(a.match(/slide(\d+)\.xml/i)?.[1] || '0', 10);
+          const numB = parseInt(b.match(/slide(\d+)\.xml/i)?.[1] || '0', 10);
+          return numA - numB;
+        });
+    }
+
+    if (orderedSlidePaths.length === 0) return null;
+
+    const mediaCache = new Map<string, string>();
+    const slides: RichPptxSlide[] = [];
+
+    for (let i = 0; i < orderedSlidePaths.length; i++) {
+      const slidePath = orderedSlidePaths[i];
+      const slideFile = zip.files[slidePath];
+      if (!slideFile) continue;
+
+      const xml = await slideFile.async('string');
+      const slideFileName = slidePath.split('/').pop() || `slide${i + 1}.xml`;
+      const relsPath = `ppt/slides/_rels/${slideFileName}.rels`;
+
+      // 1. Parse slide relationships (embedded images + speaker notes)
+      const relTargets = new Map<string, string>();
+      let notesPath: string | null = null;
+      if (zip.files[relsPath]) {
+        const relsXml = await zip.files[relsPath].async('string');
+        const relRegex = /<Relationship\b([^>]+)>/gi;
+        let m: RegExpExecArray | null;
+        while ((m = relRegex.exec(relsXml)) !== null) {
+          const attrs = m[1];
+          const id = attrs.match(/\bId=["']([^"']+)["']/)?.[1];
+          const target = attrs.match(/\bTarget=["']([^"']+)["']/)?.[1];
+          const type = attrs.match(/\bType=["']([^"']+)["']/)?.[1] || '';
+          if (id && target) {
+            const fullPath = resolvePptxRelPath('ppt/slides', target);
+            relTargets.set(id, fullPath);
+            if (/notesSlide/i.test(type)) {
+              notesPath = fullPath;
+            }
+          }
+        }
+      }
+
+      // 2. Slide background color (<p:bg> -> <a:srgbClr val="XXXXXX"/>)
+      let bgColor: string | undefined;
+      const bgMatch = xml.match(/<p:bg\b[^>]*>[\s\S]*?<\/p:bg>/i);
+      if (bgMatch) {
+        const hexMatch = bgMatch[0].match(/<a:srgbClr\b[^>]*val=["']([0-9A-Fa-f]{6})["']/i);
+        if (hexMatch) {
+          bgColor = `#${hexMatch[1]}`;
+        }
+      }
+
+      // 3. Extract embedded images referenced via r:embed="rIdX"
+      const images: string[] = [];
+      const seenImgPaths = new Set<string>();
+      const embedRegex = /r:embed=["']([^"']+)["']/gi;
+      let em: RegExpExecArray | null;
+      while ((em = embedRegex.exec(xml)) !== null) {
+        const mediaPath = relTargets.get(em[1]);
+        if (!mediaPath || seenImgPaths.has(mediaPath)) continue;
+        seenImgPaths.add(mediaPath);
+        const imgMime = inferImageMimeFromPath(mediaPath);
+        if (!imgMime || !zip.files[mediaPath]) continue;
+        let dataUrl = mediaCache.get(mediaPath);
+        if (!dataUrl) {
+          const b64 = await zip.files[mediaPath].async('base64');
+          dataUrl = `data:${imgMime};base64,${b64}`;
+          mediaCache.set(mediaPath, dataUrl);
+        }
+        images.push(dataUrl);
+      }
+
+      // 4. Extract tables (<a:tbl>)
+      const tables: string[][][] = [];
+      const tblMatches = xml.match(/<a:tbl\b[^>]*>[\s\S]*?<\/a:tbl>/gi) || [];
+      for (const tblXml of tblMatches) {
+        const rows: string[][] = [];
+        const trMatches = tblXml.match(/<a:tr\b[^>]*>[\s\S]*?<\/a:tr>/gi) || [];
+        for (const trXml of trMatches) {
+          const cells: string[] = [];
+          const tcMatches = trXml.match(/<a:tc\b[^>]*>[\s\S]*?<\/a:tc>/gi) || [];
+          for (const tcXml of tcMatches) {
+            const texts = (tcXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [])
+              .map((t) => decodeXmlEntities(t.replace(/<[^>]+>/g, '')))
+              .join(' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            cells.push(texts);
+          }
+          if (cells.length > 0) rows.push(cells);
+        }
+        if (rows.length > 0) tables.push(rows);
+      }
+
+      // 5. Extract non-table paragraphs (preserving titles, bullet levels, bold & hex colors)
+      const xmlWithoutTables = xml.replace(/<a:tbl\b[^>]*>[\s\S]*?<\/a:tbl>/gi, '');
+      const pMatches = xmlWithoutTables.match(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/gi) || [];
+      const paragraphs: RichPptxParagraph[] = [];
+
+      for (const pXml of pMatches) {
+        const tMatches = pXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [];
+        const line = tMatches
+          .map((t) => decodeXmlEntities(t.replace(/<[^>]+>/g, '')))
+          .join('')
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (!line) continue;
+
+        const lvlMatch = pXml.match(/<a:pPr\b[^>]*lvl=["'](\d+)["']/i);
+        const level = lvlMatch ? Math.min(3, parseInt(lvlMatch[1], 10) || 0) : 0;
+        const isBold = /<a:rPr\b[^>]*\bb=["']1["']/i.test(pXml);
+        const colorMatch = pXml.match(/<a:rPr\b[^>]*>[\s\S]*?<a:srgbClr\b[^>]*val=["']([0-9A-Fa-f]{6})["']/i);
+        const colorHex = colorMatch ? `#${colorMatch[1]}` : undefined;
+
+        paragraphs.push({ text: line, level, isBold, colorHex });
+      }
+
+      // 6. Extract speaker notes if present
+      let notes: string | undefined;
+      if (notesPath && zip.files[notesPath]) {
+        try {
+          const notesXml = await zip.files[notesPath].async('string');
+          const noteTexts = (notesXml.match(/<a:t\b[^>]*>([\s\S]*?)<\/a:t>/gi) || [])
+            .map((t) => decodeXmlEntities(t.replace(/<[^>]+>/g, '')))
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (noteTexts && !/^\d+$/.test(noteTexts)) {
+            notes = noteTexts;
+          }
+        } catch {
+          // Ignore malformed notes
+        }
+      }
+
+      const title =
+        paragraphs[0]?.text ||
+        (images.length > 0 ? `${baseTitle} — Slide ${i + 1}` : `Slide ${i + 1}`);
+      const bodyParagraphs = paragraphs.length > 1 ? paragraphs.slice(1) : [];
+
+      slides.push({
+        slideNumber: i + 1,
+        title,
+        paragraphs: bodyParagraphs,
+        images,
+        tables,
+        bgColor,
+        notes,
+      });
+    }
+
+    return slides.length > 0 ? slides : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Generates a responsive, self-contained HTML5 Presentation Slide Deck for .pptx/.ppt/.odp
+ * so every slide renders cleanly with its background colors, images, tables, bullets, and notes.
+ */
+export function buildRichPptxViewerHtml(
+  slides: RichPptxSlide[],
+  baseTitle: string
+): string {
+  const slidesMarkup = slides
+    .map((slide, idx) => {
+      const darkBg = isDarkHexColor(slide.bgColor);
+      const cardBg = slide.bgColor || '#FFFFFF';
+      const titleColor = darkBg ? '#FFFFFF' : '#14101B';
+      const bodyColor = darkBg ? '#E6E1EE' : '#2C2538';
+      const borderColor = darkBg ? 'rgba(255,255,255,0.16)' : '#E4DFEC';
+      const accentColor = darkBg ? '#93C5FD' : '#EB5E3C';
+
+      const bodyHtml =
+        slide.paragraphs.length > 0
+          ? `<ul class="pptx-bullets">${slide.paragraphs
+              .map((p) => {
+                const indentPx = p.level * 20;
+                const textColor = p.colorHex
+                  ? darkBg && isDarkHexColor(p.colorHex)
+                    ? bodyColor
+                    : p.colorHex
+                  : bodyColor;
+                return `<li style="margin-left:${indentPx}px;color:${textColor};font-weight:${
+                  p.isBold ? '700' : '400'
+                }">${escapeHtmlCell(p.text)}</li>`;
+              })
+              .join('')}</ul>`
+          : '';
+
+      const imagesHtml =
+        slide.images.length > 0
+          ? `<div class="pptx-images ${
+              slide.images.length > 1 ? 'pptx-images-grid' : ''
+            }">${slide.images
+              .map(
+                (src, imgIdx) =>
+                  `<figure class="pptx-figure"><img src="${src}" alt="Slide ${
+                    slide.slideNumber
+                  } graphic ${imgIdx + 1}" loading="lazy" /></figure>`
+              )
+              .join('')}</div>`
+          : '';
+
+      const tablesHtml =
+        slide.tables.length > 0
+          ? slide.tables
+              .map(
+                (tbl) =>
+                  `<div class="pptx-table-wrap"><table class="pptx-table">${tbl
+                    .map(
+                      (row, rIdx) =>
+                        `<tr>${row
+                          .map((cell) =>
+                            rIdx === 0
+                              ? `<th>${escapeHtmlCell(cell)}</th>`
+                              : `<td>${escapeHtmlCell(cell)}</td>`
+                          )
+                          .join('')}</tr>`
+                    )
+                    .join('')}</table></div>`
+              )
+              .join('')
+          : '';
+
+      const notesHtml = slide.notes
+        ? `<details class="pptx-notes"><summary>Speaker Notes</summary><p>${escapeHtmlCell(
+            slide.notes
+          )}</p></details>`
+        : '';
+
+      const hasTwoColumnContent =
+        slide.images.length > 0 &&
+        (slide.paragraphs.length > 0 || slide.tables.length > 0);
+
+      return `<section class="pptx-slide" data-slide-number="${slide.slideNumber}" id="slide-${
+        idx + 1
+      }" style="background:${cardBg};border-color:${borderColor};color:${bodyColor};">
+        <div class="pptx-slide-header" style="border-bottom-color:${borderColor};">
+          <span class="pptx-badge" style="background:${accentColor};">Slide ${
+        slide.slideNumber
+      } / ${slides.length}</span>
+          <h2 class="pptx-title" style="color:${titleColor};">${escapeHtmlCell(
+        slide.title
+      )}</h2>
+        </div>
+        <div class="pptx-slide-body ${
+          hasTwoColumnContent ? 'pptx-two-col' : ''
+        }">
+          <div class="pptx-text-col">${bodyHtml}${tablesHtml}</div>
+          ${imagesHtml}
+        </div>
+        ${notesHtml}
+      </section>`;
+    })
+    .join('\n');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${escapeHtmlCell(baseTitle)}</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 20px 14px 48px;
+    background: #EFEBF5;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    color: #14101B;
+  }
+  .pptx-deck-header {
+    max-width: 960px;
+    margin: 0 auto 18px;
+    padding: 14px 18px;
+    border-radius: 14px;
+    background: #FFFFFF;
+    border: 1px solid #DFD9EB;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    box-shadow: 0 2px 10px rgba(20,16,27,0.05);
+  }
+  .pptx-deck-header h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 800;
+    color: #14101B;
+  }
+  .pptx-deck-count {
+    font-size: 12px;
+    font-weight: 700;
+    color: #EB5E3C;
+    background: #FFF1EC;
+    padding: 4px 10px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pptx-deck {
+    max-width: 960px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+  .pptx-slide {
+    width: 100%;
+    min-height: 420px;
+    border-radius: 16px;
+    border: 1px solid #E4DFEC;
+    padding: 26px 28px;
+    box-shadow: 0 10px 28px rgba(20, 16, 27, 0.10);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    scroll-margin-top: 16px;
+  }
+  .pptx-slide-header {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid #E4DFEC;
+  }
+  .pptx-badge {
+    align-self: flex-start;
+    color: #FFFFFF;
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.03em;
+    padding: 4px 10px;
+    border-radius: 999px;
+  }
+  .pptx-title {
+    margin: 0;
+    font-size: clamp(20px, 3vw, 28px);
+    line-height: 1.25;
+    font-weight: 800;
+  }
+  .pptx-slide-body {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .pptx-slide-body.pptx-two-col {
+    display: grid;
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 0.85fr);
+    gap: 22px;
+    align-items: start;
+  }
+  @media (max-width: 720px) {
+    .pptx-slide { padding: 18px 16px; min-height: 300px; }
+    .pptx-slide-body.pptx-two-col { grid-template-columns: 1fr; }
+  }
+  .pptx-bullets {
+    margin: 0;
+    padding-left: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  .pptx-images {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .pptx-images-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .pptx-figure {
+    margin: 0;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(0,0,0,0.08);
+    background: rgba(255,255,255,0.65);
+  }
+  .pptx-figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 420px;
+    object-fit: contain;
+  }
+  .pptx-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+    margin-top: 8px;
+  }
+  .pptx-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+    background: rgba(255,255,255,0.92);
+    color: #14101B;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .pptx-table th, .pptx-table td {
+    border: 1px solid #D8D2E5;
+    padding: 8px 10px;
+    text-align: left;
+  }
+  .pptx-table th {
+    background: #F4F1F8;
+    font-weight: 700;
+  }
+  .pptx-notes {
+    margin-top: auto;
+    padding-top: 10px;
+    border-top: 1px dashed rgba(128,128,128,0.35);
+    font-size: 13px;
+    opacity: 0.9;
+  }
+  .pptx-notes summary {
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .pptx-notes p {
+    margin: 8px 0 0;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+  <header class="pptx-deck-header">
+    <h1>${escapeHtmlCell(baseTitle)}</h1>
+    <span class="pptx-deck-count">${slides.length} Slide${slides.length === 1 ? '' : 's'}</span>
+  </header>
+  <main class="pptx-deck">
+    ${slidesMarkup}
+  </main>
+</body>
+</html>`;
+}
+
 /**
  * Parses an uploaded PowerPoint (.pptx, .ppt), HTML slide deck, PDF, or text outline
  * into structured SlideDeckItem[] slides without leaking CSS/XML/ZIP code.
@@ -5433,8 +6042,16 @@ export function detectUniversalDocumentFormat(
  * into a multi-page searchable PDF + rich HTML representation for the Universal Reader.
  */
 export async function convertAnyUploadedFileToPdfAndHtml(
-  file: File
+  file: File,
+  onProgress?: (percent: number, stage: string) => void
 ): Promise<ConvertedUniversalDocumentResult> {
+  const reportProgress = async (pct: number, stage: string) => {
+    if (onProgress) {
+      onProgress(Math.max(1, Math.min(99, Math.round(pct))), stage);
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  };
+
   const lowerName = (file.name || '').toLowerCase();
   const mime = (file.type || '').toLowerCase();
   const baseTitle = file.name.replace(/\.[^.]+$/, '') || 'Document';
@@ -5442,6 +6059,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     ? file.name
     : `${baseTitle}.pdf`;
 
+  await reportProgress(10, 'Reading file from device...');
   const buf = await file.arrayBuffer();
   const rawBytes = new Uint8Array(buf);
 
@@ -5451,6 +6069,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     );
   }
 
+  await reportProgress(24, 'Detecting document format...');
   const detectedExt = detectUniversalDocumentFormat(
     file.name || '',
     mime,
@@ -5469,19 +6088,47 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     let pageCount = 1;
     let extractedText = '';
     try {
-      pageCount = await getPdfPageCount(rawBytes);
+      await reportProgress(38, 'Loading PDF structure...');
+      const dataCopy = new Uint8Array(rawBytes);
+      const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
+      const pdf = await loadingTask.promise;
+      pageCount = pdf.numPages || 1;
+      await reportProgress(55, `Indexing ${pageCount} PDF pages...`);
+      // Only sample the first up to 8 pages during initial upload so 300-1000+ page books open instantaneously
+      const sampleLimit = Math.min(pageCount, 8);
+      const samplePages: string[] = [];
+      for (let i = 1; i <= sampleLimit; i++) {
+        try {
+          const page = await pdf.getPage(i);
+          const tc = await page.getTextContent();
+          const txt = tc.items
+            .map((item) => ('str' in item ? item.str : ''))
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+          if (txt) {
+            samplePages.push(`--- Page ${i} ---\n${txt}`);
+          }
+          page.cleanup();
+          if (onProgress && (i === sampleLimit || i % 2 === 0)) {
+            const pct = 55 + Math.round((i / sampleLimit) * 32);
+            await reportProgress(pct, `Preparing page ${i} of ${pageCount}...`);
+          }
+        } catch {
+          // Skip page text extraction error
+        }
+      }
+      extractedText = samplePages.join('\n\n');
+      await loadingTask.destroy();
     } catch {
-      pageCount = 1;
-    }
-    try {
-      const pageTexts = await extractAllPdfText(rawBytes);
-      extractedText = pageTexts
-        .map((p) => `--- Page ${p.pageNumber} ---\n${p.text}`)
-        .join('\n\n');
-    } catch {
-      extractedText = '';
+      try {
+        pageCount = await getPdfPageCount(rawBytes);
+      } catch {
+        pageCount = 1;
+      }
     }
 
+    await reportProgress(92, 'Finalizing PDF reader view...');
     const htmlParagraphs = (extractedText || baseTitle)
       .split(/\n{2,}/)
       .map((p) => p.trim())
@@ -5512,17 +6159,20 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     mime.includes('csv') ||
     mime.includes('tab-separated')
   ) {
+    await reportProgress(42, 'Parsing spreadsheet workbook...');
     const sheets = await parseUploadedWorkbookSheets(file);
     const rows: string[][] =
       sheets.length === 1
         ? sheets[0].rows
         : sheets.flatMap((s) => [[`=== Sheet: ${s.name} ===`], ...s.rows]);
+    await reportProgress(72, 'Building spreadsheet layout...');
     const { pdfBytes, pageCount } = await convertSpreadsheetRowsToPdf(
       rows,
       baseTitle,
       'landscape'
     );
     const interactiveExcelHtml = buildInteractiveExcelHtml(sheets, baseTitle);
+    await reportProgress(92, 'Finalizing workbook...');
 
     return {
       pdfBytes,
@@ -5534,36 +6184,60 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     };
   }
 
-  // 3. Presentations (.pptx, .ppt)
+  // 3. Presentations (.pptx, .ppt, .odp)
   if (
-    ['pptx', 'ppt'].includes(detectedExt) ||
+    ['pptx', 'ppt', 'odp'].includes(detectedExt) ||
     mime.includes('presentation') ||
-    mime.includes('powerpoint')
+    mime.includes('powerpoint') ||
+    mime.includes('opendocument.presentation')
   ) {
-    const slides = await parseUploadedPresentationFile(file);
+    await reportProgress(38, 'Extracting presentation slides & media...');
+    const rawBytes = new Uint8Array(await file.arrayBuffer());
+    const richSlides = await parseRichPptxSlides(rawBytes, baseTitle);
+    const slides: SlideDeckItem[] =
+      richSlides && richSlides.length > 0
+        ? richSlides.map((s) => ({
+            slideNumber: s.slideNumber,
+            title: s.title,
+            bullets:
+              s.paragraphs.length > 0
+                ? s.paragraphs.map((p) => p.text)
+                : ['Slide content'],
+          }))
+        : await parseUploadedPresentationFile(file);
+
+    await reportProgress(72, 'Rendering presentation deck...');
     const { pdfBytes, pageCount } = await buildPresentationPdfFromSlides(
       slides,
       baseTitle
     );
-    const slideHtml = slides
-      .map(
-        (s) =>
-          `<section><h2>Slide ${s.slideNumber}: ${escapeHtmlCell(
-            s.title
-          )}</h2><ul>${s.bullets
-            .map((b) => `<li>${escapeHtmlCell(b)}</li>`)
-            .join('')}</ul></section>`
-      )
-      .join('\n<hr />\n');
+    const richSlideHtml =
+      richSlides && richSlides.length > 0
+        ? buildRichPptxViewerHtml(richSlides, baseTitle)
+        : buildRichPptxViewerHtml(
+            slides.map((s) => ({
+              slideNumber: s.slideNumber,
+              title: s.title,
+              paragraphs: s.bullets.map((b) => ({
+                text: b,
+                level: 0,
+                isBold: false,
+              })),
+              images: [],
+              tables: [],
+            })),
+            baseTitle
+          );
+    await reportProgress(92, 'Finalizing presentation...');
 
     return {
       pdfBytes,
-      pageCount,
+      pageCount: Math.max(pageCount, slides.length),
       extractedText: slides
         .map((s) => `${s.title}\n${s.bullets.join('\n')}`)
         .join('\n\n'),
-      rawHtmlContent: `<h1>${escapeHtmlCell(baseTitle)}</h1>\n${slideHtml}`,
-      sourceFormat: detectedExt,
+      rawHtmlContent: richSlideHtml,
+      sourceFormat: detectedExt || 'pptx',
       outputPdfName,
     };
   }
@@ -5574,11 +6248,14 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     !mime.includes('svg') &&
     !/\.(?:svg|html|htm|xhtml|epub|kpf|kdf)$/i.test(lowerName)
   ) {
+    await reportProgress(45, 'Decoding image...');
     const dataUrl = await readImageFileAsDataUrl(file);
+    await reportProgress(78, 'Embedding image into PDF page...');
     const pdfBytes = await createPdfFromImages([dataUrl], {
       pageSize: 'A4',
       marginPt: 18,
     });
+    await reportProgress(94, 'Finalizing image document...');
     return {
       pdfBytes,
       pageCount: 1,
@@ -5595,6 +6272,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
 
   // 5. eBooks (.kpf, .kdf, .epub, .mobi, .azw3, .fb2), HTML (.html, .htm, .xhtml),
   //    Word & OpenDocument (.docx, .doc, .odt, .ods, .odp), Markdown (.md), RTF, JSON, XML, TXT
+  await reportProgress(42, `Parsing ${detectedExt.toUpperCase()} document content...`);
   const parsed = await parseUploadedWordFile(file);
 
   // If this is a KPF/KDF ZIP package containing an embedded `OEBPS/source_replica.pdf`, restore its exact PDF pages!
@@ -5605,6 +6283,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     lowerName.endsWith('.kdf')
   ) {
     try {
+      await reportProgress(68, 'Checking embedded KPF/KDF print replica...');
       const embeddedPdf = await extractBinaryEntryFromZip(
         rawBytes,
         'OEBPS/source_replica.pdf'
@@ -5616,6 +6295,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
         embeddedPdf[1] === 0x50
       ) {
         const replicaPageCount = await getPdfPageCount(embeddedPdf);
+        await reportProgress(92, 'Restoring exact print replica pages...');
         return {
           pdfBytes: embeddedPdf,
           pageCount: replicaPageCount,
@@ -5638,8 +6318,13 @@ export async function convertAnyUploadedFileToPdfAndHtml(
     ? (parsed.htmlPreview.match(/<section\b[^>]*class=["'][^"']*docx[^"']*["']/gi) || []).length
     : 0;
 
+  // Cap upfront PDF generation blocks for massive eBooks so upload never hangs while preserving 100% of HTML/text for the Reader
+  const blocksForUpfrontPdf =
+    parsed.blocks.length > 320 ? parsed.blocks.slice(0, 320) : parsed.blocks;
+
+  await reportProgress(74, 'Formatting pages for Document Reader...');
   const { pdfBytes, pageCount } = await generatePdfFromWordBlocks(
-    parsed.blocks,
+    blocksForUpfrontPdf,
     {
       pageSize: 'A4',
       fontFamily:
@@ -5651,6 +6336,7 @@ export async function convertAnyUploadedFileToPdfAndHtml(
       addPageNumbers: true,
     }
   );
+  await reportProgress(93, 'Finalizing document...');
 
   const preservedWordName = isNativeWordFormat
     ? lowerName.endsWith('.docx') || lowerName.endsWith('.doc')

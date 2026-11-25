@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { QrCodeReaderWorkspace } from './QrCodeReaderWorkspace';
 import {
   Download,
   Upload,
@@ -5119,6 +5120,19 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         setFeedback={setFeedback}
         onSaveNewDocument={onSaveNewDocument}
         onOpenInEditor={onOpenInEditor}
+      />
+    );
+  }
+
+  // ============================================================================
+  // QR CODE READER & SCANNER WORKSPACE ('qr-reader')
+  // ============================================================================
+  if (activeTool === 'qr-reader') {
+    return (
+      <QrCodeReaderWorkspace
+        documents={documents}
+        selectedDoc={selectedDoc}
+        setFeedback={setFeedback}
       />
     );
   }

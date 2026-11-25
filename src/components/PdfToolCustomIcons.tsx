@@ -946,7 +946,39 @@ export const PdfToolCustomIcon: React.FC<ToolIconProps> = ({
         </svg>
       );
 
-    // 35. WORKFLOW PDF
+    // 35. QR CODE READER: Teal viewfinder scanner corners with QR matrix & laser scan line
+    case 'qr-reader':
+      return (
+        <svg viewBox="0 0 44 44" fill="none" className={className}>
+          <rect x="2" y="2" width="40" height="40" rx="10" fill="#0D9488" />
+          {/* Scanner corner brackets */}
+          <path
+            d="M9 15V11C9 9.9 9.9 9 11 9H15M29 9H33C34.1 9 35 9.9 35 11V15M35 29V33C35 34.1 34.1 35 33 35H29M15 35H11C9.9 35 9 34.1 9 33V29"
+            stroke="white"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+          {/* Mini QR blocks inside */}
+          <rect x="14" y="14" width="6" height="6" rx="1.4" fill="white" />
+          <rect x="24" y="14" width="6" height="6" rx="1.4" fill="white" />
+          <rect x="14" y="24" width="6" height="6" rx="1.4" fill="white" />
+          <rect x="24" y="25" width="3" height="3" rx="0.8" fill="white" />
+          <rect x="27.5" y="27.5" width="3" height="3" rx="0.8" fill="white" />
+          {/* Horizontal scan beam */}
+          <line
+            x1="8"
+            y1="22"
+            x2="36"
+            y2="22"
+            stroke="#99F6E4"
+            strokeWidth="2.4"
+            strokeLinecap="round"
+          />
+        </svg>
+      );
+
+    // 36. WORKFLOW PDF
     case 'workflow-pdf':
     default:
       return (

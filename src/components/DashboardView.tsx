@@ -155,6 +155,12 @@ const QUICK_TOOLS: {
     icon: QrCode,
     accentClass: 'text-[#6D28D9] dark:text-[#C4B5FD] bg-[#6D28D9]/10 dark:bg-[#6D28D9]/20',
   },
+  {
+    id: 'qr-reader',
+    label: 'QR Reader',
+    icon: QrCode,
+    accentClass: 'text-[#0D9488] dark:text-[#5EEAD4] bg-[#0D9488]/10 dark:bg-[#0D9488]/20',
+  },
 ];
 
 export function formatRelativeTime(isoDate: string): string {
@@ -210,6 +216,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   const [showAllDashboardTools, setShowAllDashboardTools] = useState(false);
   const [dashboardToolCategory, setDashboardToolCategory] =
     useState<PdfToolCategoryFilter>('All');
+  const [dashboardToolSearch, setDashboardToolSearch] = useState('');
 
   // Cloud Import / Export Modal & Plus (+) Upload Chooser state
   const [showPlusSourceMenu, setShowPlusSourceMenu] = useState(false);
@@ -442,34 +449,72 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         onChange={handleImageUploadChange}
       />
 
-      {/* Quick PDF & Word Tools + Expandable 30+ PDF Tools Catalog */}
+      {/* Quick PDF & Word Tools + Instant Tool Search Bar + Expandable 30+ PDF Tools Catalog */}
       <section className="rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-4 sm:p-5 space-y-3.5">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
-              {showAllDashboardTools
-                ? 'All PDF & Document Tools'
-                : 'Quick PDF & Word Tools'}
-            </h2>
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]">
-              {PDF_TOOLS_CATALOG.length} Tools
-            </span>
-          </div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          <div className="flex items-center justify-between sm:justify-start gap-2">
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm sm:text-base font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                {showAllDashboardTools || dashboardToolSearch.trim()
+                  ? 'All PDF & Document Tools'
+                  : 'Quick PDF & Word Tools'}
+              </h2>
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-[#4A1D5E]/10 dark:bg-[#9D5CE5]/20 text-[#4A1D5E] dark:text-[#D5B3FF]">
+                {PDF_TOOLS_CATALOG.length} Tools
+              </span>
+            </div>
 
-          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowAllDashboardTools((prev) => !prev)}
-              className="px-3 py-1 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer transition-colors"
+              onClick={() => {
+                setShowAllDashboardTools((prev) => !prev);
+                if (showAllDashboardTools) setDashboardToolSearch('');
+              }}
+              className="sm:hidden px-2.5 py-1 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[11px] font-bold text-[#4A1D5E] dark:text-[#D5B3FF] cursor-pointer"
+            >
+              {showAllDashboardTools ? 'Compact' : `All (${PDF_TOOLS_CATALOG.length})`}
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2 flex-1 sm:max-w-md sm:justify-end">
+            {/* Instant Tool Search Bar — search any of the 35+ tools without scrolling */}
+            <div className="relative flex-1">
+              <Search className="w-3.5 h-3.5 text-[#6E667D] dark:text-[#A39BB5] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={dashboardToolSearch}
+                onChange={(e) => setDashboardToolSearch(e.target.value)}
+                placeholder={`Search ${PDF_TOOLS_CATALOG.length} tools (Merge, Compress, Word, OCR, Split...)`}
+                className="w-full pl-8 pr-7 py-1.5 text-xs rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#14101B] dark:text-[#F4F1F8] placeholder-[#6E667D] focus:outline-none focus:border-[#4A1D5E]"
+              />
+              {dashboardToolSearch && (
+                <button
+                  type="button"
+                  onClick={() => setDashboardToolSearch('')}
+                  title="Clear tool search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-[#6E667D] hover:text-[#14101B] dark:hover:text-white cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setShowAllDashboardTools((prev) => !prev);
+                if (showAllDashboardTools) setDashboardToolSearch('');
+              }}
+              className="hidden sm:inline-flex px-3 py-1.5 rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-xs font-bold text-[#4A1D5E] dark:text-[#D5B3FF] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] cursor-pointer transition-colors whitespace-nowrap shrink-0"
             >
               {showAllDashboardTools
                 ? 'Show Compact Bar'
-                : `View All ${PDF_TOOLS_CATALOG.length} PDF Tools`}
+                : `View All ${PDF_TOOLS_CATALOG.length} Tools`}
             </button>
           </div>
         </div>
 
-        {!showAllDashboardTools ? (
+        {!showAllDashboardTools && !dashboardToolSearch.trim() ? (
           <div className="grid grid-cols-4 sm:grid-cols-8 gap-2 sm:gap-3">
             {QUICK_TOOLS.map((tool) => (
               <button
@@ -487,8 +532,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             ))}
           </div>
         ) : (
-          <div className="space-y-3.5 pt-1">
-            {/* Category Filter Pills */}
+          <div className="space-y-3 pt-1">
+            {/* Category Filter Tabs */}
             <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
               {(
                 [
@@ -508,7 +553,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                     key={cat}
                     type="button"
                     onClick={() => setDashboardToolCategory(cat)}
-                    className={`px-3.5 py-1.5 rounded-full text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
+                    className={`px-3 py-1 rounded-full text-xs font-semibold whitespace-nowrap cursor-pointer transition-colors ${
                       active
                         ? 'bg-[#1D1D24] text-white dark:bg-[#F4F1F8] dark:text-[#0D0A12]'
                         : 'bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] text-[#4B4458] dark:text-[#C5BED4] hover:border-[#4A1D5E]'
@@ -520,69 +565,72 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               })}
             </div>
 
-            {/* 4-Column Visual Cards Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3.5">
-              {PDF_TOOLS_CATALOG.filter(
-                (t) =>
+            {/* Compact Responsive Tool Grid (2 columns on mobile, 4 on desktop so no endless scrolling) */}
+            {(() => {
+              const q = dashboardToolSearch.trim().toLowerCase();
+              const matchingTools = PDF_TOOLS_CATALOG.filter((t) => {
+                const matchesCat =
+                  q.length > 0 ||
                   dashboardToolCategory === 'All' ||
-                  t.categories.includes(dashboardToolCategory)
-              ).map((tool) => {
-                if (tool.id === 'workflow-pdf') {
-                  return (
+                  t.categories.includes(dashboardToolCategory);
+                if (!matchesCat) return false;
+                if (!q) return true;
+                return (
+                  t.label.toLowerCase().includes(q) ||
+                  t.description.toLowerCase().includes(q) ||
+                  t.id.toLowerCase().includes(q) ||
+                  t.categories.some((c) => c.toLowerCase().includes(q))
+                );
+              });
+
+              if (matchingTools.length === 0) {
+                return (
+                  <div className="p-6 text-center rounded-xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] space-y-1.5">
+                    <p className="text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      No tools matched &ldquo;{dashboardToolSearch}&rdquo;
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDashboardToolSearch('');
+                        setDashboardToolCategory('All');
+                      }}
+                      className="text-xs font-semibold text-[#003FE8] dark:text-[#60A5FA] underline cursor-pointer"
+                    >
+                      Clear tool search
+                    </button>
+                  </div>
+                );
+              }
+
+              return (
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5 sm:gap-3">
+                  {matchingTools.map((tool) => (
                     <button
                       key={tool.id}
                       type="button"
                       onClick={() => onOpenTool(tool.id)}
-                      className="group relative overflow-hidden text-left p-5 rounded-2xl border border-[#F8C9BE] dark:border-[#4D2830] bg-gradient-to-br from-[#FDE7E2] via-[#FCE1DA] to-[#FAD6CE] dark:from-[#341D22] dark:to-[#28151A] hover:shadow-md transition-all cursor-pointer flex flex-col justify-between gap-4"
+                      className="group relative text-left p-3 sm:p-4 rounded-2xl border border-[#ECE9F2] dark:border-[#261F33] bg-white dark:bg-[#0D0A12]/80 hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 transition-all cursor-pointer flex items-start gap-2.5 sm:gap-3 shadow-2xs hover:shadow-md"
                     >
-                      <div className="space-y-1.5 relative z-10">
-                        <h3 className="text-base font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
-                          Create a workflow
-                        </h3>
-                        <p className="text-xs leading-relaxed text-[#5C4744] dark:text-[#D9B8B2]">
-                          {tool.description}
-                        </p>
-                      </div>
-                      <div className="relative z-10 inline-flex items-center gap-1 text-xs font-bold text-[#1D1D24] dark:text-[#F4F1F8]">
-                        <span>Create workflow</span>
-                        <span>↗</span>
-                      </div>
-                    </button>
-                  );
-                }
-
-                return (
-                  <button
-                    key={tool.id}
-                    type="button"
-                    onClick={() => onOpenTool(tool.id)}
-                    className="group relative text-left p-5 rounded-2xl border border-[#ECE9F2] dark:border-[#261F33] bg-white dark:bg-[#0D0A12]/80 hover:bg-[#FAF9FB] dark:hover:bg-[#1C1528] hover:border-[#4A1D5E]/50 dark:hover:border-[#9D5CE5]/50 transition-all cursor-pointer flex flex-col justify-between gap-3 shadow-2xs hover:shadow-md"
-                  >
-                    {tool.isNew && (
-                      <span className="absolute top-4 right-4 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-[#E8F1FF] text-[#1D4ED8] dark:bg-[#1D4ED8]/25 dark:text-[#93C5FD]">
-                        New!
-                      </span>
-                    )}
-                    <div className="space-y-3">
-                      <div className="w-11 h-11 shrink-0 transition-transform group-hover:scale-105">
+                      <div className="w-9 h-9 sm:w-10 sm:h-10 shrink-0 transition-transform group-hover:scale-105">
                         <PdfToolCustomIcon
                           toolId={tool.id}
-                          className="w-11 h-11"
+                          className="w-9 h-9 sm:w-10 sm:h-10"
                         />
                       </div>
-                      <div className="space-y-1">
-                        <h3 className="text-[15px] font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                      <div className="min-w-0 flex-1 space-y-0.5">
+                        <h3 className="text-xs sm:text-sm font-bold text-[#14101B] dark:text-[#F4F1F8] truncate">
                           {tool.label}
                         </h3>
-                        <p className="text-xs leading-relaxed text-[#6E667D] dark:text-[#A39BB5] line-clamp-3">
+                        <p className="text-[11px] leading-snug text-[#6E667D] dark:text-[#A39BB5] line-clamp-2">
                           {tool.description}
                         </p>
                       </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
           </div>
         )}
       </section>

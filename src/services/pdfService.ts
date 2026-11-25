@@ -80,7 +80,14 @@ export interface RenderedPageInfo {
   dataUrl: string;
   extractedText: string;
   nativeTextBlocks: NativeTextBlock[];
+  isRendered?: boolean;
 }
+
+const PLACEHOLDER_PAGE_DATA_URL =
+  'data:image/svg+xml;utf8,' +
+  encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="714" height="1010" viewBox="0 0 714 1010"><rect width="714" height="1010" fill="#ffffff"/></svg>'
+  );
 
 /**
  * Loads a PDF via PDF.js (with pdf-lib fallback) and returns the total page count.
@@ -102,16 +109,18 @@ export async function getPdfPageCount(pdfBytes: Uint8Array): Promise<number> {
 async function renderSingleLoadedPdfPage(
   pdf: pdfjsLib.PDFDocumentProxy,
   pageNumber: number,
-  scale = 1.5,
-  format: 'image/png' | 'image/jpeg' = 'image/png',
-  quality = 0.92
+  scale = 1.35,
+  format: 'image/png' | 'image/jpeg' = 'image/jpeg',
+  quality = 0.88
 ): Promise<RenderedPageInfo> {
   const page = await pdf.getPage(pageNumber);
   const viewport = page.getViewport({ scale });
 
   const canvas = document.createElement('canvas');
-  canvas.width = Math.floor(viewport.width);
-  canvas.height = Math.floor(viewport.height);
+  const width = Math.max(1, Math.floor(viewport.width));
+  const height = Math.max(1, Math.floor(viewport.height));
+  canvas.width = width;
+  canvas.height = height;
   const ctx = canvas.getContext('2d');
   if (!ctx) {
     throw new Error('Could not initialize 2D canvas context for PDF rendering.');
@@ -119,13 +128,18 @@ async function renderSingleLoadedPdfPage(
 
   // Fill white background
   ctx.fillStyle = '#FFFFFF';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, width, height);
 
   await page.render({
     canvasContext: ctx,
     canvas,
     viewport,
   }).promise;
+
+  const dataUrl = canvas.toDataURL(format, quality);
+  // Immediately release native GPU backing texture to prevent mobile WebView out-of-memory freezes on large books
+  canvas.width = 0;
+  canvas.height = 0;
 
   // Extract native PDF text and structured clickable text blocks (for iLovePDF-style Content Editing)
   let extractedText = '';
@@ -184,15 +198,22 @@ async function renderSingleLoadedPdfPage(
     }
   } catch {
     extractedText = '';
+  } finally {
+    try {
+      page.cleanup();
+    } catch {
+      // Ignore page cleanup errors
+    }
   }
 
   return {
     pageNumber,
-    width: canvas.width,
-    height: canvas.height,
-    dataUrl: canvas.toDataURL(format, quality),
+    width,
+    height,
+    dataUrl,
     extractedText,
     nativeTextBlocks,
+    isRendered: true,
   };
 }
 
@@ -203,9 +224,9 @@ async function renderSingleLoadedPdfPage(
 export async function renderPdfPage(
   pdfBytes: Uint8Array,
   pageNumber: number,
-  scale = 1.5,
-  format: 'image/png' | 'image/jpeg' = 'image/png',
-  quality = 0.92
+  scale = 1.35,
+  format: 'image/png' | 'image/jpeg' = 'image/jpeg',
+  quality = 0.88
 ): Promise<RenderedPageInfo> {
   const dataCopy = new Uint8Array(pdfBytes);
   const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
@@ -224,56 +245,146 @@ export async function renderPdfPage(
 }
 
 /**
- * Loads a multi-page PDF once via PDF.js and renders all pages sequentially,
- * streaming progress via `onProgress` so multi-page PDFs load fast and reliably.
+ * Renders an on-demand subset of 1-indexed PDF page numbers in a single PDF.js session.
+ * Used when scrubbing the Page Slider or jumping to unrendered pages in large books.
+ */
+export async function renderPdfPagesSubset(
+  pdfBytes: Uint8Array,
+  pageNumbers: number[],
+  scale = 1.35
+): Promise<RenderedPageInfo[]> {
+  if (!pageNumbers.length) return [];
+  const dataCopy = new Uint8Array(pdfBytes);
+  const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
+  const pdf = await loadingTask.promise;
+  const totalPages = pdf.numPages;
+  const results: RenderedPageInfo[] = [];
+
+  try {
+    for (const pageNumber of pageNumbers) {
+      if (pageNumber < 1 || pageNumber > totalPages) continue;
+      try {
+        const info = await renderSingleLoadedPdfPage(
+          pdf,
+          pageNumber,
+          scale,
+          'image/jpeg',
+          0.88
+        );
+        results.push(info);
+      } catch {
+        // Ignore individual page failure
+      }
+    }
+  } finally {
+    await loadingTask.destroy();
+  }
+  return results;
+}
+
+/**
+ * Fast, lightweight book & PDF loader:
+ * 1. Immediately creates the full `1..totalPages` list with accurate page dimensions so the
+ *    Page Slider and total page count work from the very first moment.
+ * 2. Renders `initialPage` (default 1) immediately so the document opens on screen in < 0.25s.
+ * 3. Eagerly renders up to `maxEagerPages` (default 24) around `initialPage` in small batches,
+ *    while deeper pages in 100-1000+ page books are rendered on demand as the user scrolls or scrubs the Page Slider.
  */
 export async function renderAllPdfPages(
   pdfBytes: Uint8Array,
-  scale = 1.65,
-  onProgress?: (renderedPages: RenderedPageInfo[], totalPages: number) => void
+  scale = 1.35,
+  onProgress?: (renderedPages: RenderedPageInfo[], totalPages: number) => void,
+  options?: {
+    initialPage?: number;
+    maxEagerPages?: number;
+  }
 ): Promise<RenderedPageInfo[]> {
   const dataCopy = new Uint8Array(pdfBytes);
   const loadingTask = pdfjsLib.getDocument({ data: dataCopy });
   const pdf = await loadingTask.promise;
   const totalPages = pdf.numPages;
-  const renderedList: RenderedPageInfo[] = [];
+  const initialPage = Math.max(
+    1,
+    Math.min(totalPages, options?.initialPage || 1)
+  );
+  const maxEagerPages = options?.maxEagerPages ?? 24;
+
+  // Determine default page dimensions from page 1
+  let defaultWidth = 803;
+  let defaultHeight = 1136;
+  try {
+    const firstPage = await pdf.getPage(1);
+    const vp = firstPage.getViewport({ scale });
+    defaultWidth = Math.max(200, Math.floor(vp.width));
+    defaultHeight = Math.max(240, Math.floor(vp.height));
+  } catch {
+    // Use fallback A4 dimensions
+  }
+
+  // Pre-allocate full page list with lightweight placeholders so totalPages and Page Slider work immediately
+  const renderedList: RenderedPageInfo[] = Array.from(
+    { length: totalPages },
+    (_, idx) => ({
+      pageNumber: idx + 1,
+      width: defaultWidth,
+      height: defaultHeight,
+      dataUrl: PLACEHOLDER_PAGE_DATA_URL,
+      extractedText: '',
+      nativeTextBlocks: [],
+      isRendered: false,
+    })
+  );
+
+  // Build priority queue: initialPage first, then immediate neighbors, up to maxEagerPages
+  const pagesToRender: number[] = [];
+  const seen = new Set<number>();
+  const enqueue = (p: number) => {
+    if (p >= 1 && p <= totalPages && !seen.has(p) && pagesToRender.length < maxEagerPages) {
+      seen.add(p);
+      pagesToRender.push(p);
+    }
+  };
+  enqueue(initialPage);
+  enqueue(1);
+  for (let offset = 1; offset <= totalPages && pagesToRender.length < maxEagerPages; offset++) {
+    enqueue(initialPage + offset);
+    enqueue(initialPage - offset);
+  }
 
   try {
-    for (let pageNumber = 1; pageNumber <= totalPages; pageNumber++) {
+    for (let i = 0; i < pagesToRender.length; i++) {
+      const pageNumber = pagesToRender[i];
       try {
         const pageInfo = await renderSingleLoadedPdfPage(
           pdf,
           pageNumber,
           scale,
           'image/jpeg',
-          0.94
+          0.88
         );
-        renderedList.push(pageInfo);
+        renderedList[pageNumber - 1] = pageInfo;
       } catch (pageErr) {
         console.error(`Error rendering page ${pageNumber}:`, pageErr);
-        // Fallback blank page canvas so multi-page numbering never breaks
-        const fallbackCanvas = document.createElement('canvas');
-        fallbackCanvas.width = 714;
-        fallbackCanvas.height = 1010;
-        const fCtx = fallbackCanvas.getContext('2d');
-        if (fCtx) {
-          fCtx.fillStyle = '#FFFFFF';
-          fCtx.fillRect(0, 0, fallbackCanvas.width, fallbackCanvas.height);
-        }
-        renderedList.push({
+        renderedList[pageNumber - 1] = {
           pageNumber,
-          width: fallbackCanvas.width,
-          height: fallbackCanvas.height,
-          dataUrl: fallbackCanvas.toDataURL('image/jpeg', 0.85),
+          width: defaultWidth,
+          height: defaultHeight,
+          dataUrl: PLACEHOLDER_PAGE_DATA_URL,
           extractedText: '',
           nativeTextBlocks: [],
-        });
+          isRendered: true,
+        };
       }
 
-      if (onProgress) {
+      // Emit immediately on the very first rendered page (so the reader opens right away),
+      // then batch progress updates every 4 pages to keep React fluid.
+      if (
+        onProgress &&
+        (i === 0 || i === 1 || (i + 1) % 4 === 0 || i === pagesToRender.length - 1)
+      ) {
         onProgress([...renderedList], totalPages);
       }
-      // Yield briefly to keep the main thread responsive on multi-page documents
+      // Yield to keep the main thread responsive
       await new Promise((r) => setTimeout(r, 0));
     }
   } finally {

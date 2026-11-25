@@ -1,0 +1,167 @@
+{
+  "id": "/",
+  "name": "ElimikaPDF — PDF Reader, Scanner & PDF Editor",
+  "short_name": "ElimikaPDF",
+  "description": "Fast PDF Reader, document scanner, PDF editor, Word-to-PDF & PDF-to-Word converter, and OCR workbench.",
+  "theme_color": "#003FE8",
+  "background_color": "#FAF9FB",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "start_url": "/",
+  "scope": "/",
+  "orientation": "any",
+  "lang": "en",
+  "dir": "ltr",
+  "categories": ["productivity", "business", "utilities"],
+  "prefer_related_applications": false,
+  "launch_handler": {
+    "client_mode": ["focus-existing", "navigate-existing"]
+  },
+  "handle_links": "preferred",
+  "edge_side_panel": {
+    "preferred_width": 420
+  },
+  "file_handlers": [
+    {
+      "action": "/?action=pdf-reader",
+      "name": "ElimikaPDF Multi-Purpose Document, Book & HTML Reader",
+      "launch_type": "single-client",
+      "accept": {
+        "application/pdf": [".pdf"],
+        "application/epub+zip": [".epub"],
+        "application/vnd.amazon.kpf": [".kpf", ".kdf"],
+        "application/x-kpf": [".kpf", ".kdf"],
+        "application/x-sqlite3": [".kdf"],
+        "application/vnd.amazon.ebook": [".azw", ".azw3", ".kpf", ".kdf"],
+        "application/x-mobipocket-ebook": [".mobi", ".prc"],
+        "application/x-fictionbook+xml": [".fb2"],
+        "text/html": [".html", ".htm", ".shtml"],
+        "application/xhtml+xml": [".xhtml", ".xht"],
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+        "application/msword": [".doc"],
+        "application/vnd.oasis.opendocument.text": [".odt"],
+        "application/rtf": [".rtf"],
+        "text/markdown": [".md", ".markdown"],
+        "text/plain": [".txt"],
+        "text/csv": [".csv", ".tsv"],
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"]
+      }
+    }
+  ],
+  "share_target": {
+    "action": "/share-target",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url",
+      "files": [
+        {
+          "name": "SharedFiles",
+          "accept": [
+            "application/pdf",
+            "application/epub+zip",
+            "application/vnd.amazon.kpf",
+            "application/x-kpf",
+            "application/vnd.amazon.ebook",
+            "application/x-mobipocket-ebook",
+            "application/x-fictionbook+xml",
+            "text/html",
+            "application/xhtml+xml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+            "application/vnd.oasis.opendocument.text",
+            "text/markdown",
+            "text/plain",
+            "image/png",
+            "image/jpeg",
+            ".pdf",
+            ".epub",
+            ".kpf",
+            ".kdf",
+            ".mobi",
+            ".azw3",
+            ".fb2",
+            ".html",
+            ".htm",
+            ".xhtml",
+            ".docx",
+            ".doc",
+            ".odt",
+            ".rtf",
+            ".md",
+            ".txt"
+          ]
+        }
+      ]
+    }
+  },
+  "icons": [
+    {
+      "src": "/pwa-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-maskable-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/screenshot-mobile.png",
+      "sizes": "540x960",
+      "type": "image/png",
+      "form_factor": "narrow",
+      "label": "ElimikaPDF Smart Document Scanner & Auto-Crop"
+    },
+    {
+      "src": "/screenshot-desktop.png",
+      "sizes": "1280x720",
+      "type": "image/png",
+      "form_factor": "wide",
+      "label": "ElimikaPDF Editor & Word Conversion Workbench"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "PDF Reader",
+      "short_name": "Read PDF",
+      "description": "Open and read PDF documents in full-screen Reader Mode",
+      "url": "/?action=pdf-reader",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Scan Document",
+      "short_name": "Scan",
+      "description": "Capture and auto-crop a new document or receipt",
+      "url": "/?action=scan",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Edit PDF",
+      "short_name": "PDF Editor",
+      "description": "Annotate, sign, and redact PDF documents",
+      "url": "/?action=pdf-editor",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Word & PDF Converter",
+      "short_name": "Convert",
+      "description": "Convert Word to PDF or PDF to Word (.docx)",
+      "url": "/?action=pdf-tools",
+      "icons": [{ "src": "/pwa-192x192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
