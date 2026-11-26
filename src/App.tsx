@@ -922,12 +922,23 @@ export default function App() {
     navigateToView('editor');
   };
 
+  const upsertDocumentInState = useCallback((doc: StoredDocument) => {
+    setDocuments((prev) => {
+      const next = [doc, ...prev.filter((d) => d.id !== doc.id)];
+      next.sort(
+        (a, b) =>
+          new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+      );
+      return next;
+    });
+  }, []);
+
   const handleSaveScannedDocument = async (
     doc: StoredDocument,
     openInEditorAfter: boolean
   ) => {
     await storageService.saveDocument(doc);
-    await refreshVault();
+    upsertDocumentInState(doc);
     setActiveDocument(doc);
     if (openInEditorAfter) {
       setEditorReaderMode(false);
@@ -941,7 +952,7 @@ export default function App() {
     silent = false
   ) => {
     await storageService.saveDocument(doc);
-    await refreshVault();
+    upsertDocumentInState(doc);
     setActiveDocument(doc);
     if (!silent) {
       showToast(`Saved changes to "${doc.name}".`);
@@ -951,7 +962,7 @@ export default function App() {
   const handleToggleStar = async (doc: StoredDocument) => {
     const updated = { ...doc, starred: !doc.starred };
     await storageService.saveDocument(updated);
-    await refreshVault();
+    upsertDocumentInState(updated);
   };
 
   const handleRenameDocument = async (doc: StoredDocument, newName: string) => {
@@ -964,7 +975,7 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
     await storageService.saveDocument(updated);
-    await refreshVault();
+    upsertDocumentInState(updated);
     showToast(`Renamed document to "${finalName}".`);
   };
 
@@ -974,7 +985,7 @@ export default function App() {
   ) => {
     const updated = { ...doc, folderId, updatedAt: new Date().toISOString() };
     await storageService.saveDocument(updated);
-    await refreshVault();
+    upsertDocumentInState(updated);
   };
 
   const handleChangeCategory = async (
@@ -983,7 +994,7 @@ export default function App() {
   ) => {
     const updated = { ...doc, category, updatedAt: new Date().toISOString() };
     await storageService.saveDocument(updated);
-    await refreshVault();
+    upsertDocumentInState(updated);
   };
 
   const handleConfirmDeleteDocument = async () => {

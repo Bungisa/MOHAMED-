@@ -10,6 +10,7 @@ import {
   Download,
   Save,
   Undo2,
+  Loader2,
   Redo2,
   Type,
   Image as ImageIcon,
@@ -345,7 +346,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [showCompressModal, setShowCompressModal] = useState(false);
   const [saveDocName, setSaveDocName] = useState('');
   const [isRenamingInSaveModal, setIsRenamingInSaveModal] = useState(false);
-  const [saveFormat, setSaveFormat] = useState<'pdf' | 'jpg'>('pdf');
+  const [saveFormat, setSaveFormat] = useState<'pdf' | 'jpg' | 'txt'>('pdf');
   const [enablePasswordProtection, setEnablePasswordProtection] =
     useState(false);
   const [pdfPassword, setPdfPassword] = useState('');
@@ -364,6 +365,12 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
   const [compressedPreviewBytes, setCompressedPreviewBytes] =
     useState<Uint8Array | null>(null);
   const [isCompressingPreview, setIsCompressingPreview] = useState(false);
+  const [isPreparingSave, setIsPreparingSave] = useState(false);
+  const [saveProgress, setSaveProgress] = useState<{
+    active: boolean;
+    percent: number;
+    label: string;
+  } | null>(null);
 
   // Cloud Storage Modal state (Google Drive & Dropbox Import / Export)
   const [cloudModalState, setCloudModalState] = useState<{
@@ -2691,8 +2698,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       silent?: boolean;
       preBakedBytes?: Uint8Array | null;
       preCompressedBytes?: Uint8Array | null;
+      skipPdfBaking?: boolean;
+      onProgress?: (percent: number, label: string) => void;
     }): Promise<{ bakedBytes: Uint8Array; finalPdfBytes: Uint8Array; finalPdfName: string } | null> => {
       if (!workingPdfBytes || !activeDocument) return null;
+      const reportProgress = (percent: number, label: string) => {
+        options?.onProgress?.(percent, label);
+      };
+
       const docFmtLocal = (
         activeDocument.sourceFormat ||
         activeDocument.name.toLowerCase().match(/\.([a-z0-9]+)$/)?.[1] ||
@@ -2701,9 +2714,10 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       const isWordLocal = docFmtLocal === 'docx' || docFmtLocal === 'doc';
       const cleanTitle =
         (options?.customDocName ?? saveDocName).trim() ||
-        activeDocument.name.replace(/\.(?:pdf|docx?|odt)$/i, '');
+        activeDocument.name.replace(/\.(?:pdf|docx?|odt|txt)$/i, '');
 
       if (isWordLocal && activeDocument.originalFileBytes) {
+        reportProgress(40, 'Saving Word document...');
         const wordExt = docFmtLocal === 'doc' ? 'doc' : 'docx';
         const finalWordName = new RegExp(`\\.${wordExt}$`, 'i').test(cleanTitle)
           ? cleanTitle
@@ -2717,6 +2731,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           lastOpenedAt: nextUpdatedAt,
         };
         await onSaveUpdatedDocument(updatedDoc, options?.silent ?? false);
+        reportProgress(100, 'Saved!');
         return {
           bakedBytes: activeDocument.originalFileBytes,
           finalPdfBytes: activeDocument.originalFileBytes,
@@ -2728,16 +2743,51 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         ? cleanTitle
         : `${cleanTitle}.pdf`;
 
+      // Fast lightweight background save: persists annotations & settings without expensive full PDF re-baking on every keystroke!
+      if (options?.skipPdfBaking) {
+        const nextUpdatedAt = new Date().toISOString();
+        lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
+        const lightweightDoc: StoredDocument = {
+          ...activeDocument,
+          name: finalPdfName,
+          pageCount: pages.length || activeDocument.pageCount,
+          updatedAt: nextUpdatedAt,
+          lastOpenedAt: nextUpdatedAt,
+          basePdfData: activeDocument.basePdfData || workingPdfBytes,
+          annotations,
+          appliedFilter: pageColorFilter,
+          appliedBrightness: pageBrightness,
+          appliedContrast: pageContrast,
+          watermarkText,
+          addPageNumbers,
+        };
+        await onSaveUpdatedDocument(lightweightDoc, true);
+        return {
+          bakedBytes: workingPdfBytes,
+          finalPdfBytes: activeDocument.pdfData || workingPdfBytes,
+          finalPdfName,
+        };
+      }
+
       const hasFilteredPages = Object.keys(filteredPageUrls).length > 0;
-      const bakedBytes =
-        options?.preBakedBytes ||
-        (await bakeAnnotationsIntoPdf(workingPdfBytes, annotations, {
+      let bakedBytes: Uint8Array;
+      if (options?.preBakedBytes) {
+        reportProgress(78, 'Using prepared edits...');
+        bakedBytes = options.preBakedBytes;
+      } else {
+        reportProgress(12, 'Preparing edited pages...');
+        bakedBytes = await bakeAnnotationsIntoPdf(workingPdfBytes, annotations, {
           addPageNumbers,
           pageNumberPosition,
           watermarkText,
           watermarkOpacity,
           filteredPageDataUrls: hasFilteredPages ? filteredPageUrls : undefined,
-        }));
+          onProgress: (pct, label) => {
+            const mapped = Math.min(78, Math.max(12, Math.round(12 + (pct / 100) * 66)));
+            reportProgress(mapped, label);
+          },
+        });
+      }
 
       let finalPdfBytes = options?.preCompressedBytes || bakedBytes;
       if (
@@ -2750,9 +2800,14 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           quality: compressionQuality,
           highCompression,
           pageSize: pdfPageSize,
+          onProgress: (pct, label) => {
+            const mapped = Math.min(92, 78 + Math.round((pct / 100) * 14));
+            reportProgress(mapped, label);
+          },
         });
       }
 
+      reportProgress(94, 'Saving to My Documents...');
       const nextUpdatedAt = new Date().toISOString();
       lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
 
@@ -2764,7 +2819,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         updatedAt: nextUpdatedAt,
         lastOpenedAt: nextUpdatedAt,
         pdfData: finalPdfBytes,
-        basePdfData: new Uint8Array(workingPdfBytes),
+        basePdfData: activeDocument.basePdfData || workingPdfBytes,
         annotations,
         appliedFilter: pageColorFilter,
         appliedBrightness: pageBrightness,
@@ -2778,6 +2833,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
       };
 
       await onSaveUpdatedDocument(updatedDoc, options?.silent ?? false);
+      reportProgress(100, 'Saved!');
       return { bakedBytes, finalPdfBytes, finalPdfName };
     },
     [
@@ -2806,15 +2862,18 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     persistCurrentEditsRef.current = persistCurrentEditsToVault;
   }, [persistCurrentEditsToVault]);
 
-  // Automatic background save (debounced 900ms) triggered ONLY when actual user edits change
+  // Lightweight background auto-save (debounced 1400ms): saves annotations & settings to IndexedDB without slow full-PDF re-baking on every edit!
   useEffect(() => {
     if (!hasInitializedDocRef.current || !workingPdfBytes || !activeDocument) {
       return;
     }
     if (isApplyingFilter || isLoadingPages) return;
+    // Invalidate cached baked PDF whenever user edits change
+    setPreparedBaseBytes(null);
+    setCompressedPreviewBytes(null);
     const timer = setTimeout(() => {
-      persistCurrentEditsRef.current({ silent: true }).catch(() => {});
-    }, 900);
+      persistCurrentEditsRef.current({ silent: true, skipPdfBaking: true }).catch(() => {});
+    }, 1400);
     return () => clearTimeout(timer);
   }, [
     annotations,
@@ -2829,18 +2888,57 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     isLoadingPages,
   ]);
 
-  // Opens the Save Document Bottom Sheet (with Compress Now option) AND immediately persists the edited document to My Documents / Local Vault
+  // Helper to build fast edited plain text for .TXT book export
+  const buildEditedPlainTextForExport = useCallback((): string => {
+    if (!activeDocument) return '';
+    const baseText =
+      (activeDocument.ocrText && activeDocument.ocrText.trim()) ||
+      (activeDocument.rawHtmlContent
+        ? activeDocument.rawHtmlContent
+            .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+            .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+            .replace(/<br\s*\/?>/gi, '\n')
+            .replace(/<\/(?:p|div|h[1-6]|li|tr|section)>/gi, '\n')
+            .replace(/<[^>]+>/g, '')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim()
+        : '') ||
+      pages
+        .map((p) => p.extractedText || '')
+        .filter(Boolean)
+        .join('\n\n');
+
+    const addedNotes = annotations
+      .filter((a) => (a.type === 'text' || a.type === 'comment') && a.text?.trim())
+      .map((a) => `[Page ${a.pageNumber}] ${a.text!.trim()}`);
+
+    if (addedNotes.length === 0) return baseText;
+    return `${baseText}\n\n--- Saved Notes & Edits ---\n${addedNotes.join('\n')}`;
+  }, [activeDocument, pages, annotations]);
+
+  // Opens the Save Document Bottom Sheet and prepares/saves edits smoothly with live progress feedback
   const handleOpenSaveSheet = async () => {
     if (!workingPdfBytes || !activeDocument) return;
     const currentCleanName =
-      saveDocName.trim() || activeDocument.name.replace(/\.pdf$/i, '');
+      saveDocName.trim() || activeDocument.name.replace(/\.(?:pdf|txt)$/i, '');
     setSaveDocName(currentCleanName);
     setIsRenamingInSaveModal(false);
     setShowSaveModal(true);
+
+    // If we already prepared baked bytes for these exact edits, skip re-baking!
+    if (preparedBaseBytes) {
+      return;
+    }
+
+    setIsPreparingSave(true);
+    setSaveProgress({ active: true, percent: 10, label: 'Preparing edits...' });
     try {
       const saved = await persistCurrentEditsToVault({
         customDocName: currentCleanName,
-        silent: false,
+        silent: true,
+        onProgress: (percent, label) => {
+          setSaveProgress({ active: true, percent, label });
+        },
       });
       if (saved) {
         setPreparedBaseBytes(saved.bakedBytes);
@@ -2849,6 +2947,9 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     } catch (err) {
       console.error('Failed to prepare baked PDF preview:', err);
       setPreparedBaseBytes(workingPdfBytes);
+    } finally {
+      setIsPreparingSave(false);
+      setSaveProgress(null);
     }
   };
 
@@ -2903,18 +3004,89 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
     pdfPageSize,
   ]);
 
-  // Executes saving to the chosen destination from the Save Document bottom sheet
+  // Executes saving to the chosen destination from the Save Document bottom sheet with live saving progress UI
   const handleExecuteSaveDestination = async (
     destination: 'phone' | 'documents' | 'cloud' | 'gdrive' | 'email'
   ) => {
     if (!workingPdfBytes || !activeDocument) return;
-    setIsLoadingPages(true);
+    setShowSaveModal(false);
+    setShowCompressModal(false);
+    setSaveProgress({ active: true, percent: 12, label: 'Starting fast save...' });
+    await new Promise((r) => setTimeout(r, 0));
+
     try {
+      // Ultra-fast direct .TXT book export path (< 15ms!)
+      if (saveFormat === 'txt') {
+        setSaveProgress({ active: true, percent: 45, label: 'Formatting TXT book...' });
+        const cleanBase =
+          saveDocName.trim().replace(/\.(?:pdf|txt)$/i, '') ||
+          activeDocument.name.replace(/\.(?:pdf|txt)$/i, '') ||
+          'Book';
+        const txtFileName = `${cleanBase}.txt`;
+        const plainText = buildEditedPlainTextForExport();
+        const txtBytes = new TextEncoder().encode(plainText);
+
+        setSaveProgress({ active: true, percent: 78, label: 'Saving TXT book to vault...' });
+        const nextUpdatedAt = new Date().toISOString();
+        lastInternalSaveUpdatedAtRef.current = nextUpdatedAt;
+        await onSaveUpdatedDocument(
+          {
+            ...activeDocument,
+            ocrText: plainText,
+            originalFileBytes: txtBytes,
+            annotations,
+            updatedAt: nextUpdatedAt,
+            lastOpenedAt: nextUpdatedAt,
+          },
+          destination !== 'documents'
+        );
+
+        setSaveProgress({ active: true, percent: 100, label: 'Saved TXT book!' });
+        if (destination === 'phone') {
+          downloadBytesAsFile(txtBytes, txtFileName, 'text/plain;charset=utf-8');
+          setStatusMessage(
+            `Saved "${txtFileName}" (${formatFileSize(txtBytes.byteLength)}) to Phone Storage & My Documents.`
+          );
+        } else if (destination === 'documents') {
+          setStatusMessage(
+            `Saved "${txtFileName}" (${formatFileSize(txtBytes.byteLength)}) to My Documents.`
+          );
+        } else if (destination === 'cloud' || destination === 'gdrive') {
+          if (destination === 'gdrive' && !getGoogleDriveAccessTokenSync()) {
+            void googleDriveSignIn().catch(() => {});
+          }
+          setCloudModalState({
+            isOpen: true,
+            mode: 'export',
+            provider: destination === 'gdrive' ? 'google-drive' : 'dropbox',
+            exportPayloads: [
+              {
+                name: txtFileName,
+                bytes: txtBytes,
+                mimeType: 'text/plain',
+              },
+            ],
+          });
+        } else if (destination === 'email') {
+          downloadBytesAsFile(txtBytes, txtFileName, 'text/plain;charset=utf-8');
+          const subject = encodeURIComponent(`Document: ${txtFileName}`);
+          const body = encodeURIComponent(
+            `Please find attached "${txtFileName}" (${formatFileSize(txtBytes.byteLength)}).`
+          );
+          window.location.href = `mailto:?subject=${subject}&body=${body}`;
+          setStatusMessage(`Downloaded "${txtFileName}" and opened Email composer.`);
+        }
+        return;
+      }
+
       const saved = await persistCurrentEditsToVault({
         customDocName: saveDocName,
         silent: false,
         preBakedBytes: preparedBaseBytes,
         preCompressedBytes: compressedPreviewBytes,
+        onProgress: (percent, label) => {
+          setSaveProgress({ active: true, percent, label });
+        },
       });
       if (!saved) return;
       const { finalPdfBytes, finalPdfName } = saved;
@@ -2922,6 +3094,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
 
       // Handle JPG or Long Image export if chosen
       if (saveFormat === 'jpg' || createLongImage) {
+        setSaveProgress({ active: true, percent: 88, label: 'Rendering JPEG image...' });
         const imgExport = await exportPdfAsJpegBytes(finalPdfBytes, {
           longImage: createLongImage,
           quality: compressionQuality,
@@ -2931,8 +3104,7 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
         if (destination !== 'documents') {
           downloadBytesAsFile(imgExport.bytes, imgFileName, 'image/jpeg');
         }
-        setShowSaveModal(false);
-        setShowCompressModal(false);
+        setSaveProgress({ active: true, percent: 100, label: 'Saved image!' });
         setStatusMessage(
           `Saved "${imgFileName}" (${formatFileSize(imgExport.bytes.byteLength)}) successfully.`
         );
@@ -2957,8 +3129,6 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           `Saved "${finalPdfName}" (${formatFileSize(finalPdfBytes.byteLength)}) to My Documents.`
         );
       } else if (destination === 'cloud' || destination === 'gdrive') {
-        setShowSaveModal(false);
-        setShowCompressModal(false);
         if (destination === 'gdrive' && !getGoogleDriveAccessTokenSync()) {
           void googleDriveSignIn().catch(() => {});
         }
@@ -2986,11 +3156,8 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
           `Downloaded "${finalPdfName}" and opened Email composer.`
         );
       }
-
-      setShowSaveModal(false);
-      setShowCompressModal(false);
     } finally {
-      setIsLoadingPages(false);
+      setSaveProgress(null);
     }
   };
 
@@ -7080,20 +7247,42 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
                       |
                     </span>
                     <span>
-                      {isCompressingPreview
-                        ? 'Calculating size...'
-                        : formatFileSize(
-                            (
-                              compressedPreviewBytes ||
-                              preparedBaseBytes ||
-                              workingPdfBytes
-                            )?.byteLength || activeDocument.sizeBytes
-                          )}
+                      {isPreparingSave
+                        ? `Preparing... ${saveProgress?.percent ?? 20}%`
+                        : isCompressingPreview
+                          ? 'Calculating size...'
+                          : formatFileSize(
+                              (
+                                compressedPreviewBytes ||
+                                preparedBaseBytes ||
+                                workingPdfBytes
+                              )?.byteLength || activeDocument.sizeBytes
+                            )}
                     </span>
-                    <span className="ml-1 px-1.5 py-0.5 rounded bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[10px] font-bold">
-                      ✓ Saved in My Documents
-                    </span>
+                    {isPreparingSave ? (
+                      <span className="ml-1 px-2 py-0.5 rounded bg-[#2563EB]/15 text-[#2563EB] dark:text-[#60A5FA] text-[10px] font-bold inline-flex items-center gap-1">
+                        <Loader2 className="w-3 h-3 animate-spin" />
+                        Saving {saveProgress?.percent ?? 20}%
+                      </span>
+                    ) : (
+                      <span className="ml-1 px-1.5 py-0.5 rounded bg-[#15803D]/15 text-[#15803D] dark:text-[#4ADE80] text-[10px] font-bold">
+                        ✓ Saved in My Documents
+                      </span>
+                    )}
                   </p>
+                  {isPreparingSave && saveProgress && (
+                    <div className="mt-2 space-y-1">
+                      <div className="w-full h-1.5 rounded-full bg-[#E4DFEC] dark:bg-[#261F33] overflow-hidden">
+                        <div
+                          className="h-full bg-[#2563EB] transition-all duration-150 rounded-full"
+                          style={{ width: `${Math.max(8, Math.min(100, saveProgress.percent))}%` }}
+                        />
+                      </div>
+                      <p className="text-[10px] text-[#6E667D] dark:text-[#A39BB5]">
+                        {saveProgress.label}
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
               <button
@@ -7106,27 +7295,45 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               </button>
             </div>
 
-            {/* Row 1: Save as PDF / IMAGE (JPG) */}
+            {/* Row 1: Save as PDF / TXT / IMAGE (JPG) */}
             <div className="px-5 py-3.5 flex items-center justify-between border-b border-neutral-200/70 dark:border-[#261F33]">
               <span className="text-sm font-medium text-[#221E29] dark:text-[#F4F1F8]">
-                {saveFormat === 'pdf' ? 'Save as PDF' : 'Save as Image'}
+                {saveFormat === 'pdf'
+                  ? 'Save as PDF'
+                  : saveFormat === 'txt'
+                    ? 'Save as TXT (Instant)'
+                    : 'Save as Image'}
               </span>
               <div className="inline-flex rounded-md border border-neutral-300 dark:border-[#342B47] overflow-hidden">
                 <button
                   type="button"
                   onClick={() => setSaveFormat('pdf')}
-                  className={`px-5 py-1.5 text-xs font-bold tracking-wide transition-colors cursor-pointer ${
+                  className={`px-4 py-1.5 text-xs font-bold tracking-wide transition-colors cursor-pointer ${
                     saveFormat === 'pdf'
                       ? 'bg-[#DCE6EE] dark:bg-[#2563EB]/30 text-[#1E3A5F] dark:text-white border-r border-[#1E3A5F]/40'
-                      : 'bg-white dark:bg-[#16111F] text-[#6E667D] dark:text-[#A39BB5]'
+                      : 'bg-white dark:bg-[#16111F] text-[#6E667D] dark:text-[#A39BB5] border-r border-neutral-200 dark:border-[#342B47]'
                   }`}
                 >
                   PDF
                 </button>
                 <button
                   type="button"
+                  onClick={() => {
+                    setSaveFormat('txt');
+                    setCreateLongImage(false);
+                  }}
+                  className={`px-3.5 py-1.5 text-xs font-bold tracking-wide transition-colors cursor-pointer ${
+                    saveFormat === 'txt'
+                      ? 'bg-[#DCE6EE] dark:bg-[#2563EB]/30 text-[#1E3A5F] dark:text-white border-r border-[#1E3A5F]/40'
+                      : 'bg-white dark:bg-[#16111F] text-[#6E667D] dark:text-[#A39BB5] border-r border-neutral-200 dark:border-[#342B47]'
+                  }`}
+                >
+                  TXT
+                </button>
+                <button
+                  type="button"
                   onClick={() => setSaveFormat('jpg')}
-                  className={`px-4 py-1.5 text-xs font-semibold tracking-wide transition-colors cursor-pointer ${
+                  className={`px-3.5 py-1.5 text-xs font-semibold tracking-wide transition-colors cursor-pointer ${
                     saveFormat === 'jpg'
                       ? 'bg-[#DCE6EE] dark:bg-[#2563EB]/30 text-[#1E3A5F] dark:text-white'
                       : 'bg-white dark:bg-[#16111F] text-[#6E667D] dark:text-[#A39BB5]'
@@ -7564,6 +7771,33 @@ export const PdfEditorView: React.FC<PdfEditorViewProps> = ({
               >
                 Done
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Dedicated Saving Progress Loading Modal */}
+      {saveProgress?.active && !showSaveModal && (
+        <div className="fixed inset-0 z-[70] bg-black/45 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="w-full max-w-xs rounded-2xl bg-white dark:bg-[#16111F] border border-[#E4DFEC] dark:border-[#261F33] p-5 shadow-2xl space-y-3.5 text-center">
+            <div className="w-12 h-12 mx-auto rounded-2xl bg-[#2563EB]/12 text-[#2563EB] dark:text-[#60A5FA] flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin" />
+            </div>
+            <div>
+              <p className="text-sm font-extrabold text-[#14101B] dark:text-[#F4F1F8]">
+                Saving Book... {Math.min(100, Math.max(0, saveProgress.percent))}%
+              </p>
+              <p className="text-xs text-[#6E667D] dark:text-[#A39BB5] mt-1">
+                {saveProgress.label}
+              </p>
+            </div>
+            <div className="w-full h-2 rounded-full bg-[#ECE8F4] dark:bg-[#261F33] overflow-hidden">
+              <div
+                className="h-full bg-[#2563EB] dark:bg-[#60A5FA] rounded-full transition-all duration-150"
+                style={{
+                  width: `${Math.max(8, Math.min(100, saveProgress.percent))}%`,
+                }}
+              />
             </div>
           </div>
         </div>

@@ -3,6 +3,7 @@ import { QrCodeReaderWorkspace } from './QrCodeReaderWorkspace';
 import {
   Download,
   Upload,
+  Loader2,
   FileSpreadsheet,
   Presentation,
   PenTool,
@@ -748,6 +749,12 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
     }
   };
 
+  const [htmlSaveProgress, setHtmlSaveProgress] = useState<{
+    active: boolean;
+    percent: number;
+    label: string;
+  } | null>(null);
+
   const buildPdfFromHtmlMarkup = async (
     rawHtml: string,
     baseFileName: string,
@@ -755,6 +762,12 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
   ) => {
     setIsBusy(true);
     setFeedback(null);
+    setHtmlSaveProgress({
+      active: true,
+      percent: 8,
+      label: 'Parsing book paragraphs...',
+    });
+    await new Promise((r) => setTimeout(r, 0));
     try {
       const hasHtmlTags = /<[a-zA-Z!][\s\S]*?>/.test(rawHtml);
       const parsedBlocks = hasHtmlTags
@@ -774,8 +787,16 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
           baseFontSize: 11.5,
           lineSpacing: 1.4,
           addPageNumbers: true,
+          onProgress: (percent, label) => {
+            setHtmlSaveProgress({ active: true, percent, label });
+          },
         }
       );
+      setHtmlSaveProgress({
+        active: true,
+        percent: 96,
+        label: 'Saving book to My Documents...',
+      });
       const cleanBase =
         baseFileName.replace(/\.(html?|xhtml|txt|md)$/i, '').trim() ||
         `Webpage_Converted_${new Date().toISOString().slice(0, 10)}`;
@@ -791,6 +812,8 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
         updatedAt: new Date().toISOString(),
         lastOpenedAt: new Date().toISOString(),
         pdfData: pdfBytes,
+        rawHtmlContent: rawHtml,
+        sourceFormat: hasHtmlTags ? 'html' : 'txt',
       };
       await onSaveNewDocument(newDoc);
       setConvertedHtmlPdfResult({
@@ -802,7 +825,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       if (triggerDownload) {
         downloadBytesAsFile(pdfBytes, outName);
         setFeedback(
-          `Converted HTML into "${outName}" (${pageCount} ${
+          `Saved "${outName}" (${pageCount} ${
             pageCount === 1 ? 'page' : 'pages'
           }, ${formatBytes(pdfBytes.byteLength)}) and downloaded!`
         );
@@ -815,6 +838,7 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
       }
     } finally {
       setIsBusy(false);
+      setHtmlSaveProgress(null);
     }
   };
 
@@ -4705,8 +4729,45 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
               disabled={isBusy}
               className="px-4 py-2 rounded-xl bg-[#4A1D5E] hover:bg-[#3B174B] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs disabled:opacity-50"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span>{isBusy ? 'Converting...' : 'Export as PDF'}</span>
+              {isBusy ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Download className="w-3.5 h-3.5" />
+              )}
+              <span>
+                {htmlSaveProgress?.active
+                  ? `Saving ${htmlSaveProgress.percent}%...`
+                  : isBusy
+                    ? 'Saving...'
+                    : 'Export as PDF'}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => {
+                const cleanName = `${htmlFileName.replace(/\.(html?|txt|pdf)$/i, '') || 'Book'}.txt`;
+                const plainText = /<[a-zA-Z!][\s\S]*?>/.test(htmlSourceInput)
+                  ? htmlSourceInput
+                      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+                      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+                      .replace(/<br\s*\/?>/gi, '\n')
+                      .replace(/<\/(?:p|div|h[1-6]|li|tr|section)>/gi, '\n')
+                      .replace(/<[^>]+>/g, '')
+                      .replace(/\n{3,}/g, '\n\n')
+                      .trim()
+                  : htmlSourceInput;
+                downloadBytesAsFile(
+                  new TextEncoder().encode(plainText),
+                  cleanName,
+                  'text/plain;charset=utf-8'
+                );
+                setFeedback(`Saved TXT book "${cleanName}" instantly.`);
+              }}
+              className="px-3.5 py-2 rounded-xl border border-[#E4DFEC] dark:border-[#261F33] hover:bg-[#F2EFF6] dark:hover:bg-[#261F33] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5 text-[#2563EB]" />
+              <span>Save .TXT</span>
             </button>
 
             <button
@@ -4727,6 +4788,26 @@ export const ExtendedPdfToolsWorkspaces: React.FC<
             </button>
           </div>
         </div>
+
+        {htmlSaveProgress?.active && (
+          <div className="p-3.5 rounded-2xl bg-[#EEF5FF] dark:bg-[#1E192B] border border-[#2563EB]/30 flex items-center gap-3">
+            <Loader2 className="w-5 h-5 text-[#2563EB] dark:text-[#60A5FA] animate-spin shrink-0" />
+            <div className="flex-1 min-w-0 space-y-1">
+              <div className="flex items-center justify-between text-xs font-bold text-[#14101B] dark:text-[#F4F1F8]">
+                <span className="truncate">{htmlSaveProgress.label}</span>
+                <span className="font-mono tabular-nums text-[#2563EB] dark:text-[#60A5FA]">
+                  {htmlSaveProgress.percent}%
+                </span>
+              </div>
+              <div className="w-full h-1.5 rounded-full bg-white/80 dark:bg-[#0D0A12] overflow-hidden">
+                <div
+                  className="h-full bg-[#2563EB] dark:bg-[#60A5FA] rounded-full transition-all duration-150"
+                  style={{ width: `${Math.max(8, htmlSaveProgress.percent)}%` }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Reader Toolbar: View Switcher + Theme + Font Size + Font Family + Search + Read Aloud */}
         <div className="p-3.5 rounded-2xl bg-[#FAF9FB] dark:bg-[#0D0A12] border border-[#E4DFEC] dark:border-[#261F33] flex flex-wrap items-center justify-between gap-3">

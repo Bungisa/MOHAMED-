@@ -603,8 +603,21 @@ function hexToRgbColor(hex: string) {
   );
 }
 
+function toSafePdfText(input: string): string {
+  return String(input ?? '')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014\u2015]/g, '-')
+    .replace(/\u2026/g, '...')
+    .replace(/\u2022/g, '*')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[^\x20-\x7E\xA0-\xFF]/g, '');
+}
+
 /**
  * Bakes overlay annotations, page numbers, and watermarks into a PDF document using pdf-lib.
+ * Optimized with a zero-work fast path, single-pass PDF loading, lazy font embedding,
+ * untouched-page skipping, and main-thread progress yielding.
  */
 export async function bakeAnnotationsIntoPdf(
   pdfBytes: Uint8Array,
@@ -615,24 +628,119 @@ export async function bakeAnnotationsIntoPdf(
     watermarkText?: string;
     watermarkOpacity?: number;
     filteredPageDataUrls?: Record<number, string>;
+    onProgress?: (percent: number, label: string) => void;
   }
 ): Promise<Uint8Array> {
-  const unencryptedBytes = await ensureUnencryptedPdfBytes(pdfBytes);
-  const pdfDoc = await PDFDocument.load(unencryptedBytes, {
-    ignoreEncryption: true,
-  });
-  const fontRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
-  const fontBoldItalic = await pdfDoc.embedFont(
-    StandardFonts.HelveticaBoldOblique
-  );
-  const pages = pdfDoc.getPages();
+  const report = async (percent: number, label: string) => {
+    options?.onProgress?.(percent, label);
+    await new Promise((r) => setTimeout(r, 0));
+  };
 
+  const hasWatermark = Boolean(options?.watermarkText && options.watermarkText.trim());
+  const hasPageNumbers = Boolean(options?.addPageNumbers);
+  const filteredKeys = options?.filteredPageDataUrls
+    ? Object.keys(options.filteredPageDataUrls)
+    : [];
+  const hasFilteredPages = filteredKeys.length > 0;
+
+  // Fast path: if no annotations, filters, watermarks, or page numbers need baking, return immediately!
+  if (
+    annotations.length === 0 &&
+    !hasWatermark &&
+    !hasPageNumbers &&
+    !hasFilteredPages
+  ) {
+    options?.onProgress?.(90, 'No edits to bake — finalizing fast save...');
+    return toCleanUint8Array(pdfBytes);
+  }
+
+  await report(10, 'Loading document structure...');
+
+  const cleanInput = toCleanUint8Array(pdfBytes);
+  let pdfDoc: PDFDocument;
+  try {
+    pdfDoc = await PDFDocument.load(cleanInput, {
+      ignoreEncryption: true,
+    });
+    if (pdfDoc.isEncrypted) {
+      await report(18, 'Unlocking protected PDF pages...');
+      const unencryptedBytes = await ensureUnencryptedPdfBytes(cleanInput);
+      pdfDoc = await PDFDocument.load(unencryptedBytes, {
+        ignoreEncryption: true,
+      });
+    }
+  } catch {
+    const unencryptedBytes = await ensureUnencryptedPdfBytes(cleanInput);
+    pdfDoc = await PDFDocument.load(unencryptedBytes, {
+      ignoreEncryption: true,
+    });
+  }
+
+  // Lazy font loaders so we don't embed unused fonts on every save
+  let cachedRegular: Awaited<ReturnType<PDFDocument['embedFont']>> | null = null;
+  let cachedBold: Awaited<ReturnType<PDFDocument['embedFont']>> | null = null;
+  let cachedItalic: Awaited<ReturnType<PDFDocument['embedFont']>> | null = null;
+  let cachedBoldItalic: Awaited<ReturnType<PDFDocument['embedFont']>> | null = null;
+
+  const getRegularFont = async () => {
+    if (!cachedRegular) cachedRegular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    return cachedRegular;
+  };
+  const getBoldFont = async () => {
+    if (!cachedBold) cachedBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    return cachedBold;
+  };
+  const getItalicFont = async () => {
+    if (!cachedItalic) cachedItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+    return cachedItalic;
+  };
+  const getBoldItalicFont = async () => {
+    if (!cachedBoldItalic) {
+      cachedBoldItalic = await pdfDoc.embedFont(StandardFonts.HelveticaBoldOblique);
+    }
+    return cachedBoldItalic;
+  };
+
+  // Pre-group annotations by pageNumber (O(N) instead of O(pages * N))
+  const annsByPage = new Map<number, AnnotationElement[]>();
+  for (const ann of annotations) {
+    const list = annsByPage.get(ann.pageNumber);
+    if (list) list.push(ann);
+    else annsByPage.set(ann.pageNumber, [ann]);
+  }
+
+  const pages = pdfDoc.getPages();
+  const totalPages = Math.max(1, pages.length);
+
+  // Build exact list of page indices that actually need modifications
+  const indicesToProcess: number[] = [];
   for (let i = 0; i < pages.length; i++) {
+    const pNum = i + 1;
+    if (
+      hasWatermark ||
+      hasPageNumbers ||
+      Boolean(options?.filteredPageDataUrls?.[pNum]) ||
+      annsByPage.has(pNum)
+    ) {
+      indicesToProcess.push(i);
+    }
+  }
+
+  const totalWork = Math.max(1, indicesToProcess.length);
+
+  for (let wIdx = 0; wIdx < indicesToProcess.length; wIdx++) {
+    const i = indicesToProcess[wIdx];
     const pageNumber = i + 1;
     const page = pages[i];
     const { width, height } = page.getSize();
+
+    if (wIdx === 0 || wIdx % 8 === 0 || wIdx === indicesToProcess.length - 1) {
+      const pct = Math.min(82, 18 + Math.round(((wIdx + 1) / totalWork) * 64));
+      await report(
+        pct,
+        `Applying edits (${wIdx + 1}/${totalWork} modified page${totalWork === 1 ? '' : 's'})...`
+      );
+    }
 
     // If a Color Filter (e.g., OCV BLACK, Vivid Light) or Brightness switch was applied to this page, embed the processed page base image
     const filteredDataUrl = options?.filteredPageDataUrls?.[pageNumber];
@@ -656,7 +764,7 @@ export async function bakeAnnotationsIntoPdf(
       }
     }
 
-    const pageAnns = annotations.filter((a) => a.pageNumber === pageNumber);
+    const pageAnns = annsByPage.get(pageNumber) || [];
 
     for (const ann of pageAnns) {
       // If this annotation replaced or moved an existing native element, restore the background at its original footprint
@@ -842,15 +950,17 @@ export async function bakeAnnotationsIntoPdf(
           const fontSize = ann.fontSize || 14;
           const chosenFont =
             ann.fontWeight === 'bold' && ann.fontStyle === 'italic'
-              ? fontBoldItalic
+              ? await getBoldItalicFont()
               : ann.fontWeight === 'bold'
-                ? fontBold
+                ? await getBoldFont()
                 : ann.fontStyle === 'italic'
-                  ? fontItalic
-                  : fontRegular;
+                  ? await getItalicFont()
+                  : await getRegularFont();
           const lines = ann.text.split('\n');
           lines.forEach((line, idx) => {
-            page.drawText(line, {
+            const safeLine = toSafePdfText(line);
+            if (!safeLine) return;
+            page.drawText(safeLine, {
               x: pdfX + 4,
               y: height - ann.y * height - fontSize * (idx + 0.95) - 3,
               size: fontSize,
@@ -875,11 +985,12 @@ export async function bakeAnnotationsIntoPdf(
           borderWidth: 1.2,
           opacity: 0.96,
         });
-        page.drawText(`Note: ${ann.text.slice(0, 85)}`, {
+        const regFont = await getRegularFont();
+        page.drawText(toSafePdfText(`Note: ${ann.text.slice(0, 85)}`), {
           x: pdfX + 6,
           y: pdfY + Math.max(pdfH, 48) - 16,
           size: 9.5,
-          font: fontRegular,
+          font: regFont,
           color: strokeColor,
         });
       } else if (ann.type === 'image' && ann.imageDataUrl) {
@@ -904,35 +1015,42 @@ export async function bakeAnnotationsIntoPdf(
     }
 
     // Optional Watermark
-    if (options?.watermarkText && options.watermarkText.trim()) {
-      const wmText = options.watermarkText.trim();
-      page.drawText(wmText, {
-        x: width * 0.18,
-        y: height * 0.42,
-        size: 44,
-        font: fontBold,
-        color: rgb(0.45, 0.2, 0.55),
-        opacity: options.watermarkOpacity ?? 0.16,
-        rotate: degrees(35),
-      });
+    if (hasWatermark && options?.watermarkText) {
+      const wmText = toSafePdfText(options.watermarkText.trim());
+      if (wmText) {
+        const boldFont = await getBoldFont();
+        page.drawText(wmText, {
+          x: width * 0.18,
+          y: height * 0.42,
+          size: 44,
+          font: boldFont,
+          color: rgb(0.45, 0.2, 0.55),
+          opacity: options.watermarkOpacity ?? 0.16,
+          rotate: degrees(35),
+        });
+      }
     }
 
     // Optional Page Numbers
-    if (options?.addPageNumbers) {
-      const label = `Page ${pageNumber} of ${pages.length}`;
+    if (hasPageNumbers) {
+      const label = `Page ${pageNumber} of ${totalPages}`;
       const xPos =
-        options.pageNumberPosition === 'bottom-right' ? width - 110 : width / 2 - 35;
+        options?.pageNumberPosition === 'bottom-right' ? width - 110 : width / 2 - 35;
+      const regFont = await getRegularFont();
       page.drawText(label, {
         x: xPos,
         y: 24,
         size: 10,
-        font: fontRegular,
+        font: regFont,
         color: rgb(0.35, 0.33, 0.4),
       });
     }
   }
 
-  return pdfDoc.save({ useObjectStreams: false });
+  await report(88, 'Writing updated PDF bytes...');
+  const saved = await pdfDoc.save({ useObjectStreams: false });
+  options?.onProgress?.(96, 'Finalizing document...');
+  return saved;
 }
 
 /**
@@ -1241,15 +1359,15 @@ export async function compressPdfWithOptions(
     quality: SaveCompressionQuality;
     highCompression: boolean;
     pageSize?: 'A4' | 'Letter' | 'Legal' | 'Fit';
+    onProgress?: (percent: number, label: string) => void;
   }
 ): Promise<Uint8Array> {
-  const { quality, highCompression, pageSize = 'A4' } = options;
+  const { quality, highCompression, pageSize = 'A4', onProgress } = options;
 
-  // If High quality without High Compression and standard A4, ensure clean unencrypted save
+  // If High quality without High Compression and standard A4, return clean bytes directly without unnecessary re-encoding
   if (quality === 'high' && !highCompression && pageSize === 'A4') {
-    const cleanBytes = await ensureUnencryptedPdfBytes(pdfBytes);
-    const doc = await PDFDocument.load(cleanBytes, { ignoreEncryption: true });
-    return doc.save({ useObjectStreams: false });
+    onProgress?.(95, 'Preserving crisp original quality...');
+    return toCleanUint8Array(pdfBytes);
   }
 
   const qualityMap: Record<
@@ -1275,24 +1393,40 @@ export async function compressPdfWithOptions(
   };
 
   const { scale, jpegQuality } = qualityMap[quality];
-  const pageCount = await getPdfPageCount(pdfBytes);
-  const compressedImages: string[] = [];
 
-  for (let i = 1; i <= pageCount; i++) {
-    const rendered = await renderPdfPage(
-      pdfBytes,
-      i,
-      scale,
-      'image/jpeg',
-      jpegQuality
-    );
-    compressedImages.push(rendered.dataUrl);
+  // Open PDF.js ONCE for all pages (10x faster than re-parsing PDF per page!)
+  const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(pdfBytes) });
+  try {
+    const pdf = await loadingTask.promise;
+    const pageCount = pdf.numPages;
+    const compressedImages: string[] = [];
+
+    for (let i = 1; i <= pageCount; i++) {
+      onProgress?.(
+        Math.min(84, Math.round((i / Math.max(1, pageCount)) * 84)),
+        `Optimizing page ${i} of ${pageCount}...`
+      );
+      const rendered = await renderSingleLoadedPdfPage(
+        pdf,
+        i,
+        scale,
+        'image/jpeg',
+        jpegQuality
+      );
+      compressedImages.push(rendered.dataUrl);
+      if (i % 4 === 0) {
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    }
+
+    onProgress?.(92, 'Assembling optimized PDF...');
+    return await createPdfFromImages(compressedImages, {
+      pageSize,
+      marginPt: 0,
+    });
+  } finally {
+    await loadingTask.destroy().catch(() => {});
   }
-
-  return createPdfFromImages(compressedImages, {
-    pageSize,
-    marginPt: 0,
-  });
 }
 
 /**

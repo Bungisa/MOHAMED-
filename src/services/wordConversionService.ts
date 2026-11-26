@@ -98,6 +98,7 @@ export interface WordToPdfOptions {
   baseFontSize: number; // e.g. 11 or 12
   lineSpacing: number; // e.g. 1.35
   addPageNumbers: boolean;
+  onProgress?: (percent: number, label: string) => void;
 }
 
 /**
@@ -9099,7 +9100,17 @@ export async function generatePdfFromWordBlocks(
     }
   };
 
-  for (const block of blocks) {
+  const totalBlocks = Math.max(1, blocks.length);
+  for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+    const block = blocks[blockIdx];
+    if (blockIdx > 0 && blockIdx % 40 === 0) {
+      const pct = Math.min(88, 12 + Math.round((blockIdx / totalBlocks) * 76));
+      options.onProgress?.(
+        pct,
+        `Laying out book content (${blockIdx}/${totalBlocks} sections)...`
+      );
+      await new Promise((r) => setTimeout(r, 0));
+    }
     if (block.pageBreakBefore && cursorY < pageH - marginTop - 10) {
       currentPage = pdfDoc.addPage([pageW, pageH]);
       cursorY = pageH - marginTop;
@@ -9569,7 +9580,10 @@ export async function generatePdfFromWordBlocks(
     });
   }
 
+  options.onProgress?.(94, 'Writing PDF book bytes...');
+  await new Promise((r) => setTimeout(r, 0));
   const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
+  options.onProgress?.(100, 'Book saved!');
   return { pdfBytes, pageCount: pages.length };
 }
 
